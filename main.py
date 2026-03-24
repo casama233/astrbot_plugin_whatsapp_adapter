@@ -44,7 +44,7 @@ try:
         SetupError,
         WhatsappError,
     )
-except Exception:
+except ImportError:
     class WhatsappError(Exception):
         pass
 
@@ -67,7 +67,6 @@ PLUGIN_ROOT = _plugin_root()
 ASTRBOT_DATA_ROOT = _astrbot_data_root()
 WHATSAPP_CREDS_DIR = ASTRBOT_DATA_ROOT / "whatsapp_creds"
 WHATSAPP_MEDIA_DIR = ASTRBOT_DATA_ROOT / "whatsapp_media"
-LOGO_PATH = PLUGIN_ROOT / "logo.png"
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "id": "whatsapp",
@@ -162,7 +161,6 @@ WHATSAPP_PLATFORM_META = PlatformMetadata(
     id="whatsapp",
     default_config_tmpl=DEFAULT_CONFIG,
     adapter_display_name="WhatsApp",
-    logo_path=str(LOGO_PATH) if LOGO_PATH.exists() else None,
     support_streaming_message=True,
     support_proactive_message=True,
     config_metadata=CONFIG_METADATA,
@@ -398,8 +396,11 @@ class WhatsAppBridgeRuntime:
             raise RuntimeError("WhatsApp client 尚未初始化")
         method = getattr(self.client, method_name)
         if inspect.iscoroutinefunction(method):
-            return await method(*args, **kwargs)
-        return await asyncio.to_thread(functools.partial(method, *args, **kwargs))
+            return await asyncio.wait_for(method(*args, **kwargs), timeout=self.settings.bridge_timeout_sec)
+        return await asyncio.wait_for(
+            asyncio.to_thread(functools.partial(method, *args, **kwargs)),
+            timeout=self.settings.bridge_timeout_sec,
+        )
 
     async def _ensure_http_client(self) -> httpx.AsyncClient:
         if self._http_client is None:
@@ -603,7 +604,6 @@ class WhatsAppMessageEvent(AstrMessageEvent):
     "基於 whatsapp-bridge 的 WhatsApp 非官方多裝置平台適配器",
     default_config_tmpl=DEFAULT_CONFIG,
     adapter_display_name="WhatsApp",
-    logo_path=str(LOGO_PATH) if LOGO_PATH.exists() else None,
     support_streaming_message=True,
     config_metadata=CONFIG_METADATA,
 )
