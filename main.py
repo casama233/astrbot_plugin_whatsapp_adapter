@@ -395,12 +395,19 @@ class WhatsAppBridgeRuntime:
         if self.client is None:
             raise RuntimeError("WhatsApp client 尚未初始化")
         method = getattr(self.client, method_name)
-        if inspect.iscoroutinefunction(method):
-            return await asyncio.wait_for(method(*args, **kwargs), timeout=self.settings.bridge_timeout_sec)
-        return await asyncio.wait_for(
-            asyncio.to_thread(functools.partial(method, *args, **kwargs)),
-            timeout=self.settings.bridge_timeout_sec,
-        )
+        try:
+            if inspect.iscoroutinefunction(method):
+                return await asyncio.wait_for(
+                    method(*args, **kwargs),
+                    timeout=self.settings.bridge_timeout_sec,
+                )
+            return await asyncio.wait_for(
+                asyncio.to_thread(functools.partial(method, *args, **kwargs)),
+                timeout=self.settings.bridge_timeout_sec,
+            )
+        except asyncio.TimeoutError as exc:
+            logger.warning(f"WhatsApp 橋接呼叫逾時: {method_name}")
+            raise RuntimeError("WhatsApp 橋接呼叫逾時") from exc
 
     async def _ensure_http_client(self) -> httpx.AsyncClient:
         if self._http_client is None:
