@@ -1,0 +1,13 @@
+{
+  "metadata": {
+    "display_name": "WhatsApp Adapter",
+    "short_desc": "WhatsApp Web Gateway adapter with QR login.",
+    "desc": "AstrBot platform adapter for WhatsApp Web/Baileys, backed by a local Gateway with QR login, DM/group access control, and media support."
+  },
+  "pages": {
+    "whatsapp-login": {
+      "title": "WhatsApp Login",
+      "description": "View Gateway status, scan the WhatsApp Web QR code, restart the connection, or log out."
+    }
+  }
+}

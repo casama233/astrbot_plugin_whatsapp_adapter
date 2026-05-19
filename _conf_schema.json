@@ -1,0 +1,72 @@
+{
+  "gateway_host": {
+    "description": "Gateway HTTP bind host. Use 127.0.0.1 unless AstrBot and the Gateway run in different containers.",
+    "type": "string",
+    "default": "127.0.0.1"
+  },
+  "gateway_port": {
+    "description": "Gateway HTTP port.",
+    "type": "int",
+    "default": 18789
+  },
+  "auto_start_gateway": {
+    "description": "Start the bundled Node.js WhatsApp Gateway automatically when the adapter starts.",
+    "type": "bool",
+    "default": true
+  },
+  "node_executable": {
+    "description": "Node.js executable used to run the bundled Gateway. Node 20+ is recommended.",
+    "type": "string",
+    "default": "node"
+  },
+  "auth_dir": {
+    "description": "Directory for WhatsApp Web/Baileys auth state. Empty means ./data/whatsapp-auth under this plugin.",
+    "type": "string",
+    "default": ""
+  },
+  "log_level": {
+    "description": "Gateway log level: silent, fatal, error, warn, info, debug, trace.",
+    "type": "string",
+    "default": "info"
+  },
+  "allow_from": {
+    "description": "DM allowlist. Use E.164 numbers like +15551234567. Use [\"*\"] only if you intentionally accept all DMs.",
+    "type": "list",
+    "default": []
+  },
+  "dm_policy": {
+    "description": "Direct message policy: allowlist, open, disabled.",
+    "type": "string",
+    "default": "allowlist"
+  },
+  "group_policy": {
+    "description": "Group sender policy: allowlist, open, disabled.",
+    "type": "string",
+    "default": "disabled"
+  },
+  "group_allow_from": {
+    "description": "Allowed senders in groups. Falls back to allow_from when empty. Use [\"*\"] only with care.",
+    "type": "list",
+    "default": []
+  },
+  "groups": {
+    "description": "Allowed WhatsApp group JIDs. Use [\"*\"] to allow all groups admitted by group_policy.",
+    "type": "list",
+    "default": []
+  },
+  "send_read_receipts": {
+    "description": "Send WhatsApp read receipts for accepted inbound messages.",
+    "type": "bool",
+    "default": true
+  },
+  "text_chunk_limit": {
+    "description": "Maximum outbound text chunk length.",
+    "type": "int",
+    "default": 4000
+  },
+  "media_max_mb": {
+    "description": "Maximum inbound/outbound media size in MB.",
+    "type": "int",
+    "default": 50
+  }
+}

@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>WhatsApp Login</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <div>
+          <p class="eyebrow">AstrBot WhatsApp Adapter</p>
+          <h1>WhatsApp Web 登录</h1>
+          <p class="summary">在插件管理页内完成扫码登录。Gateway 只绑定本地地址时，二维码不会暴露给外部网络。</p>
+        </div>
+        <div id="statusBadge" class="badge badge-muted">加载中</div>
+      </section>
+
+      <section class="grid">
+        <article class="card qr-card">
+          <div class="card-head">
+            <h2>扫码</h2>
+            <button id="refresh" type="button">刷新</button>
+          </div>
+          <div id="qrWrap" class="qr-wrap">
+            <div class="placeholder">正在等待 Gateway 生成二维码...</div>
+          </div>
+          <p id="qrHint" class="hint">打开 WhatsApp 手机端，进入「已连接的设备」，扫描这里的二维码。</p>
+        </article>
+
+        <article class="card">
+          <h2>状态</h2>
+          <dl class="status-list">
+            <div>
+              <dt>连接状态</dt>
+              <dd id="statusText">-</dd>
+            </div>
+            <div>
+              <dt>账号 JID</dt>
+              <dd id="selfJid">-</dd>
+            </div>
+            <div>
+              <dt>认证目录</dt>
+              <dd id="authDir">-</dd>
+            </div>
+          </dl>
+          <div class="actions">
+            <button id="restart" type="button">重启连接</button>
+            <button id="logout" class="danger" type="button">登出并重新扫码</button>
+          </div>
+          <pre id="output" class="output"></pre>
+        </article>
+      </section>
+    </main>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
