@@ -31,6 +31,9 @@ let latestQr = null;
 let latestQrDataUrl = null;
 let connectionStatus = "starting";
 let reconnectTimer = null;
+let presenceTimer = null;
+let lastPresenceAt = null;
+let socketGeneration = 0;
 let runtimeConfig = {
   dmPolicy: "allowlist",
   allowFrom: [],
@@ -38,8 +41,29 @@ let runtimeConfig = {
   groupAllowFrom: [],
   groups: [],
   sendReadReceipts: true,
+  markOnline: true,
   mediaMaxMb: 50,
 };
+
+function stopPresenceTimer() {
+  if (presenceTimer) clearInterval(presenceTimer);
+  presenceTimer = null;
+}
+
+async function sendAvailablePresence() {
+  if (!runtimeConfig.markOnline || !socket?.sendPresenceUpdate || !ready) return;
+  await socket.sendPresenceUpdate("available");
+  lastPresenceAt = new Date().toISOString();
+}
+
+function startPresenceTimer() {
+  stopPresenceTimer();
+  if (!runtimeConfig.markOnline) return;
+  sendAvailablePresence().catch((error) => log.debug({ error }, "presence update failed"));
+  presenceTimer = setInterval(() => {
+    sendAvailablePresence().catch((error) => log.debug({ error }, "presence update failed"));
+  }, 25000);
+}
 
 function sendSse(client, data) {
   client.write(`data: ${JSON.stringify(data)}\n\n`);
@@ -68,29 +92,68 @@ function jidToPhone(jid) {
   return digits ? `+${digits}` : normalizeJid(jid);
 }
 
-function allowedByList(value, allowList) {
-  const normalized = normalizePhone(value);
-  const normalizedList = (allowList || []).map(normalizePhone);
-  return normalizedList.includes("*") || normalizedList.includes(normalized);
+function messageJidCandidates(item, chatJid, senderJid) {
+  return [
+    senderJid,
+    chatJid,
+    item?.key?.senderPn,
+    item?.key?.participantPn,
+    item?.key?.remoteJidAlt,
+    item?.key?.participantAlt,
+  ].filter(Boolean);
 }
 
-function isAllowedMessage(chatJid, senderJid) {
+function allowedByList(value, allowList) {
+  const normalized = normalizePhone(value);
+  const raw = String(value || "").trim();
+  const normalizedJid = normalizeJid(raw);
+  const normalizedList = (allowList || []).map((item) => ({
+    raw: String(item || "").trim(),
+    phone: normalizePhone(item),
+    jid: normalizeJid(item),
+  }));
+  return normalizedList.some((item) => (
+    item.raw === "*" || item.phone === "*" ||
+    item.phone === normalized || item.raw === raw || item.jid === normalizedJid
+  ));
+}
+
+function isAllowedMessage(chatJid, senderJid, item) {
+  const result = allowedMessageResult(chatJid, senderJid, item);
+  return result.allowed;
+}
+
+function allowedMessageResult(chatJid, senderJid, item) {
   const isGroup = chatJid.endsWith("@g.us");
-  const senderPhone = jidToPhone(senderJid || chatJid);
+  const candidates = messageJidCandidates(item, chatJid, senderJid);
+  const senderPhone = candidates.map(jidToPhone).find((value) => value.startsWith("+")) || jidToPhone(senderJid || chatJid);
+  const allowedByCandidates = (allowList) => candidates.some((value) => (
+    allowedByList(jidToPhone(value), allowList) || allowedByList(value, allowList)
+  ));
   if (!isGroup) {
-    if (runtimeConfig.dmPolicy === "disabled") return false;
-    if (runtimeConfig.dmPolicy === "open") return allowedByList("*", runtimeConfig.allowFrom);
-    return allowedByList(senderPhone, runtimeConfig.allowFrom);
+    if (runtimeConfig.dmPolicy === "disabled") return { allowed: false, reason: "dm_disabled", senderPhone };
+    if (runtimeConfig.dmPolicy === "open") return { allowed: true, reason: "dm_open", senderPhone };
+    return {
+      allowed: allowedByCandidates(runtimeConfig.allowFrom),
+      reason: "dm_allowlist",
+      senderPhone,
+    };
   }
 
-  if (runtimeConfig.groupPolicy === "disabled") return false;
+  if (runtimeConfig.groupPolicy === "disabled") return { allowed: false, reason: "group_disabled", senderPhone };
   const groups = runtimeConfig.groups || [];
-  if (groups.length > 0 && !groups.includes("*") && !groups.includes(chatJid)) return false;
-  if (runtimeConfig.groupPolicy === "open") return true;
+  if (groups.length > 0 && !groups.includes("*") && !groups.includes(chatJid)) {
+    return { allowed: false, reason: "group_not_allowed", senderPhone };
+  }
+  if (runtimeConfig.groupPolicy === "open") return { allowed: true, reason: "group_open", senderPhone };
   const groupAllowFrom = (runtimeConfig.groupAllowFrom || []).length
     ? runtimeConfig.groupAllowFrom
     : runtimeConfig.allowFrom;
-  return allowedByList(senderPhone, groupAllowFrom);
+  return {
+    allowed: allowedByCandidates(groupAllowFrom),
+    reason: "group_allowlist",
+    senderPhone,
+  };
 }
 
 function textFromMessage(message) {
@@ -105,6 +168,23 @@ function textFromMessage(message) {
   return "";
 }
 
+function contextInfoFromMessage(message) {
+  if (!message) return null;
+  return (
+    message.extendedTextMessage?.contextInfo ||
+    message.imageMessage?.contextInfo ||
+    message.videoMessage?.contextInfo ||
+    message.documentMessage?.contextInfo ||
+    message.audioMessage?.contextInfo ||
+    null
+  );
+}
+
+function mentionedJidsFromMessage(message) {
+  const mentioned = contextInfoFromMessage(message)?.mentionedJid || [];
+  return Array.isArray(mentioned) ? mentioned.filter(Boolean) : [];
+}
+
 function mediaKind(message) {
   if (message.imageMessage) return "image";
   if (message.videoMessage) return "video";
@@ -112,6 +192,17 @@ function mediaKind(message) {
   if (message.documentMessage) return "document";
   if (message.stickerMessage) return "sticker";
   return null;
+}
+
+function mediaFileName(message, kind) {
+  return message?.documentMessage?.fileName || message?.imageMessage?.fileName || message?.videoMessage?.fileName || `${kind || "media"}`;
+}
+
+function quotedKey(body) {
+  if (!body?.quotedMessageId) return { quoted: null };
+  const key = { remoteJid: body.to, id: body.quotedMessageId };
+  if (body.quotedParticipant) key.participant = body.quotedParticipant;
+  return { quoted: { key } };
 }
 
 async function saveInboundMedia(message, kind, id) {
@@ -140,14 +231,46 @@ async function handleIncomingMessage(item) {
   if (!chatJid || chatJid.endsWith("@status") || chatJid.endsWith("@broadcast")) return;
   const fromMe = Boolean(item.key.fromMe);
   const senderJid = item.key.participant || chatJid;
-  if (fromMe || !isAllowedMessage(chatJid, senderJid)) return;
+  const allowed = allowedMessageResult(chatJid, senderJid, item);
+  if (fromMe) {
+    log.debug({ chatJid, senderJid, messageId: item.key.id }, "ignored inbound message from self");
+    return;
+  }
+  if (!allowed.allowed) {
+    log.info(
+      {
+        chatJid,
+        senderJid,
+        senderPhone: allowed.senderPhone,
+        reason: allowed.reason,
+        dmPolicy: runtimeConfig.dmPolicy,
+        groupPolicy: runtimeConfig.groupPolicy,
+        allowFromCount: (runtimeConfig.allowFrom || []).length,
+      },
+      "rejected inbound WhatsApp message",
+    );
+    return;
+  }
+  log.info(
+    {
+      chatJid,
+      senderJid,
+      senderPhone: allowed.senderPhone,
+      reason: allowed.reason,
+      messageId: item.key.id,
+      hasText: Boolean(textFromMessage(item.message)),
+      mentionCount: mentionedJidsFromMessage(item.message).length,
+      mediaKind: mediaKind(item.message),
+    },
+    "accepted inbound WhatsApp message",
+  );
 
   const kind = mediaKind(item.message);
   const media = [];
   if (kind) {
     try {
       const filePath = await saveInboundMedia(item, kind, item.key.id);
-      media.push({ type: kind, path: filePath });
+      media.push({ type: kind, path: filePath, fileName: mediaFileName(item.message, kind) });
     } catch (error) {
       log.warn({ error }, "failed to save inbound media");
       media.push({ type: kind, error: String(error?.message || error) });
@@ -167,6 +290,7 @@ async function handleIncomingMessage(item) {
     fromMe,
     selfJid,
     text: textFromMessage(item.message) || (kind ? `<media:${kind}>` : ""),
+    mentionedJids: mentionedJidsFromMessage(item.message),
     media,
     timestamp: Number(item.messageTimestamp || Date.now() / 1000),
     raw: { key: item.key },
@@ -174,6 +298,9 @@ async function handleIncomingMessage(item) {
 }
 
 async function startSocket() {
+  const generation = ++socketGeneration;
+  if (reconnectTimer) clearTimeout(reconnectTimer);
+  reconnectTimer = null;
   if (socket?.end) {
     try {
       socket.end(undefined);
@@ -183,6 +310,7 @@ async function startSocket() {
   }
   socket = null;
   ready = false;
+  stopPresenceTimer();
   connectionStatus = "starting";
   await mkdir(authDir, { recursive: true });
   const { state, saveCreds } = await useMultiFileAuthState(authDir);
@@ -192,11 +320,12 @@ async function startSocket() {
     auth: state,
     printQRInTerminal: false,
     logger: log,
-    markOnlineOnConnect: false,
+    markOnlineOnConnect: Boolean(runtimeConfig.markOnline),
   });
 
   socket.ev.on("creds.update", saveCreds);
   socket.ev.on("connection.update", (update) => {
+    if (generation !== socketGeneration) return;
     const { connection, lastDisconnect, qr } = update;
     if (qr) {
       latestQr = qr;
@@ -214,16 +343,20 @@ async function startSocket() {
       latestQrDataUrl = null;
       connectionStatus = "connected";
       selfJid = socket.user?.id || null;
+      startPresenceTimer();
       broadcast({ type: "status", status: "connected", selfJid });
     }
     if (connection === "close") {
       ready = false;
+      stopPresenceTimer();
       const statusCode = lastDisconnect?.error?.output?.statusCode;
       connectionStatus = statusCode === DisconnectReason.loggedOut ? "logged_out" : "disconnected";
       broadcast({ type: "status", status: "disconnected", statusCode });
       if (statusCode !== DisconnectReason.loggedOut) {
         if (reconnectTimer) clearTimeout(reconnectTimer);
-        reconnectTimer = setTimeout(() => startSocket().catch((error) => log.error({ error }, "reconnect failed")), 3000);
+        reconnectTimer = setTimeout(() => {
+          if (generation === socketGeneration) startSocket().catch((error) => log.error({ error }, "reconnect failed"));
+        }, 3000);
       }
     }
   });
@@ -255,6 +388,7 @@ function statusPayload() {
     selfJid,
     authDir,
     hasQr: Boolean(latestQr),
+    lastPresenceAt,
     config: runtimeConfig,
   };
 }
@@ -306,6 +440,7 @@ const server = createServer(async (req, res) => {
     }
     if (req.method === "POST" && url.pathname === "/config") {
       runtimeConfig = { ...runtimeConfig, ...(await readJson(req)) };
+      if (ready) startPresenceTimer();
       sendJson(res, 200, { ok: true, config: runtimeConfig });
       return;
     }
@@ -324,6 +459,7 @@ const server = createServer(async (req, res) => {
       selfJid = null;
       latestQr = null;
       latestQrDataUrl = null;
+      stopPresenceTimer();
       connectionStatus = "logged_out";
       await rm(authDir, { recursive: true, force: true });
       broadcast({ type: "status", status: "logged_out", ready: false });
@@ -337,7 +473,7 @@ const server = createServer(async (req, res) => {
     }
     if (req.method === "POST" && url.pathname === "/send/text") {
       const body = await readJson(req);
-      const result = await socket.sendMessage(body.to, { text: body.text || "" });
+      const result = await socket.sendMessage(body.to, { text: body.text || "" }, quotedKey(body));
       sendJson(res, 200, { ok: true, id: result?.key?.id });
       return;
     }
@@ -347,13 +483,16 @@ const server = createServer(async (req, res) => {
       const result = await socket.sendMessage(
         body.to,
         resolveMediaPayload(body.type, body.pathOrUrl, body.caption),
+        quotedKey(body),
       );
       sendJson(res, 200, { ok: true, id: result?.key?.id });
       return;
     }
     if (req.method === "POST" && url.pathname === "/send/reaction") {
       const body = await readJson(req);
-      await socket.sendMessage(body.to, { react: { text: body.emoji || "", key: { remoteJid: body.to, id: body.messageId } } });
+      const key = { remoteJid: body.to, id: body.messageId };
+      if (body.participant) key.participant = body.participant;
+      await socket.sendMessage(body.to, { react: { text: body.emoji || "", key } });
       sendJson(res, 200, { ok: true });
       return;
     }

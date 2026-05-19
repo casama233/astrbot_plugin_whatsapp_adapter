@@ -14,7 +14,7 @@
     },
     "auto_start_gateway": {
       "description": "自动启动内置 Gateway",
-      "hint": "启用后，平台启动或打开插件登录页时会自动启动 Node.js Gateway。"
+      "hint": "启用后，打开插件登录页时会自动启动 Node.js Gateway；平台实例也有独立的同名配置。"
     },
     "node_executable": {
       "description": "Node.js 可执行文件",
@@ -28,33 +28,37 @@
       "description": "Gateway 日志级别"
     },
     "allow_from": {
-      "description": "私聊 allowlist",
-      "hint": "建议使用 E.164 号码，如 +15551234567。仅明确知道风险时使用 *。"
+      "description": "默认私聊 allowlist",
+      "hint": "平台实例保持内置默认值时会沿用这里。建议使用 E.164 号码，如 +15551234567。仅明确知道风险时使用 *。"
     },
     "dm_policy": {
-      "description": "私聊策略",
-      "hint": "allowlist 仅允许 allow_from；open 需要 allow_from 包含 *；disabled 禁用私聊。"
+      "description": "默认私聊策略",
+      "hint": "平台实例保持内置默认值时会沿用这里。allowlist 仅允许 allow_from；open 需要 allow_from 包含 *；disabled 禁用私聊。"
     },
     "group_policy": {
-      "description": "群聊发送者策略",
-      "hint": "默认 disabled。allowlist 会检查 group_allow_from 或 allow_from。"
+      "description": "默认群聊发送者策略",
+      "hint": "平台实例保持内置默认值时会沿用这里。默认 disabled。allowlist 会检查 group_allow_from 或 allow_from。"
     },
     "group_allow_from": {
-      "description": "群聊发送者 allowlist",
-      "hint": "为空时回退到 allow_from。"
+      "description": "默认群聊发送者 allowlist",
+      "hint": "平台实例保持内置默认值时会沿用这里。为空时回退到 allow_from。"
     },
     "groups": {
-      "description": "允许接入的群 JID",
-      "hint": "填写 WhatsApp 群 JID，如 120363...@g.us。使用 * 表示允许全部群。"
+      "description": "默认允许接入的群 JID",
+      "hint": "平台实例保持内置默认值时会沿用这里。填写 WhatsApp 群 JID，如 120363...@g.us。使用 * 表示允许全部群。"
     },
     "send_read_receipts": {
-      "description": "发送已读回执"
+      "description": "默认发送已读回执"
+    },
+    "mark_online": {
+      "description": "默认标记在线状态",
+      "hint": "连接 WhatsApp Web 后主动标记为在线/可用。关闭后更像隐身运行，手机端可能只显示最后上线时间。"
     },
     "text_chunk_limit": {
-      "description": "出站文本分片长度"
+      "description": "默认出站文本分片长度"
     },
     "media_max_mb": {
-      "description": "媒体大小上限 MB"
+      "description": "默认媒体大小上限 MB"
     }
   },
   "pages": {

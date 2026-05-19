@@ -53,10 +53,13 @@ class WhatsAppGatewayClient:
         to: str,
         text: str,
         quoted_message_id: str | None = None,
+        quoted_participant: str | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {"to": to, "text": text}
         if quoted_message_id:
             payload["quotedMessageId"] = quoted_message_id
+        if quoted_participant:
+            payload["quotedParticipant"] = quoted_participant
         return await self._request("POST", "/send/text", json_data=payload)
 
     async def send_media(
@@ -65,6 +68,8 @@ class WhatsAppGatewayClient:
         media_type: str,
         path_or_url: str,
         caption: str | None = None,
+        quoted_message_id: str | None = None,
+        quoted_participant: str | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "to": to,
@@ -73,11 +78,18 @@ class WhatsAppGatewayClient:
         }
         if caption:
             payload["caption"] = caption
+        if quoted_message_id:
+            payload["quotedMessageId"] = quoted_message_id
+        if quoted_participant:
+            payload["quotedParticipant"] = quoted_participant
         return await self._request("POST", "/send/media", json_data=payload)
 
-    async def react(self, to: str, message_id: str, emoji: str) -> dict[str, Any]:
+    async def react(self, to: str, message_id: str, emoji: str, participant: str | None = None) -> dict[str, Any]:
+        payload: dict[str, Any] = {"to": to, "messageId": message_id, "emoji": emoji}
+        if participant:
+            payload["participant"] = participant
         return await self._request(
-            "POST", "/send/reaction", json_data={"to": to, "messageId": message_id, "emoji": emoji}
+            "POST", "/send/reaction", json_data=payload
         )
 
     async def restart(self) -> dict[str, Any]:
@@ -89,7 +101,8 @@ class WhatsAppGatewayClient:
     async def events(self) -> AsyncIterator[dict[str, Any]]:
         await self.start()
         assert self._session is not None
-        async with self._session.get(f"{self.base_url}/events") as response:
+        timeout = aiohttp.ClientTimeout(total=None, sock_connect=self.timeout, sock_read=None)
+        async with self._session.get(f"{self.base_url}/events", timeout=timeout) as response:
             response.raise_for_status()
             async for raw_line in response.content:
                 line = raw_line.decode("utf-8", errors="ignore").strip()

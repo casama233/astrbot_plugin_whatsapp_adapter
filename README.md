@@ -66,9 +66,10 @@ pip install -r requirements.txt
 2. 在平台适配器页面添加 `whatsapp` 平台。
 3. 保持 `auto_start_gateway=true`。
 4. 打开 AstrBot 插件管理页，进入本插件详情。
-5. 打开 `WhatsApp 登录` / `whatsapp-login` Page。
-6. 使用 WhatsApp 手机端进入「已连接的设备」，扫描页面中的二维码。
-7. 连接成功后，在 AstrBot 中启用该平台实例。
+5. 在插件配置中填写 `allow_from`、`dm_policy` 等访问控制项。插件配置页是本插件的主要配置来源。
+6. 打开 `WhatsApp 登录` / `whatsapp-login` Page。
+7. 使用 WhatsApp 手机端进入「已连接的设备」，扫描页面中的二维码。
+8. 连接成功后，在 AstrBot 中启用该平台实例。
 
 二维码通过 AstrBot 官方 Plugin Page bridge 获取。浏览器不会直接访问 Gateway；页面调用 AstrBot 插件 API，插件再访问本机 Gateway。
 
@@ -112,6 +113,13 @@ pip install -r requirements.txt
 
 ## 配置说明
 
+AstrBot 官方规范中，插件配置和平台实例配置是两套配置。本插件会按以下顺序合并：
+
+- 先读取内置默认值。
+- 再读取平台实例配置，满足 AstrBot 平台实例保存/加载流程。
+- 最后读取插件配置页配置，并以插件配置页为准。
+- 平台实例配置 key 保持英文，WebUI 会通过平台配置元数据显示中文说明。
+
 - `gateway_host`：Gateway HTTP 绑定地址。默认 `127.0.0.1`。
 - `gateway_port`：Gateway HTTP/SSE 端口。默认 `18789`。
 - `auto_start_gateway`：平台或插件页访问时自动启动内置 Gateway。
@@ -124,6 +132,7 @@ pip install -r requirements.txt
 - `group_allow_from`：群聊中允许触发机器人的发送者号码。为空时回退到 `allow_from`。
 - `groups`：允许接入的 WhatsApp 群 JID。使用 `*` 表示允许所有群。
 - `send_read_receipts`：是否给已接受的入站消息发送 read receipt。
+- `mark_online`：连接 WhatsApp Web 后是否主动标记在线/available。关闭后手机端可能只显示最后上线时间。
 - `text_chunk_limit`：出站文本分片长度。
 - `media_max_mb`：入站和出站媒体大小上限，单位 MB。
 
