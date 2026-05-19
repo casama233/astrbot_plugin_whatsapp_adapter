@@ -1,0 +1,8 @@
+node_modules/ export-ignore
+__pycache__/ export-ignore
+data/ export-ignore
+.gitignore export-ignore
+.gitattributes export-ignore
+npm-debug.log* export-ignore
+yarn-debug.log* export-ignore
+yarn-error.log* export-ignore
