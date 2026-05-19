@@ -10,7 +10,7 @@
     "default": 18789
   },
   "auto_start_gateway": {
-    "description": "Start the bundled Node.js WhatsApp Gateway automatically when the adapter starts.",
+    "description": "Start the bundled Node.js WhatsApp Gateway automatically when the plugin page is opened.",
     "type": "bool",
     "default": true
   },
@@ -30,42 +30,47 @@
     "default": "info"
   },
   "allow_from": {
-    "description": "DM allowlist. Use E.164 numbers like +15551234567. Use [\"*\"] only if you intentionally accept all DMs.",
+    "description": "Default DM allowlist for platform instances that keep the built-in default. Use E.164 numbers like +15551234567. Use [\"*\"] only if you intentionally accept all DMs.",
     "type": "list",
     "default": []
   },
   "dm_policy": {
-    "description": "Direct message policy: allowlist, open, disabled.",
+    "description": "Default direct message policy for platform instances that keep the built-in default: allowlist, open, disabled.",
     "type": "string",
     "default": "allowlist"
   },
   "group_policy": {
-    "description": "Group sender policy: allowlist, open, disabled.",
+    "description": "Default group sender policy for platform instances that keep the built-in default: allowlist, open, disabled.",
     "type": "string",
     "default": "disabled"
   },
   "group_allow_from": {
-    "description": "Allowed senders in groups. Falls back to allow_from when empty. Use [\"*\"] only with care.",
+    "description": "Default allowed senders in groups. Falls back to allow_from when empty. Use [\"*\"] only with care.",
     "type": "list",
     "default": []
   },
   "groups": {
-    "description": "Allowed WhatsApp group JIDs. Use [\"*\"] to allow all groups admitted by group_policy.",
+    "description": "Default allowed WhatsApp group JIDs. Use [\"*\"] to allow all groups admitted by group_policy.",
     "type": "list",
     "default": []
   },
   "send_read_receipts": {
-    "description": "Send WhatsApp read receipts for accepted inbound messages.",
+    "description": "Default setting for sending WhatsApp read receipts for accepted inbound messages.",
+    "type": "bool",
+    "default": true
+  },
+  "mark_online": {
+    "description": "Mark WhatsApp Web as online/available after connecting. Disable if you prefer invisible-style operation.",
     "type": "bool",
     "default": true
   },
   "text_chunk_limit": {
-    "description": "Maximum outbound text chunk length.",
+    "description": "Default outbound text chunk length.",
     "type": "int",
     "default": 4000
   },
   "media_max_mb": {
-    "description": "Maximum inbound/outbound media size in MB.",
+    "description": "Default inbound/outbound media size limit in MB.",
     "type": "int",
     "default": 50
   }

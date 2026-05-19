@@ -4,6 +4,63 @@
     "short_desc": "WhatsApp Web Gateway adapter with QR login.",
     "desc": "AstrBot platform adapter for WhatsApp Web/Baileys, backed by a local Gateway with QR login, DM/group access control, and media support."
   },
+  "config": {
+    "gateway_host": {
+      "description": "Gateway HTTP bind host",
+      "hint": "Keep 127.0.0.1 unless AstrBot and the Gateway run in different containers."
+    },
+    "gateway_port": {
+      "description": "Gateway HTTP port"
+    },
+    "auto_start_gateway": {
+      "description": "Auto-start bundled Gateway",
+      "hint": "Starts the Node.js Gateway when the plugin page is opened. Platform instances have their own adapter config."
+    },
+    "node_executable": {
+      "description": "Node.js executable",
+      "hint": "Node.js 20+ is recommended, for example node or /usr/bin/node."
+    },
+    "auth_dir": {
+      "description": "WhatsApp auth directory",
+      "hint": "Empty means data/astrbot_plugin_whatsapp_adapter/whatsapp-auth under AstrBot's working directory."
+    },
+    "log_level": {
+      "description": "Gateway log level"
+    },
+    "allow_from": {
+      "description": "Default DM allowlist",
+      "hint": "Used by platform instances that keep the built-in default. Use E.164 numbers like +15551234567. Use * only if you intentionally accept all DMs."
+    },
+    "dm_policy": {
+      "description": "Default DM policy",
+      "hint": "Used by platform instances that keep the built-in default. allowlist only allows allow_from; open requires allow_from to contain *; disabled rejects DMs."
+    },
+    "group_policy": {
+      "description": "Default group sender policy",
+      "hint": "Used by platform instances that keep the built-in default. disabled by default. allowlist checks group_allow_from or allow_from."
+    },
+    "group_allow_from": {
+      "description": "Default group sender allowlist",
+      "hint": "Used by platform instances that keep the built-in default. Falls back to allow_from when empty."
+    },
+    "groups": {
+      "description": "Default allowed group JIDs",
+      "hint": "Used by platform instances that keep the built-in default. Use WhatsApp group JIDs like 120363...@g.us. Use * to allow all groups."
+    },
+    "send_read_receipts": {
+      "description": "Default read receipts"
+    },
+    "mark_online": {
+      "description": "Default online presence",
+      "hint": "Marks WhatsApp Web as online/available after connecting. Disable for invisible-style operation."
+    },
+    "text_chunk_limit": {
+      "description": "Default outbound text chunk length"
+    },
+    "media_max_mb": {
+      "description": "Default media size limit in MB"
+    }
+  },
   "pages": {
     "whatsapp-login": {
       "title": "WhatsApp Login",

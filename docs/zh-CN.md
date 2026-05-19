@@ -22,9 +22,14 @@ pip install -r requirements.txt
 
 1. AstrBot WebUI 启用插件。
 2. 添加 `whatsapp` 平台适配器。
-3. 打开插件详情页。
-4. 进入 `whatsapp-login` 页面。
-5. 使用 WhatsApp 手机端扫描二维码。
+3. 在插件配置中填写访问控制项，例如 `allow_from` 和 `dm_policy`。插件配置页是主要配置来源。
+4. 打开插件详情页。
+5. 进入 `whatsapp-login` 页面。
+6. 使用 WhatsApp 手机端扫描二维码。
+
+配置合并顺序为：内置默认值 < 平台实例配置 < 插件配置页。最终以插件配置页为准。
+
+平台实例配置 key 保持英文，WebUI 会通过平台配置元数据显示中文说明。
 
 ## 最小安全配置
 
@@ -45,6 +50,8 @@ pip install -r requirements.txt
 ### 扫码后没有收到消息
 
 检查平台实例是否启用，检查 `allow_from` 是否包含发送者号码，号码建议写成 `+国家码号码` 格式。
+
+检查插件配置页中的 `allow_from` 是否包含发送者号码。插件配置页会覆盖平台实例配置。
 
 ### 群聊不触发
 
