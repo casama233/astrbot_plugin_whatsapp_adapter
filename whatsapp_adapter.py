@@ -908,6 +908,8 @@ class WhatsAppPlatformAdapter(Platform):
             digits = "".join(ch for ch in sender_phone if ch.isdigit())
             if digits and not sender_pn.endswith("@s.whatsapp.net"):
                 sender_pn = f"{digits}@s.whatsapp.net"
+        elif not sender_pn and sender_phone:
+            sender_pn = f"{sender_phone}@s.whatsapp.net"
 
         # 缓存 lid→PN 映射，用于出站 @mention 时解析
         if sender_jid.endswith("@lid") and sender_pn.endswith("@s.whatsapp.net"):
@@ -915,8 +917,10 @@ class WhatsAppPlatformAdapter(Platform):
         if chat_jid.endswith("@lid") and sender_pn.endswith("@s.whatsapp.net"):
             _LID_PN_CACHE[chat_jid] = sender_pn
 
-        # 對於 @lid 的 DM，使用 senderPn（@s.whatsapp.net）作為穩定的 session_id
-        if not chat_jid.endswith("@g.us") and chat_jid.endswith("@lid") and sender_pn.endswith("@s.whatsapp.net"):
+        # session_id 統一用 PN JID（@s.whatsapp.net），避免 lid 不穩定
+        if chat_jid.endswith("@g.us"):
+            normalized_chat_jid = chat_jid
+        elif sender_pn.endswith("@s.whatsapp.net") and (chat_jid.endswith("@lid") or sender_jid.endswith("@lid")):
             normalized_chat_jid = sender_pn
         else:
             normalized_chat_jid = chat_jid
@@ -948,7 +952,7 @@ class WhatsAppPlatformAdapter(Platform):
         abm.message_str = text
         abm.sender = MessageMember(
             user_id=user_id,
-            nickname=str(data.get("senderName") or sender_jid),
+            nickname=str(data.get("senderName") or sender_pn or sender_jid),
         )
         abm.message = self._message_chain(data, text)
         abm.raw_message = data
