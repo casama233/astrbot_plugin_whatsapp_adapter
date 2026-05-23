@@ -27,38 +27,117 @@
     "log_level": {
       "description": "Gateway 日志级别"
     },
-    "allow_from": {
-      "description": "默认私聊 allowlist",
-      "hint": "平台实例保持内置默认值时会沿用这里。建议使用 E.164 号码，如 +15551234567。仅明确知道风险时使用 *。"
-    },
     "dm_policy": {
-      "description": "默认私聊策略",
-      "hint": "平台实例保持内置默认值时会沿用这里。allowlist 仅允许 allow_from；open 需要 allow_from 包含 *；disabled 禁用私聊。"
+      "description": "私聊接收策略",
+      "hint": "allowlist=仅允许名单中号码；open=开放所有人私聊；disabled=关闭私聊功能。"
+    },
+    "allow_from": {
+      "description": "私聊允许名单",
+      "hint": "允许私聊的 WhatsApp 号码，建议 E.164 格式：+85212345678。[\"*\"] 表示开放所有私聊。"
     },
     "group_policy": {
-      "description": "默认群聊发送者策略",
-      "hint": "平台实例保持内置默认值时会沿用这里。默认 disabled。allowlist 会检查 group_allow_from 或 allow_from。"
-    },
-    "group_allow_from": {
-      "description": "默认群聊发送者 allowlist",
-      "hint": "平台实例保持内置默认值时会沿用这里。为空时回退到 allow_from。"
+      "description": "群聊接收策略",
+      "hint": "allowlist=仅允许在群名单中的群；open=允许所有已加入群；disabled=关闭群聊功能。"
     },
     "groups": {
-      "description": "默认允许接入的群 JID",
-      "hint": "平台实例保持内置默认值时会沿用这里。填写 WhatsApp 群 JID，如 120363...@g.us。使用 * 表示允许全部群。"
+      "description": "允许接入的群 JID",
+      "hint": "允许机器人接入的 WhatsApp 群 JID 列表（如 120363xxx@g.us）。[\"*\"] 表示允许所有群。"
     },
-    "send_read_receipts": {
-      "description": "默认发送已读回执"
+    "group_allow_from": {
+      "description": "群聊发送者白名单",
+      "hint": "允许在群聊中触发机器人的发送者号码。留空时回退到私聊允许名单。[\"*\"] 允许所有群成员。"
     },
-    "mark_online": {
-      "description": "默认标记在线状态",
-      "hint": "连接 WhatsApp Web 后主动标记为在线/可用。关闭后更像隐身运行，手机端可能只显示最后上线时间。"
+    "command_prefix": {
+      "description": "指令前缀",
+      "hint": "斜线指令触发前缀，例如 /help 会触发已注册的 help 指令。"
     },
-    "text_chunk_limit": {
-      "description": "默认出站文本分片长度"
+    "register_commands": {
+      "description": "启用斜线指令",
+      "hint": "启用后，以前缀开头且匹配已注册指令的消息会标记为唤醒指令。"
+    },
+    "pre_ack_private": {
+      "description": "私聊预回应",
+      "hint": "启用后，私聊收到消息时自动触发预回应表情。"
+    },
+    "pre_ack_public": {
+      "description": "群聊预回应",
+      "hint": "启用后，群聊收到消息时自动触发预回应表情。"
+    },
+    "pre_ack_emojis": {
+      "description": "预回应表情列表",
+      "hint": "预回应时使用的 WhatsApp emoji，例如 💭、✍️。"
+    },
+    "pre_ack_emoji": {
+      "description": "启用预回应表情",
+      "hint": "启用后，bot 收到消息时通过 WhatsApp emoji reaction 发出一条预回应。"
     },
     "media_max_mb": {
-      "description": "默认媒体大小上限 MB"
+      "description": "媒体上传大小限制 (MB)",
+      "hint": "上传到 WhatsApp Gateway 的单个媒体文件大小上限（MB）。预设 50。"
+    },
+    "typing_indicator": {
+      "description": "发送打字状态",
+      "hint": "启用后，机器人发送回复前向 WhatsApp 显示 typing 状态，发送完恢复 available。"
+    },
+    "send_read_receipts": {
+      "description": "发送已读回执",
+      "hint": "对已接受入站消息发送 WhatsApp 已读蓝勾。"
+    },
+    "mark_online": {
+      "description": "标记在线状态",
+      "hint": "启用后定期向 WhatsApp 发送 available 状态。"
+    },
+    "media_caption_mode": {
+      "description": "媒体附加文字模式",
+      "hint": "separate=文字与媒体分开发送（两条消息）；caption=紧邻媒体前的文字作为该媒体的描述。"
+    },
+    "text_chunk_limit": {
+      "description": "文字切片长度",
+      "hint": "超过此长度的出站文字会被自动切分为多条消息发送。"
+    },
+    "link_preview_single_url": {
+      "description": "链接预览",
+      "hint": "仅当一条纯文字消息只包含一个 URL 时启用 WhatsApp 链接预览卡片。"
+    },
+    "ignore_self_messages": {
+      "description": "忽略自身消息",
+      "hint": "启用后，发送者 JID 与机器人自身 JID 相同时忽略该消息。解决同号码自己 @自己或给自己发消息触发机器人的问题。"
+    },
+    "parse_inbound_formatting": {
+      "description": "解析入站 WhatsApp 格式",
+      "hint": "入站 *粗体* _斜体_ ~删除线~ ```代码``` 转为 Markdown 供 LLM 阅读。"
+    },
+    "media_album_debounce_seconds": {
+      "description": "相簿去抖时间（秒）",
+      "hint": "同发送者在短时间内连续发送多张无文字图片时，合并为一条相簿消息。设为 0 关闭。"
+    },
+    "reaction_level": {
+      "description": "反应级别",
+      "hint": "off=禁用所有反应；ack=仅预回应（收到消息时先发表情）；minimal=回应+LLM可发保守表情；extensive=回应+LLM可用更多表情。"
+    },
+    "ack_reaction_emoji": {
+      "description": "预回应表情",
+      "hint": "预回应时使用的 WhatsApp emoji。"
+    },
+    "ack_reaction_direct": {
+      "description": "私聊启用预回应",
+      "hint": "关闭后，私聊消息不会自动触发预回应表情。"
+    },
+    "ack_reaction_group": {
+      "description": "群组回应模式",
+      "hint": "always=群聊始终触发预回应；mentions=仅被 @ 或回复时触发；never=群聊不触发预回应。"
+    },
+    "remove_ack_after_reply": {
+      "description": "回复后清除回应",
+      "hint": "启用后，机器人发送回复后自动清除预回应表情，不留残留在消息上。"
+    },
+    "gateway_health_check_interval": {
+      "description": "健康检查间隔（秒）",
+      "hint": "后台检查 Gateway 健康状态的间隔秒数。设为 0 可关闭健康检查。"
+    },
+    "inbound_reaction_events": {
+      "description": "入站表情回应事件",
+      "hint": "将用户对消息的表情回应（emoji reaction）转为 AstrBot 事件。默认关闭。"
     }
   },
   "pages": {

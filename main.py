@@ -9,21 +9,17 @@ from astrbot.api import AstrBotConfig
 from astrbot.api.star import Context, Star, register
 from quart import jsonify
 
+try:
+    from astrbot.core.utils.astrbot_path import get_astrbot_data_path as _get_astrbot_data_path
+except ImportError:
+    _get_astrbot_data_path = None
+
+from .whatsapp_adapter import BASE_GATEWAY_CONFIG
 from .whatsapp_client import GatewayProcess, WhatsAppGatewayClient
 
 
 PLUGIN_NAME = "astrbot_plugin_whatsapp_adapter"
 PLUGIN_DIR = Path(__file__).resolve().parent
-
-
-DEFAULT_PAGE_CONFIG: dict[str, Any] = {
-    "gateway_host": "127.0.0.1",
-    "gateway_port": 18789,
-    "auto_start_gateway": True,
-    "node_executable": "node",
-    "auth_dir": "",
-    "log_level": "info",
-}
 
 
 @register(
@@ -35,7 +31,7 @@ DEFAULT_PAGE_CONFIG: dict[str, Any] = {
 class WhatsAppAdapterPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None):
         super().__init__(context)
-        self.config = {**DEFAULT_PAGE_CONFIG, **(dict(config or {}))}
+        self.config = {**BASE_GATEWAY_CONFIG, **(dict(config or {}))}
         self.page_client = WhatsAppGatewayClient(self._base_url)
         self.page_gateway_process: GatewayProcess | None = None
         logger.info(
@@ -71,8 +67,21 @@ class WhatsAppAdapterPlugin(Star):
             "Logout WhatsApp Web session",
         )
 
-        from .whatsapp_adapter import WhatsAppPlatformAdapter  # noqa: F401
-        self._enable_whatsapp_pre_ack()
+        from .whatsapp_adapter import (  # noqa: F401
+            WhatsAppPlatformAdapter,
+            patch_platform_manager_hot_reload,
+        )
+        from .whatsapp_components import (  # noqa: F401
+            WhatsAppButton,
+            WhatsAppButtons,
+            WhatsAppEdit,
+            WhatsAppList,
+            WhatsAppListRow,
+            WhatsAppListSection,
+            WhatsAppPoll,
+        )
+
+        patch_platform_manager_hot_reload()
 
     @property
     def _base_url(self) -> str:
@@ -82,6 +91,10 @@ class WhatsAppAdapterPlugin(Star):
         await self._ensure_page_gateway()
         try:
             status = await self.page_client.status()
+            status["baseUrl"] = self._base_url
+            status["plugin"] = PLUGIN_NAME
+            status["gatewayHealthy"] = bool(status.get("ok", True) and status.get("ready"))
+            status["configuredAuthDir"] = str(self._auth_dir())
             logger.debug("WhatsApp plugin page status requested: %s", self._safe_status(status))
             return jsonify(status)
         except Exception as exc:
@@ -146,7 +159,20 @@ class WhatsAppAdapterPlugin(Star):
         )
         logger.info("Starting WhatsApp Gateway for plugin page at %s", self._base_url)
         await self.page_gateway_process.start()
-        await asyncio.sleep(1)
+        # 輪詢 Gateway 健康狀態，最長等待 30 秒
+        health_client = WhatsAppGatewayClient(self._base_url, timeout=5.0)
+        last_error: Exception | None = None
+        for attempt in range(1, 31):
+            try:
+                health = await health_client.health()
+                logger.info("WhatsApp Gateway healthy for plugin page on attempt %s: %s", attempt, health)
+                break
+            except Exception as exc:
+                last_error = exc
+                await asyncio.sleep(1)
+        else:
+            logger.warning("WhatsApp Gateway for plugin page did not become healthy: %s", last_error)
+        await health_client.close()
 
     def _auth_dir(self) -> Path:
         configured = str(self.config.get("auth_dir") or "").strip()
@@ -154,8 +180,33 @@ class WhatsAppAdapterPlugin(Star):
             return Path(configured).expanduser().resolve()
         return self._data_dir() / "whatsapp-auth"
 
+    _migrated = False
+
     def _data_dir(self) -> Path:
-        return Path.cwd() / "data" / PLUGIN_NAME
+        if not self.__class__._migrated:
+            self._migrate_old_data()
+            self.__class__._migrated = True
+        return self._resolve_data_base() / PLUGIN_NAME
+
+    @staticmethod
+    def _resolve_data_base() -> Path:
+        if _get_astrbot_data_path:
+            return Path(_get_astrbot_data_path()) / "plugin_data"
+        return Path.cwd() / "data"
+
+    def _migrate_old_data(self) -> None:
+        old_root = Path.cwd() / "data" / PLUGIN_NAME
+        if not old_root.is_dir():
+            return
+        new_root = self._resolve_data_base() / PLUGIN_NAME
+        if new_root.is_dir():
+            return
+        try:
+            import shutil
+            shutil.copytree(str(old_root), str(new_root), symlinks=False)
+            logger.info("Migrated plugin page data from %s to %s", old_root, new_root)
+        except Exception as exc:
+            logger.warning("Failed to migrate old plugin page data from %s to %s: %s", old_root, new_root, exc)
 
     def _safe_status(self, status: dict[str, Any]) -> dict[str, Any]:
         safe = dict(status)
@@ -174,30 +225,59 @@ class WhatsAppAdapterPlugin(Star):
             safe["qrDataUrl"] = "<hidden>"
         return safe
 
-    def _enable_whatsapp_pre_ack(self) -> None:
-        try:
-            from astrbot.core.pipeline.preprocess_stage.stage import PreProcessStage
-        except Exception as exc:
-            logger.debug("WhatsApp pre-ack patch skipped; preprocess stage unavailable: %s", exc)
-            return
+    async def reload_config(self, new_config: dict | None = None) -> None:
+        if new_config:
+            self.config = {**BASE_GATEWAY_CONFIG, **dict(new_config)}
+        logger.info("WhatsApp plugin config reloaded: gateway=%s", self._base_url)
+        self.page_client.update_base_url(self._base_url)
+        from .whatsapp_adapter import get_active_whatsapp_adapters
 
-        constants = PreProcessStage.process.__code__.co_consts
-        for const in constants:
-            if isinstance(const, frozenset) and {"telegram", "lark", "discord"}.issubset(const):
-                if "whatsapp" in const:
-                    return
-                PreProcessStage.process.__code__ = PreProcessStage.process.__code__.replace(
-                    co_consts=tuple(
-                        (const | {"whatsapp"}) if item is const else item
-                        for item in constants
-                    )
+        for adapter in get_active_whatsapp_adapters():
+            try:
+                adapter._refresh_registered_commands()
+                await adapter.reload(adapter._platform_config)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to propagate plugin config reload to WhatsApp adapter %s: %s",
+                    getattr(adapter.meta(), "id", None),
+                    exc,
                 )
-                logger.info("WhatsApp pre-ack emoji support enabled")
+
+    async def initialize(self) -> None:
+        await super().initialize()
+        await self._restore_platform_adapters()
+
+    async def _restore_platform_adapters(self) -> None:
+        """After plugin reload, hot-swap adapter classes to use freshly imported code
+        without disrupting Gateway connection or runtime state."""
+        try:
+            pm = getattr(self.context, 'platform_manager', None)
+            if pm is None:
                 return
-        logger.debug("WhatsApp pre-ack patch skipped; supported platform set not found")
+            if not pm.platform_insts:
+                return
+            from .whatsapp_adapter import WhatsAppPlatformAdapter as NewAdapter
+            platform_configs = getattr(pm, 'platforms_config', [])
+            for config in platform_configs:
+                if config.get('type') != 'whatsapp' or not config.get('enable', False):
+                    continue
+                pid = config.get('id')
+                if not pid:
+                    continue
+                inst = self.context.get_platform_inst(pid)
+                if inst is None:
+                    continue
+                # Only swap if the instance still carries the old (pre-reload) class
+                if type(inst) is NewAdapter:
+                    continue
+                logger.info("Hot-swapping WhatsApp adapter class after plugin reload: id=%s", pid)
+                inst.__class__ = NewAdapter
+                inst.clear_errors()
+        except Exception as e:
+            logger.warning("Failed to hot-swap WhatsApp adapter class: %s", e)
 
     async def terminate(self):
-        logger.info("Terminating WhatsApp adapter plugin")
+        logger.info("Terminating WhatsApp adapter plugin (adapter managed by PlatformManager, keeping alive)")
         await self.page_client.close()
         if self.page_gateway_process:
             await self.page_gateway_process.stop()
