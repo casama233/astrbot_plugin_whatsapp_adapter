@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { mkdir, rm, stat } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, stat } from "node:fs/promises";
 import { createWriteStream, statSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -99,6 +99,87 @@ function resolveLidToPn(lidJid) {
     if (pnJid) return pnJid;
   }
   return null;
+}
+
+/**
+ * 從 auth 目錄載入磁碟上已有的 lid-mapping-*_reverse.json
+ * 在 Gateway 重啟時恢復 Lid→PN 映射，補償 Baileys 不重播既有映射事件。
+ */
+async function loadLidMappingsFromDisk() {
+  try {
+    const files = await readdir(authDir);
+    let loaded = 0;
+    for (const name of files) {
+      const match = name.match(/^lid-mapping-(\d+)_reverse\.json$/);
+      if (!match) continue;
+      try {
+        const content = await readFile(path.join(authDir, name), "utf-8");
+        const phone = JSON.parse(content);
+        if (phone && typeof phone === "string") {
+          const lid = `${match[1]}@lid`;
+          const pnJid = `${phone}@s.whatsapp.net`;
+          updateContact({ id: lid, jid: pnJid });
+          loaded++;
+        }
+      } catch {
+        // ignore malformed files
+      }
+    }
+    if (loaded) log.info({ loaded }, "loaded lid→pn mappings from disk on startup");
+  } catch (error) {
+    log.debug({ error }, "failed to load lid mappings from disk");
+  }
+}
+
+/**
+ * 等待 Lid→PN 映射事件到達，超時後返回 null。
+ * Baileys 在收到 Lid 訊息後會透過 contacts.upsert / lid-mapping.update / chats.phoneNumberShare
+ * 提供 Lid→PN 映射，但可能比 messages.upsert 稍晚到達。
+ */
+function waitForLidPnMapping(lidJid, timeoutMs) {
+  const existing = resolveLidToPn(lidJid);
+  if (existing) return Promise.resolve(existing);
+  return (async () => {
+    if (socket?.presenceSubscribe) {
+      try { await socket.presenceSubscribe(lidJid); } catch {}
+    }
+    const afterSubscribe = resolveLidToPn(lidJid);
+    if (afterSubscribe) return afterSubscribe;
+    return new Promise((resolve) => {
+      const EVENTS = ["contacts.upsert", "lid-mapping.update", "chats.phoneNumberShare"];
+      const timer = setTimeout(() => {
+        for (const evt of EVENTS) socket.ev.off(evt, handler);
+        resolve(resolveLidToPn(lidJid));
+      }, timeoutMs);
+      const handler = (...args) => {
+        const data = args[0];
+        let pn = null;
+        if (data && data.id === lidJid) {
+          pn = [data.jid, data.id].find((j) => j && j.endsWith("@s.whatsapp.net"));
+        } else if (data && data.lid === lidJid) {
+          pn = data.pn || data.pnJid || data.jid;
+        } else if (data && data.lidJid === lidJid) {
+          pn = data.pnJid || data.pn || data.jid;
+        }
+        if (!pn && Array.isArray(data)) {
+          const matched = data.find((c) => c.id === lidJid || c.lid === lidJid || c.jid === lidJid);
+          if (matched) pn = [matched.jid, matched.id].find((j) => j && j.endsWith("@s.whatsapp.net"));
+        }
+        if (pn) {
+          clearTimeout(timer);
+          for (const evt of EVENTS) socket.ev.off(evt, handler);
+          resolve(pn);
+        }
+      };
+      for (const evt of EVENTS) socket.ev.on(evt, handler);
+      const recheck = resolveLidToPn(lidJid);
+      if (recheck) {
+        clearTimeout(timer);
+        for (const evt of EVENTS) socket.ev.off(evt, handler);
+        resolve(recheck);
+      }
+    });
+  })();
 }
 
 /**
@@ -254,6 +335,10 @@ async function rememberGroupParticipants(chatJid) {
     for (const participant of metadata?.participants || []) {
       const jid = participant?.id || participant?.jid;
       rememberMentionIdentity(jid);
+      if (jid && String(jid).endsWith("@lid")) {
+        const resolved = resolveLidToPn(jid);
+        if (resolved) updateContact({ id: jid, jid: resolved });
+      }
     }
   } catch (error) {
     log.debug({ error, chatJid }, "failed to refresh group mention directory");
@@ -771,6 +856,16 @@ async function handleIncomingMessage(item, options = {}) {
   const fromMe = Boolean(primary.key.fromMe);
   const senderJid = primary.key.participant || chatJid;
   rememberMentionIdentity(senderJid, primary.pushName);
+  const pnSource = primary.key.senderPn || primary.key.participantPn || null;
+  if (pnSource && senderJid.endsWith("@lid")) {
+    let pnJid = String(pnSource).trim();
+    if (!pnJid.endsWith("@s.whatsapp.net")) {
+      const digits = pnJid.replace(/\D/g, "");
+      if (digits) pnJid = `${digits}@s.whatsapp.net`;
+      else pnJid = null;
+    }
+    if (pnJid) updateContact({ id: senderJid, jid: pnJid });
+  }
   rememberGroupParticipants(chatJid).catch(() => {});
   if (primary.message?.protocolMessage) {
     log.debug({ chatJid, messageId: primary.key.id, protocolType: primary.message.protocolMessage.type }, "ignored protocol message");
@@ -815,21 +910,58 @@ async function handleIncomingMessage(item, options = {}) {
       "rejected inbound WhatsApp message",
     );
     if (!isGroup && allowedResult.reason === "dm_allowlist") {
-      broadcast({
-        type: "rejected",
-        chatJid,
-        senderJid,
-        senderPn: primary.key.senderPn || null,
-        senderName: primary.pushName || senderJid,
-        senderPhone: allowedResult.senderPhone,
-        reason: allowedResult.reason,
-        fromMe,
-        messageId: primary.key.id,
-        text: textFromMessage(primary.message) || "",
-        timestamp: Number(primary.messageTimestamp || Date.now() / 1000),
-      });
+      if (!allowedResult.senderPhone && senderJid.endsWith("@lid")) {
+        const resolved = await waitForLidPnMapping(senderJid, 10000);
+        if (resolved) {
+          updateContact({ id: senderJid, jid: resolved });
+          const retry = allowedMessageResult(chatJid, senderJid, primary);
+          if (retry.allowed) {
+            allowedResult = retry;
+          } else {
+            broadcast({
+              type: "rejected",
+              chatJid, senderJid,
+              senderPn: primary.key.senderPn || null,
+              senderName: primary.pushName || senderJid,
+              senderPhone: retry.senderPhone,
+              reason: retry.reason, fromMe,
+              messageId: primary.key.id,
+              text: textFromMessage(primary.message) || "",
+              timestamp: Number(primary.messageTimestamp || Date.now() / 1000),
+            });
+            return;
+          }
+        } else {
+          broadcast({
+            type: "rejected",
+            chatJid, senderJid,
+            senderPn: primary.key.senderPn || null,
+            senderName: primary.pushName || senderJid,
+            senderPhone: "",
+            reason: "dm_allowlist_unresolved_lid", fromMe,
+            messageId: primary.key.id,
+            text: textFromMessage(primary.message) || "",
+            timestamp: Number(primary.messageTimestamp || Date.now() / 1000),
+          });
+          return;
+        }
+      } else {
+        broadcast({
+          type: "rejected",
+          chatJid, senderJid,
+          senderPn: primary.key.senderPn || null,
+          senderName: primary.pushName || senderJid,
+          senderPhone: allowedResult.senderPhone,
+          reason: allowedResult.reason, fromMe,
+          messageId: primary.key.id,
+          text: textFromMessage(primary.message) || "",
+          timestamp: Number(primary.messageTimestamp || Date.now() / 1000),
+        });
+        return;
+      }
+    } else {
+      return;
     }
-    return;
   }
   const contextInfo = contextInfoFromMessage(primary.message);
   const quotedInfo = quotedInfoFromContext(contextInfo);
@@ -1057,6 +1189,7 @@ async function startSocket() {
       await routeIncomingMessage(message).catch((error) => log.warn({ error }, "message handling failed"));
     }
   });
+  await loadLidMappingsFromDisk();
 }
 
 async function readJson(req) {

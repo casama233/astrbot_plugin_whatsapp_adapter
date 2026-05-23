@@ -91,6 +91,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "ignore_self_messages": False,
     "command_prefix": "/",
     "register_commands": True,
+    "pre_ack_private": True,
+    "pre_ack_public": True,
+    "pre_ack_emojis": "✍️",
+    "pre_ack_emoji": True,
     "media_max_mb": 50,
 }
 
@@ -124,6 +128,10 @@ CONFIG_KEY_ALIASES: dict[str, str] = {
     "忽略自身消息": "ignore_self_messages",
     "指令前缀": "command_prefix",
     "注册斜线指令": "register_commands",
+    "私聊预回应": "pre_ack_private",
+    "群聊预回应": "pre_ack_public",
+    "预回应表情列表": "pre_ack_emojis",
+    "启用预回应表情": "pre_ack_emoji",
     "媒体上传大小限制(MB)": "media_max_mb",
 }
 
@@ -302,6 +310,30 @@ CONFIG_METADATA: dict[str, Any] = {
         "group": "advanced",
         "hint": "将用户对消息的表情回应（emoji reaction）转为 AstrBot 事件。默认关闭。",
     },
+    "pre_ack_private": {
+        "description": "私聊预回应",
+        "type": "bool",
+        "group": "pre_ack",
+        "hint": "启用后，私聊收到消息时自动触发预回应表情。",
+    },
+    "pre_ack_public": {
+        "description": "群聊预回应",
+        "type": "bool",
+        "group": "pre_ack",
+        "hint": "启用后，群聊收到消息时自动触发预回应表情。",
+    },
+    "pre_ack_emojis": {
+        "description": "预回应表情列表",
+        "type": "string",
+        "group": "pre_ack",
+        "hint": "预回应时使用的 WhatsApp emoji，例如 💭、✍️。",
+    },
+    "pre_ack_emoji": {
+        "description": "启用预回应表情",
+        "type": "bool",
+        "group": "pre_ack",
+        "hint": "启用后，bot 收到消息时通过 WhatsApp emoji reaction 发出一条预回应。",
+    },
     "media_max_mb": {
         "description": "媒体上传大小限制 (MB)",
         "type": "float",
@@ -428,6 +460,22 @@ WHATSAPP_I18N_RESOURCES: dict[str, dict] = {
             "description": "入站表情回应事件",
             "hint": "将用户对消息的表情回应（emoji reaction）转为 AstrBot 事件。默认关闭。",
         },
+        "pre_ack_private": {
+            "description": "私聊预回应",
+            "hint": "启用后，私聊收到消息时自动触发预回应表情。",
+        },
+        "pre_ack_public": {
+            "description": "群聊预回应",
+            "hint": "启用后，群聊收到消息时自动触发预回应表情。",
+        },
+        "pre_ack_emojis": {
+            "description": "预回应表情列表",
+            "hint": "预回应时使用的 WhatsApp emoji，例如 💭、✍️。",
+        },
+        "pre_ack_emoji": {
+            "description": "启用预回应表情",
+            "hint": "启用后，bot 收到消息时通过 WhatsApp emoji reaction 发出一条预回应。",
+        },
         "media_max_mb": {
             "description": "媒体上传大小限制 (MB)",
             "hint": "上传到 WhatsApp Gateway 的单个媒体文件大小上限（MB）。预设 50。",
@@ -550,6 +598,22 @@ WHATSAPP_I18N_RESOURCES: dict[str, dict] = {
             "description": "Inbound reaction events",
             "hint": "Converts emoji reactions on messages to AstrBot events. Disabled by default.",
         },
+        "pre_ack_private": {
+            "description": "DM pre-ack",
+            "hint": "When enabled, private messages auto-trigger a pre-ack emoji reaction.",
+        },
+        "pre_ack_public": {
+            "description": "Group pre-ack",
+            "hint": "When enabled, group messages auto-trigger a pre-ack emoji reaction.",
+        },
+        "pre_ack_emojis": {
+            "description": "Pre-ack emojis",
+            "hint": "WhatsApp emojis used for pre-ack reactions, e.g. 💭, ✍️.",
+        },
+        "pre_ack_emoji": {
+            "description": "Enable pre-ack emoji",
+            "hint": "When enabled, the bot sends a WhatsApp emoji reaction for each message received.",
+        },
         "media_max_mb": {
             "description": "Media upload size limit (MB)",
             "hint": "Maximum size per media file uploaded to the WhatsApp Gateway (MB). Default 50.",
@@ -671,6 +735,22 @@ WHATSAPP_I18N_RESOURCES: dict[str, dict] = {
         "inbound_reaction_events": {
             "description": "入站表情回應事件",
             "hint": "將使用者對訊息的表情回應（emoji reaction）轉為 AstrBot 事件。預設關閉。",
+        },
+        "pre_ack_private": {
+            "description": "私聊預回應",
+            "hint": "啟用後，私聊收到訊息時自動觸發預回應表情。",
+        },
+        "pre_ack_public": {
+            "description": "群聊預回應",
+            "hint": "啟用後，群聊收到訊息時自動觸發預回應表情。",
+        },
+        "pre_ack_emojis": {
+            "description": "預回應表情列表",
+            "hint": "預回應時使用的 WhatsApp emoji，例如 💭、✍️。",
+        },
+        "pre_ack_emoji": {
+            "description": "啟用預回應表情",
+            "hint": "啟用後，bot 收到訊息時透過 WhatsApp emoji reaction 發出一條預回應。",
         },
         "media_max_mb": {
             "description": "媒體上傳大小限制 (MB)",
