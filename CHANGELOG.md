@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.2.3] - 2026-05-24
+
+### Changed
+- 統一預回復表情系統：移除舊 `ack_reaction_*` 配置鍵（DEFAULT_CONFIG / CONFIG_METADATA / i18n），全面改用 `pre_ack_*` 新系統
+- `pre_ack_public` 類型由 `bool` 改為 `string`，支援 `always` / `mentions` / `never` 三種模式，預設值改為 `mentions`
+- 所有 WhatsApp 日誌改為中文提示，移除冗餘 JSON dict 輸出，改用簡潔鍵值格式
+- Gateway 子進程管理支援跨平台（Windows 用 `taskkill /T`，Unix 用 `killpg` + `start_new_session`）
+
+### Fixed
+- 熱重載時 `_ACTIVE_ADAPTERS` 未正確維護（缺少 add/discard），導致重複實例
+- 熱重載時未刷新已註冊指令列表
+- `_normalize_phone` 空字串誤加 `+` 前綴
+- `pre_ack_public` 預設回退值與 `DEFAULT_CONFIG` 不一致（`True` → `"mentions"`）
+- `WhatsAppGatewayClient` session 建立缺少鎖保護，可能出現競態條件
+
+### Added
+- `_coerce_str_list()`：統一解析 `allow_from`/`groups` 等多種格式（JSON 陣列、逗號/換行分隔字串）
+- `_normalize_config_value()`：按 key 自動歸一化配置值
+- `_group_pre_ack_mode()`：集中解析群組預確認模式
+- 全局執行時註冊表 `_runtime_owner_registry()`：自動終止衝突的舊適配器實例
+
 ## [0.2.2] - 2026-05-23
 
 ### Fixed
