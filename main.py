@@ -258,7 +258,7 @@ class WhatsAppAdapterPlugin(Star):
                 return
             if not pm.platform_insts:
                 return
-            from .whatsapp_adapter import WhatsAppPlatformAdapter as NewAdapter
+            from .whatsapp_adapter import _ACTIVE_ADAPTERS, WhatsAppPlatformAdapter as NewAdapter
             platform_configs = getattr(pm, 'platforms_config', [])
             for config in platform_configs:
                 if config.get('type') != 'whatsapp' or not config.get('enable', False):
@@ -283,10 +283,12 @@ class WhatsAppAdapterPlugin(Star):
                     except (asyncio.CancelledError, asyncio.TimeoutError):
                         pass
                 inst.__class__ = NewAdapter
+                _ACTIVE_ADAPTERS.add(inst)
                 inst.clear_errors()
                 inst._stopped.clear()
                 inst._reconnect_event.clear()
                 inst._force_gateway_restart = True
+                inst._refresh_registered_commands()
                 inst._run_task = asyncio.create_task(inst.run())
                 logger.info("Restarted WhatsApp adapter run loop after hot-swap: id=%s", pid)
         except Exception as e:

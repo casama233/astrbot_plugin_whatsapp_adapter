@@ -941,6 +941,7 @@ class WhatsAppPlatformAdapter(Platform):
             except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
         await self._shutdown_gateway_transport()
+        _ACTIVE_ADAPTERS.discard(self)
         self._status = PlatformStatus.STOPPED
 
     async def convert_message(self, data: dict[str, Any]) -> AstrBotMessage | None:
@@ -1040,13 +1041,14 @@ class WhatsAppPlatformAdapter(Platform):
         reaction_level = str(self.config.get("reaction_level", "ack") or "ack")
         pre_ack_enabled = bool(self.config.get("pre_ack_emoji", True))
         pre_ack_private = bool(self.config.get("pre_ack_private", True))
-        pre_ack_public_raw = self.config.get("pre_ack_public", True)
-        if isinstance(pre_ack_public_raw, str):
-            pre_ack_public = pre_ack_public_raw.lower() not in ("never", "false", "0", "no", "none")
-        else:
-            pre_ack_public = bool(pre_ack_public_raw)
         if pre_ack_enabled and reaction_level != "off" and sender_allowed and not is_reaction_only:
-            should_ack = pre_ack_private if is_private else pre_ack_public
+            if is_private:
+                should_ack = pre_ack_private
+            else:
+                group_mode = self._group_pre_ack_mode()
+                should_ack = group_mode == "always" or (
+                    group_mode == "mentions" and (is_self_mentioned or is_reply_to_self or is_command)
+                )
             if should_ack:
                 if not is_command:
                     event.is_at_or_wake_command = True
@@ -1220,7 +1222,7 @@ class WhatsAppPlatformAdapter(Platform):
 
         def _normalize_phone(value: str) -> str:
             digits = re.sub(r"\D", "", value)
-            return f"+{digits}" if digits and not digits.startswith("+") else digits
+            return f"+{digits}" if digits else ""
 
         def _allowed_by(value: str, allow_list: list) -> bool:
             if not allow_list:
@@ -1242,20 +1244,20 @@ class WhatsAppPlatformAdapter(Platform):
                 return False
             if policy == "open":
                 return True
-            allow_from = self.config.get("allow_from") or []
+            allow_from = self._coerce_str_list(self.config.get("allow_from"))
             return any(_allowed_by(c, allow_from) for c in candidates)
 
         policy = self.config.get("group_policy", "disabled")
         if policy == "disabled":
             return False
-        groups = self.config.get("groups") or []
+        groups = self._coerce_str_list(self.config.get("groups"))
         if groups and "*" not in groups and chat_jid not in groups:
             return False
         if policy == "open":
             return True
-        group_allow_from = self.config.get("group_allow_from") or []
+        group_allow_from = self._coerce_str_list(self.config.get("group_allow_from"))
         if not group_allow_from:
-            group_allow_from = self.config.get("allow_from") or []
+            group_allow_from = self._coerce_str_list(self.config.get("allow_from"))
         return any(_allowed_by(c, group_allow_from) for c in candidates)
 
     def _message_mentions_self(self, data: dict[str, Any]) -> bool:
@@ -1398,8 +1400,54 @@ class WhatsAppPlatformAdapter(Platform):
     def _normalize_config(self, config: dict[str, Any]) -> dict[str, Any]:
         normalized: dict[str, Any] = {}
         for key, value in config.items():
-            normalized[CONFIG_KEY_ALIASES.get(key, key)] = value
+            normalized_key = CONFIG_KEY_ALIASES.get(key, key)
+            normalized[normalized_key] = self._normalize_config_value(normalized_key, value)
         return normalized
+
+    def _normalize_config_value(self, key: str, value: Any) -> Any:
+        if key in {"allow_from", "group_allow_from", "groups"}:
+            return self._coerce_str_list(value)
+        if key == "pre_ack_public":
+            if isinstance(value, str):
+                normalized = value.strip().lower()
+                if normalized in {"mentions", "always", "never"}:
+                    return normalized
+                if normalized in {"true", "1", "yes", "on"}:
+                    return "always"
+                if normalized in {"false", "0", "no", "off", "none"}:
+                    return "never"
+            return value
+        return value
+
+    def _coerce_str_list(self, value: Any) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()]
+        if isinstance(value, (tuple, set)):
+            return [str(item).strip() for item in value if str(item).strip()]
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return []
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                parsed = None
+            if isinstance(parsed, list):
+                return [str(item).strip() for item in parsed if str(item).strip()]
+            if "\n" in text or "\r" in text or "," in text or "，" in text or ";" in text:
+                parts = re.split(r"[\r\n,，;]+", text)
+                return [part.strip() for part in parts if part.strip()]
+            return [text]
+        return [str(value).strip()] if str(value).strip() else []
+
+    def _group_pre_ack_mode(self) -> str:
+        value = self.config.get("pre_ack_public", True)
+        normalized = self._normalize_config_value("pre_ack_public", value)
+        if isinstance(normalized, str) and normalized in {"mentions", "always", "never"}:
+            return normalized
+        return "always" if bool(normalized) else "never"
 
     def _load_plugin_config(self) -> dict[str, Any]:
         config_path = self._data_dir() / "config.json"

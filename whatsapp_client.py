@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import subprocess
 from pathlib import Path
 from typing import Any, AsyncIterator
 
@@ -291,23 +292,45 @@ class GatewayProcess:
                 "WA_LOG_LEVEL": self.log_level,
             }
         )
+        creation_flags = 0
+        extra_kwargs: dict[str, Any] = {}
+        if os.name == "nt":
+            creation_flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            if creation_flags:
+                extra_kwargs["creationflags"] = creation_flags
+        else:
+            extra_kwargs["start_new_session"] = True
         self.process = await asyncio.create_subprocess_exec(
             self.node_executable,
             str(self.script_path),
             cwd=str(self.script_path.parent.parent),
             env=env,
-            start_new_session=True,
+            **extra_kwargs,
         )
 
     async def stop(self) -> None:
         if not self.process or self.process.returncode is not None:
             self.process = None
             return
-        try:
-            pgid = os.getpgid(self.process.pid)
-        except (ProcessLookupError, OSError):
-            pgid = None
-        if pgid is not None and pgid != os.getpgid(os.getpid()):
+        pgid = None
+        current_pgid = None
+        if os.name != "nt" and hasattr(os, "getpgid"):
+            try:
+                pgid = os.getpgid(self.process.pid)
+            except (ProcessLookupError, OSError):
+                pgid = None
+            try:
+                current_pgid = os.getpgid(os.getpid())
+            except (ProcessLookupError, OSError):
+                current_pgid = None
+        if os.name == "nt":
+            if not await self._taskkill_process_tree(force=False):
+                try:
+                    self.process.terminate()
+                except ProcessLookupError:
+                    self.process = None
+                    return
+        elif pgid is not None and current_pgid is not None and pgid != current_pgid and hasattr(os, "killpg"):
             try:
                 os.killpg(pgid, 15)
             except (ProcessLookupError, OSError):
@@ -321,7 +344,9 @@ class GatewayProcess:
         try:
             await asyncio.wait_for(self.process.wait(), timeout=10)
         except asyncio.TimeoutError:
-            if pgid is not None and pgid != os.getpgid(os.getpid()):
+            if os.name == "nt":
+                await self._taskkill_process_tree(force=True)
+            elif pgid is not None and current_pgid is not None and pgid != current_pgid and hasattr(os, "killpg"):
                 try:
                     os.killpg(pgid, 9)
                 except (ProcessLookupError, OSError):
@@ -336,3 +361,24 @@ class GatewayProcess:
             except Exception:
                 pass
         self.process = None
+
+    async def _taskkill_process_tree(self, force: bool) -> bool:
+        if os.name != "nt" or not self.process or self.process.returncode is not None:
+            return False
+        args = ["taskkill", "/PID", str(self.process.pid), "/T"]
+        if force:
+            args.append("/F")
+        try:
+            killer = await asyncio.create_subprocess_exec(
+                *args,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+        except FileNotFoundError:
+            return False
+        try:
+            await asyncio.wait_for(killer.wait(), timeout=5)
+        except asyncio.TimeoutError:
+            killer.kill()
+            await killer.wait()
+        return True
