@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import builtins
 import json
 import os
 import random
@@ -51,6 +52,14 @@ from .whatsapp_helpers import (
 
 PLUGIN_DIR = Path(__file__).resolve().parent
 _ACTIVE_ADAPTERS: weakref.WeakSet["WhatsAppPlatformAdapter"] = weakref.WeakSet()
+
+
+def _runtime_owner_registry() -> dict[str, weakref.ReferenceType["WhatsAppPlatformAdapter"]]:
+    registry = getattr(builtins, "_whatsapp_adapter_runtime_registry", None)
+    if registry is None:
+        registry = {}
+        setattr(builtins, "_whatsapp_adapter_runtime_registry", registry)
+    return registry
 
 LOGO_ABSOLUTE = str(PLUGIN_DIR / "logo.svg")
 
@@ -794,6 +803,7 @@ class WhatsAppPlatformAdapter(Platform):
         if self._stopped.is_set():
             self._stopped.clear()
             self._reconnect_event.clear()
+        await self._claim_runtime_owner()
         logger.info("Starting WhatsApp platform adapter run loop: gateway=%s", self._base_url)
         try:
             while not self._stopped.is_set():
@@ -857,6 +867,7 @@ class WhatsAppPlatformAdapter(Platform):
             raise
         finally:
             await self._shutdown_gateway_transport()
+            self._release_runtime_owner()
 
     async def reload(self, platform_config: dict[str, Any]) -> None:
         """熱重載平台配置：重啟 Gateway 進程以確保載入最新 Gateway 代碼與配置。"""
@@ -884,6 +895,7 @@ class WhatsAppPlatformAdapter(Platform):
             except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
         await self._shutdown_gateway_transport()
+        self._release_runtime_owner()
         _ACTIVE_ADAPTERS.discard(self)
         self._status = PlatformStatus.STOPPED
 
@@ -1526,11 +1538,43 @@ class WhatsAppPlatformAdapter(Platform):
     def _gateway_connection_signature(self) -> tuple[Any, ...]:
         return (
             self._base_url,
+            str(self.config.get("id") or "whatsapp"),
             str(self.config.get("node_executable") or "node"),
             str(self._auth_dir()),
             str(self.config.get("log_level") or "info"),
             bool(self.config.get("auto_start_gateway", True)),
         )
+
+    def _runtime_owner_key(self) -> str:
+        return "|".join(str(part) for part in self._gateway_connection_signature())
+
+    async def _claim_runtime_owner(self) -> None:
+        registry = _runtime_owner_registry()
+        key = self._runtime_owner_key()
+        existing_ref = registry.get(key)
+        existing = existing_ref() if existing_ref else None
+        if existing is self:
+            return
+        if existing is not None:
+            logger.warning(
+                "Found stale WhatsApp adapter runtime owner, terminating previous instance: key=%s old_id=%s new_id=%s",
+                key,
+                getattr(existing.meta(), "id", None) if hasattr(existing, "meta") else None,
+                getattr(self.meta(), "id", None),
+            )
+            try:
+                await existing.terminate()
+            except Exception as exc:
+                logger.warning("Failed to terminate stale WhatsApp adapter runtime owner: key=%s error=%s", key, exc)
+        registry[key] = weakref.ref(self)
+
+    def _release_runtime_owner(self) -> None:
+        registry = _runtime_owner_registry()
+        key = self._runtime_owner_key()
+        existing_ref = registry.get(key)
+        existing = existing_ref() if existing_ref else None
+        if existing is self or existing is None:
+            registry.pop(key, None)
 
     def _start_health_monitor(self) -> None:
         interval = int(self.config.get("gateway_health_check_interval") or 0)
