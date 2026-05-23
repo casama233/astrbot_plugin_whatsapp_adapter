@@ -83,9 +83,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "mark_online": False,
     "gateway_health_check_interval": 60,
     "reaction_level": "ack",
-    "ack_reaction_emoji": "👀",
-    "ack_reaction_direct": True,
-    "ack_reaction_group": "mentions",
     "remove_ack_after_reply": False,
     "parse_inbound_formatting": True,
     "inbound_reaction_events": False,
@@ -279,24 +276,6 @@ CONFIG_METADATA: dict[str, Any] = {
         "group": "pre_ack",
         "hint": "off=禁用所有反应；ack=仅预回应回应（收到消息时先发表情）；minimal=回应+LLM可发保守表情；extensive=回应+LLM可用更多表情。",
     },
-    "ack_reaction_emoji": {
-        "description": "预回应表情",
-        "type": "string",
-        "group": "pre_ack",
-        "hint": "预回应时使用的 WhatsApp emoji，例如 👀、✍️。",
-    },
-    "ack_reaction_direct": {
-        "description": "私聊启用手动回应",
-        "type": "bool",
-        "group": "pre_ack",
-        "hint": "关闭后，私聊消息不会自动触发预回应表情。",
-    },
-    "ack_reaction_group": {
-        "description": "群组回应模式",
-        "type": "string",
-        "group": "pre_ack",
-        "hint": "always=群聊始终触发预回应；mentions=仅被 @ 或回复时触发；never=群聊不触发预回应。",
-    },
     "remove_ack_after_reply": {
         "description": "回复后清除回应",
         "type": "bool",
@@ -322,10 +301,10 @@ CONFIG_METADATA: dict[str, Any] = {
         "hint": "启用后，私聊收到消息时自动触发预回应表情。",
     },
     "pre_ack_public": {
-        "description": "群聊预回应",
-        "type": "bool",
+        "description": "群聊预回应模式",
+        "type": "string",
         "group": "pre_ack",
-        "hint": "启用后，群聊收到消息时自动触发预回应表情。",
+        "hint": "always=始终触发预回应；mentions=仅被 @ 或回复时触发；never=不触发预回应。",
     },
     "pre_ack_emojis": {
         "description": "预回应表情列表",
@@ -441,18 +420,6 @@ WHATSAPP_I18N_RESOURCES: dict[str, dict] = {
             "description": "反应级别",
             "hint": "off=禁用所有反应；ack=仅预回应（收到消息时先发表情）；minimal=回应+LLM可发保守表情；extensive=回应+LLM可用更多表情。",
         },
-        "ack_reaction_emoji": {
-            "description": "预回应表情",
-            "hint": "预回应时使用的 WhatsApp emoji，例如 👀、✍️。",
-        },
-        "ack_reaction_direct": {
-            "description": "私聊启用手动回应",
-            "hint": "关闭后，私聊消息不会自动触发预回应表情。",
-        },
-        "ack_reaction_group": {
-            "description": "群组回应模式",
-            "hint": "always=群聊始终触发预回应；mentions=仅被 @ 或回复时触发；never=群聊不触发预回应。",
-        },
         "remove_ack_after_reply": {
             "description": "回复后清除回应",
             "hint": "启用后，机器人发送回复后自动清除预回应表情，不留残留在消息上。",
@@ -470,8 +437,8 @@ WHATSAPP_I18N_RESOURCES: dict[str, dict] = {
             "hint": "启用后，私聊收到消息时自动触发预回应表情。",
         },
         "pre_ack_public": {
-            "description": "群聊预回应",
-            "hint": "启用后，群聊收到消息时自动触发预回应表情。",
+            "description": "群聊预回应模式",
+            "hint": "always=始终触发预回应；mentions=仅被 @ 或回复时触发；never=不触发预回应。",
         },
         "pre_ack_emojis": {
             "description": "预回应表情列表",
@@ -579,18 +546,6 @@ WHATSAPP_I18N_RESOURCES: dict[str, dict] = {
             "description": "Reaction level",
             "hint": "off=no reactions; ack=pre-ack only; minimal=ack + conservative agent reactions; extensive=ack + more agent reactions.",
         },
-        "ack_reaction_emoji": {
-            "description": "Pre-ack emoji",
-            "hint": "WhatsApp emoji used for pre-ack reactions, e.g. 👀, ✍️.",
-        },
-        "ack_reaction_direct": {
-            "description": "Enable DM pre-ack",
-            "hint": "When disabled, DMs will not auto-trigger a pre-ack emoji reaction.",
-        },
-        "ack_reaction_group": {
-            "description": "Group pre-ack mode",
-            "hint": "always=always react in groups; mentions=only on @mentions or replies; never=no group pre-ack.",
-        },
         "remove_ack_after_reply": {
             "description": "Remove ack after reply",
             "hint": "When enabled, the pre-ack emoji is removed after the bot sends its reply.",
@@ -608,8 +563,8 @@ WHATSAPP_I18N_RESOURCES: dict[str, dict] = {
             "hint": "When enabled, private messages auto-trigger a pre-ack emoji reaction.",
         },
         "pre_ack_public": {
-            "description": "Group pre-ack",
-            "hint": "When enabled, group messages auto-trigger a pre-ack emoji reaction.",
+            "description": "Group pre-ack mode",
+            "hint": "always=always react; mentions=only on @mentions or replies; never=no pre-ack.",
         },
         "pre_ack_emojis": {
             "description": "Pre-ack emojis",
@@ -717,18 +672,6 @@ WHATSAPP_I18N_RESOURCES: dict[str, dict] = {
             "description": "反應級別",
             "hint": "off=停用所有反應；ack=僅預回應（收到訊息時先發表情）；minimal=回應+LLM可發保守表情；extensive=回應+LLM可用更多表情。",
         },
-        "ack_reaction_emoji": {
-            "description": "預回應表情",
-            "hint": "預回應時使用的 WhatsApp emoji，例如 👀、✍️。",
-        },
-        "ack_reaction_direct": {
-            "description": "私聊啟用預回應",
-            "hint": "關閉後，私聊訊息不會自動觸發預回應表情。",
-        },
-        "ack_reaction_group": {
-            "description": "群組回應模式",
-            "hint": "always=群聊始終觸發預回應；mentions=僅被 @ 或回覆時觸發；never=群聊不觸發預回應。",
-        },
         "remove_ack_after_reply": {
             "description": "回覆後清除回應",
             "hint": "啟用後，機器人傳送回覆後自動清除預回應表情，不留殘留在訊息上。",
@@ -746,8 +689,8 @@ WHATSAPP_I18N_RESOURCES: dict[str, dict] = {
             "hint": "啟用後，私聊收到訊息時自動觸發預回應表情。",
         },
         "pre_ack_public": {
-            "description": "群聊預回應",
-            "hint": "啟用後，群聊收到訊息時自動觸發預回應表情。",
+            "description": "群聊預回應模式",
+            "hint": "always=始終觸發預回應；mentions=僅被 @ 或回覆時觸發；never=不觸發預回應。",
         },
         "pre_ack_emojis": {
             "description": "預回應表情列表",
