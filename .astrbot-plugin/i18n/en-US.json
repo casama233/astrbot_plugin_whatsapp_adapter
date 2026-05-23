@@ -27,38 +27,115 @@
     "log_level": {
       "description": "Gateway log level"
     },
-    "allow_from": {
-      "description": "Default DM allowlist",
-      "hint": "Used by platform instances that keep the built-in default. Use E.164 numbers like +15551234567. Use * only if you intentionally accept all DMs."
-    },
     "dm_policy": {
-      "description": "Default DM policy",
-      "hint": "Used by platform instances that keep the built-in default. allowlist only allows allow_from; open requires allow_from to contain *; disabled rejects DMs."
+      "description": "DM policy",
+      "hint": "allowlist only allows allow_from; open requires allow_from to contain *; disabled rejects DMs."
+    },
+    "allow_from": {
+      "description": "DM allowlist",
+      "hint": "Use E.164 numbers like +15551234567. Use * only if you intentionally accept all DMs."
     },
     "group_policy": {
-      "description": "Default group sender policy",
-      "hint": "Used by platform instances that keep the built-in default. disabled by default. allowlist checks group_allow_from or allow_from."
-    },
-    "group_allow_from": {
-      "description": "Default group sender allowlist",
-      "hint": "Used by platform instances that keep the built-in default. Falls back to allow_from when empty."
+      "description": "Group sender policy",
+      "hint": "allowlist checks group_allow_from or allow_from; open allows joined groups; disabled rejects groups."
     },
     "groups": {
-      "description": "Default allowed group JIDs",
-      "hint": "Used by platform instances that keep the built-in default. Use WhatsApp group JIDs like 120363...@g.us. Use * to allow all groups."
+      "description": "Allowed group JIDs",
+      "hint": "Use WhatsApp group JIDs like 120363...@g.us. Use * to allow all groups."
     },
-    "send_read_receipts": {
-      "description": "Default read receipts"
+    "group_allow_from": {
+      "description": "Group sender allowlist",
+      "hint": "Falls back to DM allowlist when empty."
     },
-    "mark_online": {
-      "description": "Default online presence",
-      "hint": "Marks WhatsApp Web as online/available after connecting. Disable for invisible-style operation."
+    "command_prefix": {
+      "description": "Command prefix",
+      "hint": "Prefix for WhatsApp slash commands, default /. e.g. /help triggers the registered help command."
     },
-    "text_chunk_limit": {
-      "description": "Default outbound text chunk length"
+    "register_commands": {
+      "description": "Register slash commands",
+      "hint": "When enabled, inbound messages matching registered CommandFilter names are marked as wake commands."
+    },
+    "pre_ack_private": {
+      "description": "DM pre-ack emoji",
+      "hint": "When enabled, private messages auto-trigger a pre-ack emoji reaction."
+    },
+    "pre_ack_public": {
+      "description": "Group pre-ack emoji",
+      "hint": "When enabled, group messages auto-trigger a pre-ack emoji reaction."
+    },
+    "pre_ack_emojis": {
+      "description": "Pre-ack emojis",
+      "hint": "WhatsApp emojis used for pre-ack reactions."
+    },
+    "pre_ack_emoji": {
+      "description": "Enable pre-ack emoji",
+      "hint": "When enabled, the bot sends a WhatsApp emoji reaction for each message received."
     },
     "media_max_mb": {
-      "description": "Default media size limit in MB"
+      "description": "Media upload size limit (MB)",
+      "hint": "Maximum size per media file uploaded to the WhatsApp Gateway (MB)."
+    },
+    "typing_indicator": {
+      "description": "Typing indicator",
+      "hint": "When enabled, sends a composing presence before replying and restores available after sending."
+    },
+    "send_read_receipts": {
+      "description": "Send read receipts"
+    },
+    "mark_online": {
+      "description": "Online presence",
+      "hint": "Marks WhatsApp Web as online/available after connecting. Disable for invisible-style operation."
+    },
+    "media_caption_mode": {
+      "description": "Media text mode",
+      "hint": "separate=text and media sent separately; caption=text immediately before media becomes the caption."
+    },
+    "text_chunk_limit": {
+      "description": "Outbound text chunk length"
+    },
+    "link_preview_single_url": {
+      "description": "Single URL link preview",
+      "hint": "Enable WhatsApp link preview only when a plain text message contains exactly one URL."
+    },
+    "ignore_self_messages": {
+      "description": "Ignore self messages",
+      "hint": "When enabled, messages where the sender JID matches the bot's own JID are ignored. Solves the same-number self-@mention and self-DM problem."
+    },
+    "parse_inbound_formatting": {
+      "description": "Parse inbound WhatsApp formatting",
+      "hint": "Convert inbound *bold* _italic_ ~strike~ ```code``` to Markdown for the LLM."
+    },
+    "media_album_debounce_seconds": {
+      "description": "Media album debounce (seconds)",
+      "hint": "Merge multiple images from the same sender within this window into one message; 0 disables. Default 2.5."
+    },
+    "reaction_level": {
+      "description": "Reaction level",
+      "hint": "off=no reactions; ack=pre-ack only; minimal=ack + conservative agent reactions; extensive=ack + encouraged agent reactions."
+    },
+    "ack_reaction_emoji": {
+      "description": "Ack reaction emoji",
+      "hint": "Emoji to use for the pre-ack reaction."
+    },
+    "ack_reaction_direct": {
+      "description": "Enable ack in DMs",
+      "hint": "When disabled, DMs will not auto-trigger a pre-ack emoji."
+    },
+    "ack_reaction_group": {
+      "description": "Group ack mode",
+      "hint": "always=always ack in groups; mentions=only on @mentions/replies; never=no group ack."
+    },
+    "remove_ack_after_reply": {
+      "description": "Remove ack after reply",
+      "hint": "When enabled, the pre-ack emoji is cleared after the bot sends its reply."
+    },
+    "gateway_health_check_interval": {
+      "description": "Gateway health check interval",
+      "hint": "Background health check interval in seconds. Set to 0 to disable."
+    },
+    "inbound_reaction_events": {
+      "description": "Inbound reaction events",
+      "hint": "Emit AstrBot events for emoji reactions on messages; disable to ignore reaction-only updates."
     }
   },
   "pages": {

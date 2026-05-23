@@ -1,82 +1,281 @@
 const bridge = window.AstrBotPluginPage;
 
-const statusBadge = document.getElementById("statusBadge");
-const statusText = document.getElementById("statusText");
-const selfJid = document.getElementById("selfJid");
-const authDir = document.getElementById("authDir");
-const qrWrap = document.getElementById("qrWrap");
-const qrHint = document.getElementById("qrHint");
-const output = document.getElementById("output");
+// ─── DOM refs ───
+const els = {
+  // Dashboard metrics
+  metricStatusText: document.getElementById("metricStatusText"),
+  metricStatusSub: document.getElementById("metricStatusSub"),
+  healthDot: document.getElementById("healthDot"),
+  metricGatewayText: document.getElementById("metricGatewayText"),
+  metricGatewaySub: document.getElementById("metricGatewaySub"),
+  gatewayDot: document.getElementById("gatewayDot"),
+  metricAccountText: document.getElementById("metricAccountText"),
+  metricAccountSub: document.getElementById("metricAccountSub"),
+  metricUptimeText: document.getElementById("metricUptimeText"),
+  metricUptimeSub: document.getElementById("metricUptimeSub"),
+  // Session info
+  statusText: document.getElementById("statusText"),
+  selfJid: document.getElementById("selfJid"),
+  selfLid: document.getElementById("selfLid"),
+  authDir: document.getElementById("authDir"),
+  gatewayUrl: document.getElementById("gatewayUrl"),
+  configuredStatus: document.getElementById("configuredStatus"),
+  // Policy
+  policyDm: document.getElementById("policyDm"),
+  policyGroup: document.getElementById("policyGroup"),
+  policyAllowFrom: document.getElementById("policyAllowFrom"),
+  policyGroups: document.getElementById("policyGroups"),
+  // QR
+  qrWrap: document.getElementById("qrWrap"),
+  qrHint: document.getElementById("qrHint"),
+  qrPhase: document.getElementById("qrPhase"),
+  // Log
+  eventLog: document.getElementById("eventLog"),
+  // Buttons
+  refreshBtn: document.getElementById("refresh"),
+  refreshQrBtn: document.getElementById("refreshQr"),
+  restartBtn: document.getElementById("restart"),
+  logoutBtn: document.getElementById("logout"),
+  clearLogBtn: document.getElementById("clearLog"),
+  refreshCountdown: document.getElementById("refreshCountdown"),
+  liveDot: document.getElementById("liveDot"),
+};
 
-function setOutput(value) {
-  output.textContent = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+// ─── State ───
+let countdown = 5;
+let countdownTimer = null;
+
+// ─── Helpers ───
+function fmtTime() {
+  const d = new Date();
+  return d.toLocaleTimeString("zh-CN", { hour12: false });
 }
 
-function renderStatus(data) {
+function trunc(s, n = 48) {
+  if (!s) return "-";
+  const t = String(s);
+  return t.length > n ? t.slice(0, n) + "…" : t;
+}
+
+function plural(n, label = "项") {
+  const v = Array.isArray(n) ? n.length : Number(n);
+  return v === 0 ? "无" : `${v} ${label}`;
+}
+
+function setDot(el, state) {
+  el.className = "status-dot" + (el.classList.contains("status-dot-sm") ? " status-dot-sm" : "");
+  if (state === "green") el.classList.add("green");
+  else if (state === "yellow") el.classList.add("yellow");
+  else if (state === "red") el.classList.add("red");
+  else el.classList.add("gray");
+}
+
+function setTag(el, state, label) {
+  el.className = "status-tag";
+  if (state === "green") el.classList.add("green");
+  else if (state === "yellow") el.classList.add("yellow");
+  else if (state === "red") el.classList.add("red");
+  else el.classList.add("gray");
+  el.textContent = label;
+}
+
+// ─── Log ───
+function log(level, msg) {
+  const empty = els.eventLog.querySelector(".log-empty");
+  if (empty) empty.remove();
+
+  const entry = document.createElement("div");
+  entry.className = "log-entry";
+  entry.innerHTML = `<span class="log-time">${fmtTime()}</span><span class="log-msg ${level}">${msg}</span>`;
+  els.eventLog.appendChild(entry);
+  els.eventLog.scrollTop = els.eventLog.scrollHeight;
+
+  while (els.eventLog.children.length > 100) {
+    els.eventLog.firstChild.remove();
+  }
+}
+
+// ─── Render dashboard ───
+function renderDashboard(data) {
+  // Connection status metric
   const status = data.status || (data.ready ? "connected" : "unknown");
-  statusText.textContent = status;
-  selfJid.textContent = data.selfJid || "-";
-  authDir.textContent = data.authDir || "-";
+  const isReady = data.ready || status === "connected";
+  const isStarting = status === "starting" || data.hasQr;
+  const isError = !isReady && !isStarting;
 
-  statusBadge.className = "badge";
-  if (data.ready || status === "connected") {
-    statusBadge.classList.add("badge-ok");
-    statusBadge.textContent = "已连接";
-  } else if (data.hasQr || status === "starting") {
-    statusBadge.classList.add("badge-warn");
-    statusBadge.textContent = "等待扫码";
+  els.metricStatusText.textContent = isReady ? "已连接" : isStarting ? "等待连接" : "断开";
+  els.metricStatusSub.textContent = status;
+  setDot(els.healthDot, isReady ? "green" : isStarting ? "yellow" : "red");
+
+  // Gateway health metric
+  const gwHealthy = data.gatewayHealthy !== undefined ? data.gatewayHealthy : data.ok;
+  els.metricGatewayText.textContent = gwHealthy ? "正常" : "异常";
+  els.metricGatewaySub.textContent = gwHealthy && isReady ? "运行中" : "待连接";
+  setDot(els.gatewayDot, gwHealthy ? (isReady ? "green" : "yellow") : "red");
+
+  // Account metric
+  els.metricAccountText.textContent = data.selfJid ? trunc(data.selfJid, 28) : "-";
+  els.metricAccountSub.textContent = data.selfJid ? "WhatsApp 账号" : "未登录";
+
+  // Uptime metric
+  if (data.lastPresenceAt) {
+    const t = data.lastPresenceAt.replace("T", " ").split(".")[0];
+    els.metricUptimeText.textContent = t;
+    els.metricUptimeSub.textContent = "最后在线";
   } else {
-    statusBadge.classList.add("badge-muted");
-    statusBadge.textContent = status;
+    els.metricUptimeText.textContent = isReady ? "在线" : "-";
+    els.metricUptimeSub.textContent = isReady ? "当前在线" : "无数据";
   }
 }
 
+// ─── Render session info ───
+function renderSession(data) {
+  const status = data.status || (data.ready ? "connected" : "unknown");
+  const isReady = data.ready || status === "connected";
+  const isStarting = status === "starting" || data.hasQr;
+
+  setTag(els.statusText,
+    isReady ? "green" : isStarting ? "yellow" : "red",
+    isReady ? "已连接" : isStarting ? "等待连接" : status);
+
+  els.selfJid.textContent = data.selfJid || "-";
+  els.selfLid.textContent = data.selfLid || "-";
+  els.authDir.textContent = data.authDir || "-";
+  els.gatewayUrl.textContent = data.baseUrl || "-";
+  els.configuredStatus.textContent = data.config ? "✓ 已配置" : "✗ 未同步";
+
+  // Policy
+  const cfg = data.config || {};
+  els.policyDm.textContent = cfg.dmPolicy || "-";
+  els.policyGroup.textContent = cfg.groupPolicy || "-";
+  els.policyAllowFrom.textContent = Array.isArray(cfg.allowFrom) ? plural(cfg.allowFrom, "个号码") : "-";
+  els.policyGroups.textContent = Array.isArray(cfg.groups) ? plural(cfg.groups, "个群") : "-";
+}
+
+// ─── Render QR ───
 function renderQr(data) {
-  qrWrap.innerHTML = "";
   if (data.ready) {
-    qrWrap.innerHTML = '<div class="placeholder">WhatsApp 已连接，无需扫码。</div>';
-    qrHint.textContent = "如需更换账号，请点击「登出并重新扫码」。";
+    els.qrWrap.innerHTML = `
+      <div class="qr-placeholder connected">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#25D366" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+        <p style="font-weight:600">WhatsApp 已连接</p>
+        <p style="font-size:0.85rem;color:#1b7a42">无需扫码。如需更换账号请点击「登出」。</p>
+      </div>`;
+    els.qrPhase.textContent = "已连接";
+    els.qrPhase.className = "phase-badge connected";
+    els.qrHint.textContent = "如需更换账号，请点击「登出并重新扫码」。";
     return;
   }
+
   if (data.qrDataUrl) {
-    const image = document.createElement("img");
-    image.alt = "WhatsApp login QR code";
-    image.src = data.qrDataUrl;
-    qrWrap.appendChild(image);
-    qrHint.textContent = "二维码通常会定期刷新，扫码失败时点击刷新或重启连接。";
+    els.qrWrap.innerHTML = `<img src="${data.qrDataUrl}" alt="WhatsApp QR 码" />`;
+    els.qrPhase.textContent = "等待扫码";
+    els.qrPhase.className = "phase-badge connecting";
+    els.qrHint.textContent = "二维码定期刷新。扫码失败时点击下方按钮刷新。";
     return;
   }
-  qrWrap.innerHTML = '<div class="placeholder">暂未收到二维码。请确认 Gateway 正在运行，或点击「重启连接」。</div>';
-  qrHint.textContent = "首次启动需要几秒钟连接 WhatsApp Web。";
+
+  // No QR yet
+  els.qrWrap.innerHTML = `
+    <div class="qr-placeholder">
+      <div class="spinner"></div>
+      <p>正在连接 WhatsApp Web...</p>
+      <p style="font-size:0.82rem">首次启动需要数秒生成二维码</p>
+    </div>`;
+  els.qrPhase.textContent = "连接中";
+  els.qrPhase.className = "phase-badge connecting";
+  els.qrHint.textContent = "首次启动需要几秒钟连接 WhatsApp。";
 }
 
+// ─── Main refresh ───
 async function refresh() {
-  const status = await bridge.apiGet("status");
-  renderStatus(status);
-  const qr = await bridge.apiGet("qr");
-  renderQr(qr);
-  setOutput({ status, qr: { ...qr, qr: qr.qr ? "<hidden>" : null, qrDataUrl: qr.qrDataUrl ? "<data-url>" : null } });
+  let status = {};
+  let qr = {};
+
+  try {
+    status = await bridge.apiGet("status");
+    renderDashboard(status);
+    renderSession(status);
+    log("info", `状态已刷新: ${status.status || "unknown"}`);
+  } catch (err) {
+    log("error", `状态请求失败: ${err}`);
+    setDot(els.healthDot, "gray");
+    setDot(els.gatewayDot, "gray");
+    els.metricStatusText.textContent = "无法连接";
+    els.metricGatewayText.textContent = "未知";
+  }
+
+  try {
+    qr = await bridge.apiGet("qr");
+    renderQr(qr);
+  } catch (err) {
+    log("error", `二维码请求失败: ${err}`);
+  }
+
+  // Live dot
+  const isConnected = status.ready || qr.ready || status.status === "connected";
+  if (isConnected) {
+    els.liveDot.style.animation = "pulse-dot 2s ease-in-out infinite";
+    els.liveDot.style.opacity = "1";
+  } else {
+    els.liveDot.style.animation = "none";
+    els.liveDot.style.opacity = "0.3";
+  }
 }
 
-await bridge.ready();
-await refresh().catch((error) => setOutput(String(error)));
+// ─── Countdown ───
+function startCountdown() {
+  countdown = 5;
+  if (countdownTimer) clearInterval(countdownTimer);
+  countdownTimer = setInterval(() => {
+    countdown -= 1;
+    els.refreshCountdown.textContent = `${countdown}s`;
+    if (countdown <= 0) {
+      countdown = 5;
+      refresh().catch(() => {});
+    }
+  }, 1000);
+}
 
-document.getElementById("refresh").addEventListener("click", () => {
-  refresh().catch((error) => setOutput(String(error)));
+// ─── Events ───
+function handleRefresh() {
+  countdown = 5;
+  refresh().catch((err) => log("error", `刷新失败: ${err}`));
+}
+
+els.refreshBtn.addEventListener("click", handleRefresh);
+els.refreshQrBtn?.addEventListener("click", handleRefresh);
+
+els.restartBtn.addEventListener("click", async () => {
+  log("warn", "正在重启连接...");
+  try {
+    const res = await bridge.apiPost("restart", {});
+    log("info", `重启结果: ${res.status || "ok"}`);
+  } catch (err) {
+    log("error", `重启失败: ${err}`);
+  }
+  setTimeout(() => refresh().catch(() => {}), 1500);
 });
 
-document.getElementById("restart").addEventListener("click", async () => {
-  setOutput(await bridge.apiPost("restart", {}));
-  setTimeout(() => refresh().catch((error) => setOutput(String(error))), 1500);
-});
-
-document.getElementById("logout").addEventListener("click", async () => {
+els.logoutBtn.addEventListener("click", async () => {
   const confirmed = window.confirm("确定要登出当前 WhatsApp Web 会话并重新扫码吗？");
   if (!confirmed) return;
-  setOutput(await bridge.apiPost("logout", {}));
-  setTimeout(() => refresh().catch((error) => setOutput(String(error))), 2500);
+  log("warn", "正在登出...");
+  try {
+    const res = await bridge.apiPost("logout", {});
+    log("info", `登出结果: ${res.status || "ok"}`);
+  } catch (err) {
+    log("error", `登出失败: ${err}`);
+  }
+  setTimeout(() => refresh().catch(() => {}), 2500);
 });
 
-setInterval(() => {
-  refresh().catch(() => undefined);
-}, 5000);
+els.clearLogBtn.addEventListener("click", () => {
+  els.eventLog.innerHTML = '<div class="log-empty">日志已清空</div>';
+});
+
+// ─── Init ───
+await bridge.ready();
+log("info", "管理面板已加载");
+startCountdown();
+await refresh().catch((err) => log("error", `初始化失败: ${err}`));

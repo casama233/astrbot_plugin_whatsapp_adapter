@@ -35,6 +35,10 @@ class WhatsAppGatewayClient:
     async def close(self) -> None:
         if self._session and not self._session.closed:
             await self._session.close()
+        self._session = None
+
+    def update_base_url(self, base_url: str) -> None:
+        self.base_url = base_url.rstrip("/")
 
     async def health(self) -> dict[str, Any]:
         return await self._request("GET", "/health")
@@ -48,19 +52,47 @@ class WhatsAppGatewayClient:
     async def configure(self, config: dict[str, Any]) -> dict[str, Any]:
         return await self._request("POST", "/config", json_data=config)
 
+    async def resolve_mentions(self, chat_jid: str, text: str, tokens: list[str] | None = None) -> list[str]:
+        payload: dict[str, Any] = {"chatJid": chat_jid, "text": text}
+        if tokens is not None:
+            payload["tokens"] = tokens
+        result = await self._request("POST", "/mentions/resolve", json_data=payload)
+        mentions = result.get("mentions") or []
+        return [str(item) for item in mentions if str(item)]
+
     async def send_text(
         self,
         to: str,
         text: str,
         quoted_message_id: str | None = None,
         quoted_participant: str | None = None,
+        link_preview: bool = False,
+        mentions: list[str] | None = None,
+        resolve_text_mentions: bool = False,
     ) -> dict[str, Any]:
-        payload: dict[str, Any] = {"to": to, "text": text}
+        payload: dict[str, Any] = {"to": to, "text": text, "linkPreview": link_preview, "resolveTextMentions": resolve_text_mentions}
+        if mentions:
+            payload["mentions"] = mentions
         if quoted_message_id:
             payload["quotedMessageId"] = quoted_message_id
         if quoted_participant:
             payload["quotedParticipant"] = quoted_participant
         return await self._request("POST", "/send/text", json_data=payload)
+
+    async def edit_text(
+        self,
+        to: str,
+        message_id: str,
+        text: str,
+        mentions: list[str] | None = None,
+        participant: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"to": to, "messageId": message_id, "text": text}
+        if mentions:
+            payload["mentions"] = mentions
+        if participant:
+            payload["participant"] = participant
+        return await self._request("POST", "/edit/text", json_data=payload)
 
     async def send_media(
         self,
@@ -84,6 +116,24 @@ class WhatsAppGatewayClient:
             payload["quotedParticipant"] = quoted_participant
         return await self._request("POST", "/send/media", json_data=payload)
 
+    async def send_sticker(
+        self,
+        to: str,
+        path_or_url: str,
+        quoted_message_id: str | None = None,
+        quoted_participant: str | None = None,
+    ) -> dict[str, Any]:
+        return await self.send_media(
+            to,
+            "sticker",
+            path_or_url,
+            quoted_message_id=quoted_message_id,
+            quoted_participant=quoted_participant,
+        )
+
+    async def send_presence(self, to: str, state: str) -> dict[str, Any]:
+        return await self._request("POST", "/presence", json_data={"to": to, "state": state})
+
     async def react(self, to: str, message_id: str, emoji: str, participant: str | None = None) -> dict[str, Any]:
         payload: dict[str, Any] = {"to": to, "messageId": message_id, "emoji": emoji}
         if participant:
@@ -91,6 +141,68 @@ class WhatsAppGatewayClient:
         return await self._request(
             "POST", "/send/reaction", json_data=payload
         )
+
+    async def send_buttons(
+        self,
+        to: str,
+        body: str,
+        buttons: list[dict[str, str]],
+        footer: str = "",
+        quoted_message_id: str | None = None,
+        quoted_participant: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"to": to, "text": body, "body": body, "buttons": buttons, "footer": footer}
+        if quoted_message_id:
+            payload["quotedMessageId"] = quoted_message_id
+        if quoted_participant:
+            payload["quotedParticipant"] = quoted_participant
+        return await self._request("POST", "/send/buttons", json_data=payload)
+
+    async def send_list(
+        self,
+        to: str,
+        title: str,
+        sections: list[dict[str, Any]],
+        description: str = "",
+        button_text: str = "選項",
+        footer: str = "",
+        quoted_message_id: str | None = None,
+        quoted_participant: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "to": to,
+            "title": title,
+            "description": description,
+            "buttonText": button_text,
+            "sections": sections,
+            "footer": footer,
+        }
+        if quoted_message_id:
+            payload["quotedMessageId"] = quoted_message_id
+        if quoted_participant:
+            payload["quotedParticipant"] = quoted_participant
+        return await self._request("POST", "/send/list", json_data=payload)
+
+    async def send_poll(
+        self,
+        to: str,
+        name: str,
+        options: list[str],
+        selectable_count: int = 0,
+        quoted_message_id: str | None = None,
+        quoted_participant: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "to": to,
+            "name": name,
+            "options": options,
+            "selectableCount": selectable_count,
+        }
+        if quoted_message_id:
+            payload["quotedMessageId"] = quoted_message_id
+        if quoted_participant:
+            payload["quotedParticipant"] = quoted_participant
+        return await self._request("POST", "/send/poll", json_data=payload)
 
     async def restart(self) -> dict[str, Any]:
         return await self._request("POST", "/restart", json_data={})
@@ -100,8 +212,9 @@ class WhatsAppGatewayClient:
 
     async def events(self) -> AsyncIterator[dict[str, Any]]:
         await self.start()
-        assert self._session is not None
-        timeout = aiohttp.ClientTimeout(total=None, sock_connect=self.timeout, sock_read=None)
+        if self._session is None:
+            raise RuntimeError("WhatsApp gateway client session not started")
+        timeout = aiohttp.ClientTimeout(total=None, sock_connect=self.timeout, sock_read=300.0)
         async with self._session.get(f"{self.base_url}/events", timeout=timeout) as response:
             response.raise_for_status()
             async for raw_line in response.content:
@@ -122,7 +235,8 @@ class WhatsAppGatewayClient:
         json_data: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         await self.start()
-        assert self._session is not None
+        if self._session is None:
+            raise RuntimeError("WhatsApp gateway client session not started")
         async with self._session.request(
             method,
             f"{self.base_url}{path}",
@@ -133,7 +247,10 @@ class WhatsAppGatewayClient:
                 raise WhatsAppGatewayError(f"Gateway {method} {path} failed: {response.status} {text}")
             if not text:
                 return {}
-            return json.loads(text)
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError as exc:
+                raise WhatsAppGatewayError(f"Gateway {method} {path} returned invalid JSON: {exc}") from exc
 
 
 class GatewayProcess:
@@ -162,12 +279,15 @@ class GatewayProcess:
         self.auth_dir.mkdir(parents=True, exist_ok=True)
         self.data_dir.mkdir(parents=True, exist_ok=True)
         env = os.environ.copy()
+        # 全域暫存目錄（給 astrbot TempDirCleaner 自動清理）
+        temp_dir = str(Path(self.data_dir).parent.parent / "temp")
         env.update(
             {
                 "WA_GATEWAY_HOST": self.host,
                 "WA_GATEWAY_PORT": str(self.port),
                 "WA_AUTH_DIR": str(self.auth_dir),
                 "WA_DATA_DIR": str(self.data_dir),
+                "WA_TEMP_DIR": temp_dir,
                 "WA_LOG_LEVEL": self.log_level,
             }
         )
@@ -181,9 +301,17 @@ class GatewayProcess:
     async def stop(self) -> None:
         if not self.process or self.process.returncode is not None:
             return
-        self.process.terminate()
+        try:
+            self.process.terminate()
+        except ProcessLookupError:
+            self.process = None
+            return
         try:
             await asyncio.wait_for(self.process.wait(), timeout=10)
         except asyncio.TimeoutError:
-            self.process.kill()
+            try:
+                self.process.kill()
+            except ProcessLookupError:
+                pass
             await self.process.wait()
+        self.process = None
