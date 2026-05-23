@@ -993,14 +993,21 @@ class WhatsAppPlatformAdapter(Platform):
         reaction_level = str(self.config.get("reaction_level", "ack") or "ack")
         pre_ack_enabled = bool(self.config.get("pre_ack_emoji", True))
         pre_ack_private = bool(self.config.get("pre_ack_private", True))
+        # 獨立判斷群消息是否應該喚醒機器人（與預回復表情分開）
+        is_group_wake = is_private or is_self_mentioned or is_reply_to_self or is_command
+        if not is_private and not is_group_wake:
+            group_mode = self._group_pre_ack_mode()
+            if group_mode == "always":
+                is_group_wake = True
+        if not is_group_wake:
+            logger.debug("忽略非喚醒群消息: session=%s msg=%s text=%s",
+                          message.session_id, message.message_id, (message.message_str or "")[:40])
+            return
         if pre_ack_enabled and reaction_level != "off" and sender_allowed and not is_reaction_only:
             if is_private:
                 should_ack = pre_ack_private
             else:
-                group_mode = self._group_pre_ack_mode()
-                should_ack = group_mode == "always" or (
-                    group_mode == "mentions" and (is_self_mentioned or is_reply_to_self or is_command)
-                )
+                should_ack = is_group_wake
             if should_ack:
                 if not is_command:
                     event.is_at_or_wake_command = True
