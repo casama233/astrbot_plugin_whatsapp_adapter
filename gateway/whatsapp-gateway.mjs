@@ -48,11 +48,47 @@ const knownContacts = new Map();
 // 聊天室 ephemeral 快取：JID → expiration 秒數（如 86400 = 24hr）
 const chatEphemeral = new Map();
 
+function normalizePnJid(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  if (text.endsWith("@s.whatsapp.net")) return text;
+  const digits = text.replace(/\D/g, "");
+  return digits ? `${digits}@s.whatsapp.net` : "";
+}
+
+function normalizeLidJid(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  return text.endsWith("@lid") ? text : "";
+}
+
+function normalizeContact(contact) {
+  if (!contact) return null;
+  const id = String(contact.id || contact.jid || contact.lid || "").trim();
+  if (!id) return null;
+  const pnJid = normalizePnJid(contact.jid || contact.pn || contact.pnJid || contact.phoneNumber);
+  const lid = normalizeLidJid(contact.lid || (id.endsWith("@lid") ? id : ""));
+  return {
+    ...contact,
+    id,
+    jid: pnJid || (id.endsWith("@s.whatsapp.net") ? id : ""),
+    lid: lid || "",
+    phoneNumber: normalizePhone(contact.phoneNumber || pnJid),
+  };
+}
+
 function updateContact(contact) {
-  if (!contact?.id) return;
-  knownContacts.set(contact.id, contact);
-  if (contact.jid && contact.jid !== contact.id) knownContacts.set(contact.jid, contact);
-  if (contact.lid && contact.lid !== contact.id) knownContacts.set(contact.lid, contact);
+  const normalized = normalizeContact(contact);
+  if (!normalized) return;
+  const existing =
+    knownContacts.get(normalized.id) ||
+    (normalized.jid ? knownContacts.get(normalized.jid) : null) ||
+    (normalized.lid ? knownContacts.get(normalized.lid) : null) ||
+    null;
+  const merged = { ...(existing || {}), ...normalized };
+  knownContacts.set(merged.id, merged);
+  if (merged.jid && merged.jid !== merged.id) knownContacts.set(merged.jid, merged);
+  if (merged.lid && merged.lid !== merged.id) knownContacts.set(merged.lid, merged);
   while (knownContacts.size > maxKnownContacts) {
     knownContacts.delete(knownContacts.keys().next().value);
   }
@@ -75,11 +111,13 @@ function resolvePhone(jid) {
   if (raw.endsWith("@lid")) {
     const contact = knownContacts.get(raw);
     if (contact) {
-      const pnJid = [contact.jid, contact.id].find((j) => j && j.endsWith("@s.whatsapp.net"));
+      const pnJid = [contact.jid, contact.pn, contact.pnJid, contact.id].find((j) => j && j.endsWith("@s.whatsapp.net"));
       if (pnJid) {
         const digits = pnJid.split("@")[0].replace(/\D/g, "");
         if (digits) return `+${digits}`;
       }
+      const phone = normalizePhone(contact.phoneNumber);
+      if (phone && phone !== raw) return phone;
     }
     return null;
   }
@@ -95,8 +133,26 @@ function resolveLidToPn(lidJid) {
   if (!lidJid || !String(lidJid).endsWith("@lid")) return null;
   const contact = knownContacts.get(String(lidJid).trim());
   if (contact) {
-    const pnJid = [contact.jid, contact.id].find((j) => j && j.endsWith("@s.whatsapp.net"));
+    const pnJid = [contact.jid, contact.pn, contact.pnJid, contact.id].find((j) => j && j.endsWith("@s.whatsapp.net"));
     if (pnJid) return pnJid;
+    return normalizePnJid(contact.phoneNumber) || null;
+  }
+  return null;
+}
+
+async function lookupPnForLid(lidJid) {
+  const existing = resolveLidToPn(lidJid);
+  if (existing) return existing;
+  try {
+    const store = socket?.signalRepository?.lidMapping;
+    const fromStore = typeof store?.getPNForLID === "function" ? await store.getPNForLID(lidJid) : null;
+    const pnJid = normalizePnJid(fromStore);
+    if (pnJid) {
+      updateContact({ id: lidJid, lid: lidJid, jid: pnJid });
+      return pnJid;
+    }
+  } catch (error) {
+    log.debug({ error, lidJid }, "failed to resolve PN from lidMapping store");
   }
   return null;
 }
@@ -118,7 +174,7 @@ async function loadLidMappingsFromDisk() {
         if (phone && typeof phone === "string") {
           const lid = `${match[1]}@lid`;
           const pnJid = `${phone}@s.whatsapp.net`;
-          updateContact({ id: lid, jid: pnJid });
+          updateContact({ id: lid, lid, jid: pnJid, phoneNumber: `+${phone}` });
           loaded++;
         }
       } catch {
@@ -140,10 +196,12 @@ function waitForLidPnMapping(lidJid, timeoutMs) {
   const existing = resolveLidToPn(lidJid);
   if (existing) return Promise.resolve(existing);
   return (async () => {
+    const fromStore = await lookupPnForLid(lidJid);
+    if (fromStore) return fromStore;
     if (socket?.presenceSubscribe) {
       try { await socket.presenceSubscribe(lidJid); } catch {}
     }
-    const afterSubscribe = resolveLidToPn(lidJid);
+    const afterSubscribe = (await lookupPnForLid(lidJid)) || resolveLidToPn(lidJid);
     if (afterSubscribe) return afterSubscribe;
     return new Promise((resolve) => {
       const EVENTS = ["contacts.upsert", "lid-mapping.update", "chats.phoneNumberShare"];
@@ -155,7 +213,7 @@ function waitForLidPnMapping(lidJid, timeoutMs) {
         const data = args[0];
         let pn = null;
         if (data && data.id === lidJid) {
-          pn = [data.jid, data.id].find((j) => j && j.endsWith("@s.whatsapp.net"));
+          pn = [data.jid, data.pn, data.pnJid, data.id].find((j) => j && j.endsWith("@s.whatsapp.net"));
         } else if (data && data.lid === lidJid) {
           pn = data.pn || data.pnJid || data.jid;
         } else if (data && data.lidJid === lidJid) {
@@ -163,12 +221,14 @@ function waitForLidPnMapping(lidJid, timeoutMs) {
         }
         if (!pn && Array.isArray(data)) {
           const matched = data.find((c) => c.id === lidJid || c.lid === lidJid || c.jid === lidJid);
-          if (matched) pn = [matched.jid, matched.id].find((j) => j && j.endsWith("@s.whatsapp.net"));
+          if (matched) pn = [matched.jid, matched.pn, matched.pnJid, matched.id].find((j) => j && j.endsWith("@s.whatsapp.net"));
         }
         if (pn) {
+          const normalizedPn = normalizePnJid(pn);
+          if (normalizedPn) updateContact({ id: lidJid, lid: lidJid, jid: normalizedPn });
           clearTimeout(timer);
           for (const evt of EVENTS) socket.ev.off(evt, handler);
-          resolve(pn);
+          resolve(normalizedPn || pn);
         }
       };
       for (const evt of EVENTS) socket.ev.on(evt, handler);
@@ -206,6 +266,8 @@ function messageCandidates(item, chatJid, senderJid) {
   add(chatJid);
   add(senderJid);
   if (item?.key?.participant) add(item.key.participant);
+  if (item?.key?.remoteJidAlt) add(item.key.remoteJidAlt);
+  if (item?.key?.participantAlt) add(item.key.participantAlt);
 
   // Baileys key.senderPn / key.participantPn — 直接提供 LID→PN 映射
   const senderPn = item?.key?.senderPn;
@@ -305,7 +367,7 @@ function mentionKey(value) {
 function rememberMentionIdentity(jid, ...names) {
   if (!jid) return;
   const fullJid = String(jid);
-  const keys = [fullJid, normalizeJid(fullJid), jidToPhone(fullJid), ...names].filter(Boolean);
+  const keys = [fullJid, normalizeJid(fullJid), resolvePhone(fullJid), jidToPhone(fullJid), ...names].filter(Boolean);
   for (const key of keys) {
     const normalized = mentionKey(key);
     if (normalized) mentionDirectory.set(normalized, fullJid);
@@ -316,16 +378,19 @@ function rememberMentionIdentity(jid, ...names) {
 }
 
 function rememberContact(contact) {
-  const jid = contact?.id || contact?.jid;
+  const normalized = normalizeContact(contact);
+  if (!normalized) return;
+  const jid = normalized.id || normalized.jid || normalized.lid;
   rememberMentionIdentity(
     jid,
-    contact?.name,
-    contact?.notify,
-    contact?.verifiedName,
-    contact?.pushName,
-    contact?.displayName,
+    normalized.phoneNumber,
+    normalized.name,
+    normalized.notify,
+    normalized.verifiedName,
+    normalized.pushName,
+    normalized.displayName,
   );
-  updateContact(contact);
+  updateContact(normalized);
 }
 
 async function rememberGroupParticipants(chatJid) {
@@ -334,10 +399,11 @@ async function rememberGroupParticipants(chatJid) {
     const metadata = await socket.groupMetadata(chatJid);
     for (const participant of metadata?.participants || []) {
       const jid = participant?.id || participant?.jid;
-      rememberMentionIdentity(jid);
+      rememberContact(participant);
+      rememberMentionIdentity(jid, participant?.phoneNumber, participant?.notify, participant?.name);
       if (jid && String(jid).endsWith("@lid")) {
-        const resolved = resolveLidToPn(jid);
-        if (resolved) updateContact({ id: jid, jid: resolved });
+        const resolved = resolveLidToPn(jid) || normalizePnJid(participant?.phoneNumber || participant?.pn || participant?.pnJid);
+        if (resolved) updateContact({ id: jid, lid: jid, jid: resolved, phoneNumber: participant?.phoneNumber });
       }
     }
   } catch (error) {
@@ -640,7 +706,7 @@ function contextInfoFromMessage(message) {
 function quotedInfoFromContext(contextInfo) {
   if (!contextInfo) return null;
   const stanzaId = contextInfo.stanzaId || null;
-  const participant = contextInfo.participant || null;
+  const participant = contextInfo.participantAlt || contextInfo.participant || null;
   const quotedMessage = contextInfo.quotedMessage || null;
   if (!stanzaId && !quotedMessage) return null;
   return { stanzaId, participant, quotedMessage };
@@ -854,17 +920,12 @@ async function handleIncomingMessage(item, options = {}) {
   const chatJid = primary.key.remoteJid;
   if (!chatJid || chatJid.endsWith("@status") || chatJid.endsWith("@broadcast")) return;
   const fromMe = Boolean(primary.key.fromMe);
-  const senderJid = primary.key.participant || chatJid;
+  const senderJid = primary.key.participantAlt || primary.key.participant || primary.key.remoteJidAlt || chatJid;
   rememberMentionIdentity(senderJid, primary.pushName);
-  const pnSource = primary.key.senderPn || primary.key.participantPn || null;
+  const pnSource = primary.key.senderPn || primary.key.participantPn || primary.key.participantAlt || primary.key.remoteJidAlt || null;
   if (pnSource && senderJid.endsWith("@lid")) {
-    let pnJid = String(pnSource).trim();
-    if (!pnJid.endsWith("@s.whatsapp.net")) {
-      const digits = pnJid.replace(/\D/g, "");
-      if (digits) pnJid = `${digits}@s.whatsapp.net`;
-      else pnJid = null;
-    }
-    if (pnJid) updateContact({ id: senderJid, jid: pnJid });
+    const pnJid = normalizePnJid(pnSource);
+    if (pnJid) updateContact({ id: senderJid, lid: senderJid, jid: pnJid });
   }
   rememberGroupParticipants(chatJid).catch(() => {});
   if (primary.message?.protocolMessage) {
@@ -913,7 +974,7 @@ async function handleIncomingMessage(item, options = {}) {
       if (!allowedResult.senderPhone && senderJid.endsWith("@lid")) {
         const resolved = await waitForLidPnMapping(senderJid, 10000);
         if (resolved) {
-          updateContact({ id: senderJid, jid: resolved });
+          updateContact({ id: senderJid, lid: senderJid, jid: resolved });
           const retry = allowedMessageResult(chatJid, senderJid, primary);
           if (retry.allowed) {
             allowedResult = retry;
@@ -1056,6 +1117,7 @@ async function handleIncomingMessage(item, options = {}) {
     messageId: primary.key.id,
     albumMessageIds: albumItems.length > 1 ? albumItems.map((albumItem) => albumItem.key.id) : undefined,
     chatJid,
+    chatPn: resolvePhone(chatJid) || "",
     senderJid,
     senderPn: primary.key.senderPn || null,
     senderPhone: allowedResult.senderPhone || resolvePhone(senderJid) || "",
