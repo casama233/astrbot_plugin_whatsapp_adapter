@@ -801,7 +801,7 @@ class WhatsAppPlatformAdapter(Platform):
             self._stopped.clear()
             self._reconnect_event.clear()
         await self._claim_runtime_owner()
-        logger.info("Starting WhatsApp platform adapter run loop: gateway=%s", self._base_url)
+        logger.info("Starting WhatsApp adapter event loop: gateway=%s", self._base_url)
         try:
             while not self._stopped.is_set():
                 try:
@@ -1418,7 +1418,7 @@ class WhatsAppPlatformAdapter(Platform):
         for attempt in range(1, 61):
             try:
                 health = await self.client.health()
-                logger.info("WhatsApp Gateway health check passed on attempt %s: %s", attempt, self._safe_status(health))
+                logger.info("WhatsApp Gateway: healthy (attempt=%s)", attempt)
                 return
             except Exception as exc:
                 last_error = exc
@@ -1461,7 +1461,7 @@ class WhatsAppPlatformAdapter(Platform):
         await self.gateway_process.start()
         await self._wait_for_gateway()
         configured = await self.client.configure(self._gateway_config())
-        logger.info("WhatsApp Gateway reconfigured after restart: %s", self._safe_status(configured))
+        logger.info("WhatsApp Gateway: reconfigured (restarted)")
         self._mark_running()
 
     async def _connect_gateway(self) -> None:
@@ -1473,7 +1473,7 @@ class WhatsAppPlatformAdapter(Platform):
             if not force_restart:
                 try:
                     health = await self.client.health()
-                    logger.info("WhatsApp Gateway already healthy: %s", self._safe_status(health))
+                    logger.debug("WhatsApp Gateway already healthy")
                 except Exception:
                     force_restart = True
             if force_restart:
@@ -1495,13 +1495,19 @@ class WhatsAppPlatformAdapter(Platform):
 
         await self._wait_for_gateway()
         configured = await self.client.configure(self._gateway_config())
-        logger.info("WhatsApp Gateway configured: %s", self._safe_status(configured))
+        logger.info("WhatsApp Gateway configured: dmPolicy=%s groupPolicy=%s readReceipts=%s",
+                     configured.get("config", {}).get("dmPolicy"),
+                     configured.get("config", {}).get("groupPolicy"),
+                     configured.get("config", {}).get("sendReadReceipts"))
         try:
             status = await self.client.status()
-            logger.info("WhatsApp Gateway status after configure: %s", self._safe_status(status))
+            logger.info("WhatsApp Gateway: status=%s ready=%s%s",
+                         status.get("status", "?"),
+                         bool(status.get("ready")),
+                         f" self={status['selfJid']}" if status.get("selfJid") else "")
         except Exception as exc:
             logger.warning("Failed to fetch WhatsApp Gateway status after configure: %s", exc)
-        logger.info("WhatsApp adapter connected to Gateway at %s", self._base_url)
+        logger.info("WhatsApp adapter connected at %s", self._base_url)
         self._mark_running()
         await self._restart_health_monitor()
         self._refresh_registered_commands()
@@ -1591,7 +1597,7 @@ class WhatsAppPlatformAdapter(Platform):
                 ok = bool(status.get("ok", True)) and ready
                 if ok:
                     if not self._gateway_healthy:
-                        logger.info("WhatsApp Gateway health recovered: %s", self._safe_status(status))
+                        logger.info("WhatsApp Gateway: health recovered")
                     self._gateway_healthy = True
                     self._mark_running()
                 else:
@@ -1650,16 +1656,24 @@ class WhatsAppPlatformAdapter(Platform):
         return safe
 
     def _log_gateway_event(self, event: dict[str, Any]) -> None:
-        if event.get("type") != "status":
-            logger.info("WhatsApp Gateway event: %s", self._safe_status(event))
+        ev_type = event.get("type", "?")
+        if ev_type != "status":
+            jid = event.get("chatJid") or event.get("senderJid") or ""
+            msg_id = event.get("messageId") or ""
+            logger.info("WhatsApp Gateway event: type=%s%s%s",
+                         ev_type,
+                         f" chat={jid}" if jid else "",
+                         f" msg={msg_id}" if msg_id else "")
             return
 
         current = (event.get("status"), event.get("ready"), event.get("selfJid"))
         if current == self._last_gateway_status_log:
-            logger.debug("WhatsApp Gateway duplicate status event: %s", self._safe_status(event))
+            logger.debug("WhatsApp Gateway event: status=%s (duplicate)", event.get("status"))
             return
         self._last_gateway_status_log = current
-        logger.info("WhatsApp Gateway event: %s", self._safe_status(event))
+        logger.info("WhatsApp Gateway: %s%s",
+                     event.get("status", "?"),
+                     f" (self={event['selfJid']})" if event.get("selfJid") else "")
 
     def _count_label(self, value: Any) -> str:
         if isinstance(value, list):
