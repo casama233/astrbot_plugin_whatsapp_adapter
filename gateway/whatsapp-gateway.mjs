@@ -911,7 +911,7 @@ async function handleIncomingMessage(item, options = {}) {
     );
     if (!isGroup && allowedResult.reason === "dm_allowlist") {
       if (!allowedResult.senderPhone && senderJid.endsWith("@lid")) {
-        const resolved = await waitForLidPnMapping(senderJid, 10000);
+        const resolved = await waitForLidPnMapping(senderJid, 3000);
         if (resolved) {
           updateContact({ id: senderJid, jid: resolved });
           const retry = allowedMessageResult(chatJid, senderJid, primary);
