@@ -61,6 +61,11 @@ class WhatsAppMessageEvent(AstrMessageEvent):
             [component.__class__.__name__ for component in message.chain],
         )
         await self.send_typing()
+        # 模擬真人打字延遲，避免機械感
+        text_len = sum(len(c.text or "") for c in message.chain if hasattr(c, "text"))
+        if text_len > 0 and self.typing_indicator:
+            delay = min(0.5 + text_len * 0.03, 3.0)
+            await asyncio.sleep(delay)
         exception: Exception | None = None
         try:
             pending_caption, pending_mentions = await process_message_chain(
