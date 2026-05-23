@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import random
 import re
-import time
 import traceback
 import weakref
 from pathlib import Path
@@ -68,7 +66,6 @@ def _load_lid_mappings(auth_dir: Path) -> None:
     """從 Gateway auth 目錄加載所有 lid-mapping-*_reverse.json 到緩存。"""
     if not auth_dir or not auth_dir.is_dir():
         return
-    import json
     _LID_PN_CACHE.clear()
     _PN_LID_CACHE.clear()
     try:
@@ -95,9 +92,7 @@ def _save_lid_mapping(lid_jid: str, pn_jid: str) -> None:
     """持久化 lid→PN 映射到 Gateway auth 目錄。"""
     if not _get_astrbot_data_path:
         return
-    import json
-    from astrbot.core.utils.astrbot_path import get_astrbot_data_path
-    plugin_data = Path(get_astrbot_data_path()) / "plugin_data" / PLUGIN_NAME
+    plugin_data = Path(_get_astrbot_data_path()) / "plugin_data" / PLUGIN_NAME
     auth_dir = plugin_data / "whatsapp-auth"
     path = _lid_mapping_path(auth_dir, lid_jid)
     if not path or path.exists():
@@ -969,8 +964,6 @@ class WhatsAppPlatformAdapter(Platform):
             digits = "".join(ch for ch in sender_phone if ch.isdigit())
             if digits and not sender_pn.endswith("@s.whatsapp.net"):
                 sender_pn = f"{digits}@s.whatsapp.net"
-        elif not sender_pn and sender_phone:
-            sender_pn = f"{sender_phone}@s.whatsapp.net"
 
         # 缓存 lid→PN 映射，用于出站 @mention 时解析
         if sender_jid.endswith("@lid") and sender_pn.endswith("@s.whatsapp.net"):
@@ -978,11 +971,9 @@ class WhatsAppPlatformAdapter(Platform):
                 _LID_PN_CACHE[sender_jid] = sender_pn
                 _PN_LID_CACHE[sender_pn] = sender_jid
                 _save_lid_mapping(sender_jid, sender_pn)
-        if chat_jid.endswith("@lid") and sender_pn.endswith("@s.whatsapp.net"):
-            if chat_jid not in _LID_PN_CACHE:
-                _LID_PN_CACHE[chat_jid] = sender_pn
-                _PN_LID_CACHE[sender_pn] = chat_jid
-                _save_lid_mapping(chat_jid, sender_pn)
+        if chat_jid.endswith("@lid") and chat_jid not in _LID_PN_CACHE and sender_pn.endswith("@s.whatsapp.net"):
+            _LID_PN_CACHE[chat_jid] = sender_pn
+            _save_lid_mapping(chat_jid, sender_pn)
 
         # session_id 統一用 PN JID（@s.whatsapp.net），避免 lid 不穩定
         if chat_jid.endswith("@g.us"):
@@ -1080,7 +1071,11 @@ class WhatsAppPlatformAdapter(Platform):
             logger.debug("忽略表情回應事件: session=%s msg=%s",
                           message.session_id, message.message_id)
             return
-        if pre_ack_enabled and reaction_level != "off" and sender_allowed and not is_reaction_only:
+        if not sender_allowed:
+            logger.debug("忽略未授權發送者: session=%s sender=%s",
+                          message.session_id, raw.get("senderJid"))
+            return
+        if pre_ack_enabled and reaction_level != "off" and not is_reaction_only:
             if is_private:
                 should_ack = pre_ack_private
             else:
