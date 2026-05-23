@@ -26,7 +26,7 @@ PLUGIN_DIR = Path(__file__).resolve().parent
     PLUGIN_NAME,
     "OpenCode",
     "WhatsApp Web platform adapter backed by a local Gateway process.",
-    "0.2.5",
+    "0.2.6",
 )
 class WhatsAppAdapterPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None):

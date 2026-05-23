@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.2.6] - 2026-05-24
+
+### Security
+- `sender_allowed` 现在真正拦截未授权发送者的消息（之前仅控制预回复表情，事件仍会被提交到下游 LLM）
+
+### Fixed
+- `_PN_LID_CACHE` 正向映射被 `chat_jid` 静默覆盖导致出向路由错误
+- `convert_message` 中死代码 `elif` 分支
+- 冗余导入清理（`os`、`time`、重复的 `import json`）
+
+### Changed
+- Gateway 连接成功立即发送 `available` 在线状态
+- `_send_presence` 区分 composing（受 `typing_indicator` 控制）与 available（始终可发）
+- `waitForLidPnMapping` 超时从 10s 改为 3s，超时后透传给 adapter 最终判断
+
 ## [0.2.5] - 2026-05-24
 
 ### Fixed
