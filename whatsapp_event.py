@@ -92,7 +92,7 @@ class WhatsAppMessageEvent(AstrMessageEvent):
                 except Exception:
                     pass
             if exception:
-                logger.warning("WhatsApp event send completed with errors: target=%s error=%s", self.target_jid, exception)
+                logger.warning("WhatsApp 事件发送完成但存在错误: target=%s error=%s", self.target_jid, exception)
             # 清理 URL 下載的暫存檔
             for tmp in self._temp_files:
                 try:
@@ -110,7 +110,7 @@ class WhatsAppMessageEvent(AstrMessageEvent):
         try:
             await self._send_streaming_edit(generator)
         except Exception as exc:
-            logger.warning("WhatsApp streaming encountered error: target=%s error=%s", self.target_jid, exc)
+            logger.warning("WhatsApp 流式回复出错: target=%s error=%s", self.target_jid, exc)
         finally:
             if not self._super_sent:
                 await super().send(MessageChain())
@@ -263,7 +263,7 @@ class WhatsAppMessageEvent(AstrMessageEvent):
         try:
             await self.client.react(self.target_jid, self.quoted_message_id, emoji, self.quoted_participant)
         except Exception as exc:
-            logger.warning("WhatsApp event reaction failed: target=%s message_id=%s error=%s", self.target_jid, self.quoted_message_id, exc)
+            logger.warning("WhatsApp 表情回应发送失败: target=%s message_id=%s error=%s", self.target_jid, self.quoted_message_id, exc)
 
     async def _resolve_media_path(self, value: str | None) -> str:
         if not value:

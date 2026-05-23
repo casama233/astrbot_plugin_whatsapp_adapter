@@ -845,10 +845,10 @@ class WhatsAppPlatformAdapter(Platform):
                         break
                     is_timeout = isinstance(exc, TimeoutError) or "Timeout" in type(exc).__name__
                     if is_timeout:
-                        logger.info("WhatsApp Gateway event stream idle timeout (expected), reconnecting: %s", exc)
+                        logger.info("WhatsApp Gateway 事件流空闲超时，正在重连: %s", exc)
                     else:
-                        logger.warning("WhatsApp Gateway event stream interrupted: %s", exc)
-                        self._record_gateway_error(f"WhatsApp Gateway event stream interrupted: {exc}", exc_info=exc)
+                        logger.warning("WhatsApp Gateway 事件流中断: %s", exc)
+                        self._record_gateway_error(f"WhatsApp Gateway 事件流中断: {exc}", exc_info=exc)
                     try:
                         await self._ensure_gateway_running()
                         self._mark_running()
@@ -860,7 +860,7 @@ class WhatsAppPlatformAdapter(Platform):
                         await self._disconnect_gateway_transport()
                         continue
         except asyncio.CancelledError:
-            logger.info("WhatsApp platform adapter run cancelled")
+            logger.info("WhatsApp 平台适配器运行已取消")
             raise
         finally:
             await self._shutdown_gateway_transport()
@@ -1238,11 +1238,11 @@ class WhatsAppPlatformAdapter(Platform):
             return
         emoji = random.choice(emojis)
         try:
-            logger.info("WhatsApp pre-ack reaction: target=%s emoji=%s level=%s", event.target_jid, emoji, reaction_level)
+            logger.info("WhatsApp 预回复表情: target=%s emoji=%s level=%s", event.target_jid, emoji, reaction_level)
             await event.react(emoji)
             event._pre_acked = True
         except Exception as exc:
-            logger.warning("WhatsApp pre-ack reaction failed: target=%s error=%s", event.target_jid, exc)
+            logger.warning("WhatsApp 预回复表情发送失败: target=%s error=%s", event.target_jid, exc)
 
     def _whatsapp_user_id(self, jid: str) -> str:
         return str(jid or "").split(":", 1)[0].split("@", 1)[0]
@@ -1418,7 +1418,7 @@ class WhatsAppPlatformAdapter(Platform):
         for attempt in range(1, 61):
             try:
                 health = await self.client.health()
-                logger.info("WhatsApp Gateway: healthy (attempt=%s)", attempt)
+                logger.info("WhatsApp Gateway: 连接正常 (第%s次尝试)", attempt)
                 return
             except Exception as exc:
                 last_error = exc
@@ -1435,9 +1435,9 @@ class WhatsAppPlatformAdapter(Platform):
         try:
             health = await self.client.health()
             if not health.get("configured", False):
-                logger.info("WhatsApp Gateway is healthy but not yet configured; sending config")
+                logger.info("WhatsApp Gateway 已就绪但未配置，正在下发配置")
                 configured = await self.client.configure(self._gateway_config())
-                logger.info("WhatsApp Gateway configured: %s", self._safe_status(configured))
+                logger.info("WhatsApp Gateway 配置已完成")
                 return
         except Exception:
             needs_restart = True
@@ -1461,7 +1461,7 @@ class WhatsAppPlatformAdapter(Platform):
         await self.gateway_process.start()
         await self._wait_for_gateway()
         configured = await self.client.configure(self._gateway_config())
-        logger.info("WhatsApp Gateway: reconfigured (restarted)")
+        logger.info("WhatsApp Gateway: 已重新配置（重启后）")
         self._mark_running()
 
     async def _connect_gateway(self) -> None:
@@ -1473,11 +1473,11 @@ class WhatsAppPlatformAdapter(Platform):
             if not force_restart:
                 try:
                     health = await self.client.health()
-                    logger.debug("WhatsApp Gateway already healthy")
+                    logger.debug("WhatsApp Gateway 已就绪")
                 except Exception:
                     force_restart = True
             if force_restart:
-                logger.info("Starting WhatsApp Gateway for platform adapter at %s", self._base_url)
+                logger.info("正在启动 WhatsApp Gateway: %s", self._base_url)
                 if self.gateway_process:
                     await self.gateway_process.stop()
                 self.gateway_process = GatewayProcess(
@@ -1491,23 +1491,23 @@ class WhatsAppPlatformAdapter(Platform):
                 )
                 await self.gateway_process.start()
         else:
-            logger.info("WhatsApp platform auto-start disabled; expecting Gateway at %s", self._base_url)
+            logger.info("WhatsApp 平台自动启动已关闭，预期 Gateway 运行于 %s", self._base_url)
 
         await self._wait_for_gateway()
         configured = await self.client.configure(self._gateway_config())
-        logger.info("WhatsApp Gateway configured: dmPolicy=%s groupPolicy=%s readReceipts=%s",
+        logger.info("WhatsApp Gateway 配置: 私聊策略=%s 群聊策略=%s 已读回执=%s",
                      configured.get("config", {}).get("dmPolicy"),
                      configured.get("config", {}).get("groupPolicy"),
                      configured.get("config", {}).get("sendReadReceipts"))
         try:
             status = await self.client.status()
-            logger.info("WhatsApp Gateway: status=%s ready=%s%s",
+            logger.info("WhatsApp Gateway: 状态=%s 就绪=%s%s",
                          status.get("status", "?"),
                          bool(status.get("ready")),
                          f" self={status['selfJid']}" if status.get("selfJid") else "")
         except Exception as exc:
-            logger.warning("Failed to fetch WhatsApp Gateway status after configure: %s", exc)
-        logger.info("WhatsApp adapter connected at %s", self._base_url)
+            logger.warning("获取 WhatsApp Gateway 状态失败: %s", exc)
+        logger.info("WhatsApp 适配器已连接: %s", self._base_url)
         self._mark_running()
         await self._restart_health_monitor()
         self._refresh_registered_commands()
@@ -1597,7 +1597,7 @@ class WhatsAppPlatformAdapter(Platform):
                 ok = bool(status.get("ok", True)) and ready
                 if ok:
                     if not self._gateway_healthy:
-                        logger.info("WhatsApp Gateway: health recovered")
+                        logger.info("WhatsApp Gateway: 已恢复健康")
                     self._gateway_healthy = True
                     self._mark_running()
                 else:
@@ -1660,7 +1660,7 @@ class WhatsAppPlatformAdapter(Platform):
         if ev_type != "status":
             jid = event.get("chatJid") or event.get("senderJid") or ""
             msg_id = event.get("messageId") or ""
-            logger.info("WhatsApp Gateway event: type=%s%s%s",
+            logger.info("WhatsApp Gateway 事件: 类型=%s%s%s",
                          ev_type,
                          f" chat={jid}" if jid else "",
                          f" msg={msg_id}" if msg_id else "")
@@ -1668,7 +1668,7 @@ class WhatsAppPlatformAdapter(Platform):
 
         current = (event.get("status"), event.get("ready"), event.get("selfJid"))
         if current == self._last_gateway_status_log:
-            logger.debug("WhatsApp Gateway event: status=%s (duplicate)", event.get("status"))
+            logger.debug("WhatsApp Gateway 事件: 状态=%s (重复)", event.get("status"))
             return
         self._last_gateway_status_log = current
         logger.info("WhatsApp Gateway: %s%s",
@@ -1729,15 +1729,15 @@ def patch_platform_manager_hot_reload() -> None:
                     if platform.get("id") == platform_id:
                         self.platforms_config[index] = platform_config
                         break
-                logger.info("WhatsApp platform hot-reloaded in place: id=%s", platform_id)
+                logger.info("WhatsApp 平台已原地热重载: id=%s", platform_id)
                 return
             except Exception as exc:
                 logger.warning(
-                    "WhatsApp in-place hot-reload failed, falling back to full platform reload: id=%s error=%s",
+                    "WhatsApp 原地热重载失败，回退到完整平台重载: id=%s error=%s",
                     platform_id,
                     exc,
                 )
         await PlatformManager._whatsapp_original_reload(self, platform_config)
 
     PlatformManager.reload = reload
-    logger.info("WhatsApp platform config hot-reload enabled")
+    logger.info("WhatsApp 平台配置热重载已启用")

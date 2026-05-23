@@ -98,7 +98,7 @@ class WhatsAppAdapterPlugin(Star):
             logger.debug("WhatsApp plugin page status requested: %s", self._safe_status(status))
             return jsonify(status)
         except Exception as exc:
-            logger.warning("WhatsApp plugin page status failed: %s", exc)
+            logger.warning("WhatsApp 管理页状态获取失败: %s", exc)
             return jsonify({"ok": False, "error": str(exc), "baseUrl": self._base_url}), 503
 
     async def page_qr(self):
@@ -113,25 +113,25 @@ class WhatsAppAdapterPlugin(Star):
             )
             return jsonify(qr)
         except Exception as exc:
-            logger.warning("WhatsApp plugin page QR failed: %s", exc)
+            logger.warning("WhatsApp 管理页 QR 获取失败: %s", exc)
             return jsonify({"ok": False, "error": str(exc), "baseUrl": self._base_url}), 503
 
     async def page_restart(self):
         await self._ensure_page_gateway()
         try:
-            logger.info("WhatsApp Gateway restart requested from plugin page")
+            logger.info("WhatsApp Gateway 重启（来自管理页）")
             return jsonify(await self.page_client.restart())
         except Exception as exc:
-            logger.warning("WhatsApp Gateway restart failed from plugin page: %s", exc)
+            logger.warning("WhatsApp Gateway 重启失败（管理页）: %s", exc)
             return jsonify({"ok": False, "error": str(exc), "baseUrl": self._base_url}), 503
 
     async def page_logout(self):
         await self._ensure_page_gateway()
         try:
-            logger.info("WhatsApp Gateway logout requested from plugin page")
+            logger.info("WhatsApp Gateway 登出（来自管理页）")
             return jsonify(await self.page_client.logout())
         except Exception as exc:
-            logger.warning("WhatsApp Gateway logout failed from plugin page: %s", exc)
+            logger.warning("WhatsApp Gateway 登出失败（管理页）: %s", exc)
             return jsonify({"ok": False, "error": str(exc), "baseUrl": self._base_url}), 503
 
     async def _ensure_page_gateway(self) -> None:
@@ -143,12 +143,12 @@ class WhatsAppAdapterPlugin(Star):
         except Exception:
             pass
         if not self.config.get("auto_start_gateway", True):
-            logger.info("WhatsApp plugin page auto-start disabled; Gateway must already be running at %s", self._base_url)
+            logger.info("WhatsApp 管理页自动启动已关闭，Gateway 需外部运行于 %s", self._base_url)
             return
         if self.page_gateway_process and self.page_gateway_process.process:
             if self.page_gateway_process.process.returncode is None:
                 # Process still running but unhealthy — stop it before restarting
-                logger.info("WhatsApp Gateway process running but unhealthy for plugin page, stopping it")
+                logger.info("WhatsApp Gateway 进程状态异常，正在停止")
                 await self.page_gateway_process.stop()
         self.page_gateway_process = GatewayProcess(
             node_executable=str(self.config["node_executable"]),
@@ -159,7 +159,7 @@ class WhatsAppAdapterPlugin(Star):
             log_level=str(self.config["log_level"]),
             data_dir=self._data_dir(),
         )
-        logger.info("Starting WhatsApp Gateway for plugin page at %s", self._base_url)
+        logger.info("正在启动 WhatsApp Gateway（管理页）: %s", self._base_url)
         await self.page_gateway_process.start()
         # 輪詢 Gateway 健康狀態，最長等待 30 秒
         health_client = WhatsAppGatewayClient(self._base_url, timeout=5.0)
@@ -168,13 +168,13 @@ class WhatsAppAdapterPlugin(Star):
             for attempt in range(1, 31):
                 try:
                     health = await health_client.health()
-                    logger.info("WhatsApp Gateway healthy for plugin page on attempt %s: %s", attempt, health)
+                    logger.info("WhatsApp Gateway 健康检查通过（第 %s 次）", attempt, health)
                     break
                 except Exception as exc:
                     last_error = exc
                     await asyncio.sleep(1)
             else:
-                logger.warning("WhatsApp Gateway for plugin page did not become healthy: %s", last_error)
+                logger.warning("WhatsApp Gateway 健康检查未通过: %s", last_error)
         finally:
             await health_client.close()
 
@@ -232,7 +232,7 @@ class WhatsAppAdapterPlugin(Star):
     async def reload_config(self, new_config: dict | None = None) -> None:
         if new_config:
             self.config = {**BASE_GATEWAY_CONFIG, **dict(new_config)}
-        logger.info("WhatsApp plugin config reloaded: gateway=%s", self._base_url)
+        logger.info("WhatsApp 插件配置已重载: gateway=%s", self._base_url)
         self.page_client.update_base_url(self._base_url)
         from .whatsapp_adapter import get_active_whatsapp_adapters
 
@@ -274,12 +274,12 @@ class WhatsAppAdapterPlugin(Star):
                 # Only swap if the instance still carries the old (pre-reload) class
                 if type(inst) is NewAdapter:
                     continue
-                logger.info("Hot-swapping WhatsApp adapter class after plugin reload: id=%s", pid)
+                logger.info("正在热替换 WhatsApp 适配器类: id=%s", pid)
                 # 完整終止舊執行階段，避免只取消 task 但殘留 Gateway/health task。
                 try:
                     await inst.terminate()
                 except Exception as exc:
-                    logger.warning("Failed to terminate old WhatsApp adapter before hot-swap: id=%s error=%s", pid, exc)
+                    logger.warning("终止旧 WhatsApp 适配器失败: id=%s error=%s", pid, exc)
                 inst.__class__ = NewAdapter
                 _ACTIVE_ADAPTERS.add(inst)
                 inst.clear_errors()
@@ -288,12 +288,12 @@ class WhatsAppAdapterPlugin(Star):
                 inst._force_gateway_restart = True
                 inst._refresh_registered_commands()
                 inst._run_task = asyncio.create_task(inst.run())
-                logger.info("Restarted WhatsApp adapter run loop after hot-swap: id=%s", pid)
+                logger.info("WhatsApp 适配器运行循环已重启: id=%s", pid)
         except Exception as e:
-            logger.warning("Failed to hot-swap WhatsApp adapter class: %s", e)
+            logger.warning("WhatsApp 适配器热替换失败: %s", e)
 
     async def terminate(self):
-        logger.info("Terminating WhatsApp adapter plugin (adapter managed by PlatformManager, keeping alive)")
+        logger.info("正在终止 WhatsApp 适配器插件（适配器由 PlatformManager 管理，保持存活）")
         await self.page_client.close()
         if self.page_gateway_process:
             await self.page_gateway_process.stop()
