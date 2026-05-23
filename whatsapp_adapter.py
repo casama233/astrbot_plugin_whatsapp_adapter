@@ -950,12 +950,14 @@ class WhatsAppPlatformAdapter(Platform):
             return None
 
         chat_jid = str(data.get("chatJid") or "")
+        chat_pn = str(data.get("chatPn") or "")
         sender_jid = str(data.get("senderJid") or chat_jid)
         sender_pn = str(data.get("senderPn") or "")
         sender_phone = str(data.get("senderPhone") or "")
 
-        if sender_phone:
-            digits = "".join(ch for ch in sender_phone if ch.isdigit())
+        phone_hint = sender_phone or chat_pn
+        if phone_hint:
+            digits = "".join(ch for ch in phone_hint if ch.isdigit())
             if digits and not sender_pn.endswith("@s.whatsapp.net"):
                 sender_pn = f"{digits}@s.whatsapp.net"
 
@@ -1214,9 +1216,10 @@ class WhatsAppPlatformAdapter(Platform):
         sender_jid = str(raw.get("senderJid") or "")
         sender_pn = str(raw.get("senderPn") or "")
         sender_phone = str(raw.get("senderPhone") or "")
+        chat_pn = str(raw.get("chatPn") or "")
 
         candidates = set()
-        for v in (chat_jid, sender_jid, sender_pn, sender_phone):
+        for v in (chat_jid, sender_jid, sender_pn, sender_phone, chat_pn):
             if v:
                 candidates.add(v)
 
