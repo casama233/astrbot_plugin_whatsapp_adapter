@@ -273,15 +273,11 @@ class WhatsAppAdapterPlugin(Star):
                 if type(inst) is NewAdapter:
                     continue
                 logger.info("Hot-swapping WhatsApp adapter class after plugin reload: id=%s", pid)
-                # Cancel old run task first to prevent duplicate loops
-                old_run_task = getattr(inst, '_run_task', None)
-                if old_run_task is not None and not old_run_task.done():
-                    logger.info("Cancelling old run task for WhatsApp adapter before hot-swap: id=%s", pid)
-                    old_run_task.cancel()
-                    try:
-                        await asyncio.wait_for(old_run_task, timeout=5)
-                    except (asyncio.CancelledError, asyncio.TimeoutError):
-                        pass
+                # 完整終止舊執行階段，避免只取消 task 但殘留 Gateway/health task。
+                try:
+                    await inst.terminate()
+                except Exception as exc:
+                    logger.warning("Failed to terminate old WhatsApp adapter before hot-swap: id=%s error=%s", pid, exc)
                 inst.__class__ = NewAdapter
                 _ACTIVE_ADAPTERS.add(inst)
                 inst.clear_errors()
