@@ -286,6 +286,7 @@ class WhatsAppAdapterPlugin(Star):
                 inst._stopped.clear()
                 inst._reconnect_event.clear()
                 inst._force_gateway_restart = True
+                inst._restarting = False
                 inst._refresh_registered_commands()
                 inst._run_task = asyncio.create_task(inst.run())
                 logger.info("WhatsApp 适配器运行循环已重启: id=%s", pid)

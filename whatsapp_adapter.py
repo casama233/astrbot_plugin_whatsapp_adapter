@@ -1541,7 +1541,7 @@ class WhatsAppPlatformAdapter(Platform):
         self._health_task.cancel()
         try:
             await self._health_task
-        except asyncio.CancelledError:
+        except (asyncio.CancelledError, Exception):
             pass
         self._health_task = None
 
@@ -1622,7 +1622,7 @@ class WhatsAppPlatformAdapter(Platform):
                 await self._safe_restart_gateway()
 
     async def _safe_restart_gateway(self) -> None:
-        if self._restarting:
+        if getattr(self, '_restarting', False):
             return
         self._restarting = True
         try:

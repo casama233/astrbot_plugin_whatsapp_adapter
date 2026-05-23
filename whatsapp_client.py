@@ -40,8 +40,9 @@ class WhatsAppGatewayClient:
             )
 
     async def close(self) -> None:
-        if self._events_response:
-            self._events_response.release()
+        events_resp = getattr(self, '_events_response', None)
+        if events_resp:
+            events_resp.release()
             self._events_response = None
         if self._session and not self._session.closed:
             await self._session.close()
@@ -243,7 +244,7 @@ class WhatsAppGatewayClient:
         finally:
             if response is not None:
                 response.release()
-            if self._events_response is response:
+            if getattr(self, '_events_response', None) is response:
                 self._events_response = None
 
     async def _request(
