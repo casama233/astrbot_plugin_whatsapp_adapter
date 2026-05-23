@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-
+import os
+import random
 import re
+import time
 import traceback
 import weakref
 from pathlib import Path
@@ -118,9 +120,9 @@ CONFIG_KEY_ALIASES: dict[str, str] = {
     "标记在线状态": "mark_online",
     "Gateway 健康检查间隔": "gateway_health_check_interval",
     "反应级别": "reaction_level",
-    "预回应表情": "ack_reaction_emoji",
-    "私聊启用手动回应": "ack_reaction_direct",
-    "群组回应模式": "ack_reaction_group",
+    "预回应表情": "pre_ack_emojis",
+    "私聊启用手动回应": "pre_ack_private",
+    "群组回应模式": "pre_ack_public",
     "回复后清除回应": "remove_ack_after_reply",
     "解析入站格式": "parse_inbound_formatting",
     "入站表情回应事件": "inbound_reaction_events",
@@ -133,6 +135,9 @@ CONFIG_KEY_ALIASES: dict[str, str] = {
     "预回应表情列表": "pre_ack_emojis",
     "启用预回应表情": "pre_ack_emoji",
     "媒体上传大小限制(MB)": "media_max_mb",
+    "ack_reaction_emoji": "pre_ack_emojis",
+    "ack_reaction_direct": "pre_ack_private",
+    "ack_reaction_group": "pre_ack_public",
 }
 
 CONFIG_METADATA: dict[str, Any] = {
@@ -843,6 +848,9 @@ class WhatsAppPlatformAdapter(Platform):
             await self._send_presence(target, "available")
 
     async def run(self):
+        if self._stopped.is_set():
+            self._stopped.clear()
+            self._reconnect_event.clear()
         logger.info("Starting WhatsApp platform adapter run loop: gateway=%s", self._base_url)
         try:
             while not self._stopped.is_set():
@@ -880,6 +888,8 @@ class WhatsAppPlatformAdapter(Platform):
                                     self._log_gateway_event(event)
                         except asyncio.CancelledError:
                             raise
+                except asyncio.CancelledError:
+                    raise
                 except Exception as exc:
                     if self._stopped.is_set() or self._reconnect_event.is_set():
                         break
@@ -899,13 +909,6 @@ class WhatsAppPlatformAdapter(Platform):
                         self._reconnect_event.clear()
                         await self._disconnect_gateway_transport()
                         continue
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:
-                    logger.error("❌ WhatsApp Gateway connection error: %s", exc, exc_info=True)
-                    await self._record_gateway_error(f"WhatsApp Gateway connection error: {exc}", exc_info=exc)
-                    if not self._stopped.is_set():
-                        await asyncio.sleep(10)
         except asyncio.CancelledError:
             logger.info("WhatsApp platform adapter run cancelled")
             raise
@@ -922,11 +925,21 @@ class WhatsAppPlatformAdapter(Platform):
         )
         self._reconnect_event.set()
         await self.client.close()
+        if self.gateway_process:
+            await self.gateway_process.stop()
+            self.gateway_process = None
 
     async def terminate(self):
         logger.info("Terminating WhatsApp platform adapter")
         self._stopped.set()
         self._reconnect_event.set()
+        run_task = getattr(self, '_run_task', None)
+        if run_task is not None and not run_task.done():
+            run_task.cancel()
+            try:
+                await asyncio.wait_for(run_task, timeout=5)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
         await self._shutdown_gateway_transport()
         self._status = PlatformStatus.STOPPED
 
@@ -938,6 +951,13 @@ class WhatsAppPlatformAdapter(Platform):
         chat_jid = str(data.get("chatJid") or "")
         sender_jid = str(data.get("senderJid") or chat_jid)
         sender_pn = str(data.get("senderPn") or "")
+        sender_phone = str(data.get("senderPhone") or "")
+
+        if sender_phone:
+            digits = "".join(ch for ch in sender_phone if ch.isdigit())
+            if digits and not sender_pn.endswith("@s.whatsapp.net"):
+                sender_pn = f"{digits}@s.whatsapp.net"
+
         # 對於 @lid 的 DM，使用 senderPn（@s.whatsapp.net）作為穩定的 session_id
         if not chat_jid.endswith("@g.us") and chat_jid.endswith("@lid") and sender_pn.endswith("@s.whatsapp.net"):
             normalized_chat_jid = sender_pn
@@ -957,12 +977,20 @@ class WhatsAppPlatformAdapter(Platform):
         is_group = chat_jid.endswith("@g.us")
         group_id = chat_jid.split("@", 1)[0] if is_group else None
 
+        user_id = ""
+        if sender_pn and sender_pn.endswith("@s.whatsapp.net"):
+            user_id = self._numeric_whatsapp_id(sender_pn)
+        elif sender_phone:
+            user_id = "".join(ch for ch in sender_phone if ch.isdigit())
+        if not user_id:
+            user_id = self._numeric_whatsapp_id(sender_jid)
+
         abm = AstrBotMessage()
         abm.type = MessageType.GROUP_MESSAGE if is_group else MessageType.FRIEND_MESSAGE
         abm.group_id = group_id
         abm.message_str = text
         abm.sender = MessageMember(
-            user_id=self._numeric_whatsapp_id(sender_pn) if sender_pn else self._numeric_whatsapp_id(sender_jid),
+            user_id=user_id,
             nickname=str(data.get("senderName") or sender_jid),
         )
         abm.message = self._message_chain(data, text)
@@ -1010,17 +1038,15 @@ class WhatsAppPlatformAdapter(Platform):
         )
         sender_allowed = self._is_sender_allowed(raw, is_private)
         reaction_level = str(self.config.get("reaction_level", "ack") or "ack")
-        ack_reaction_direct = bool(self.config.get("ack_reaction_direct", True))
-        ack_reaction_group = str(self.config.get("ack_reaction_group", "mentions") or "mentions")
-        if reaction_level != "off" and sender_allowed and not is_reaction_only:
-            if is_private:
-                should_ack = ack_reaction_direct
-            elif ack_reaction_group == "always":
-                should_ack = True
-            elif ack_reaction_group == "mentions":
-                should_ack = is_self_mentioned or is_reply_to_self
-            else:
-                should_ack = False
+        pre_ack_enabled = bool(self.config.get("pre_ack_emoji", True))
+        pre_ack_private = bool(self.config.get("pre_ack_private", True))
+        pre_ack_public_raw = self.config.get("pre_ack_public", True)
+        if isinstance(pre_ack_public_raw, str):
+            pre_ack_public = pre_ack_public_raw.lower() not in ("never", "false", "0", "no", "none")
+        else:
+            pre_ack_public = bool(pre_ack_public_raw)
+        if pre_ack_enabled and reaction_level != "off" and sender_allowed and not is_reaction_only:
+            should_ack = pre_ack_private if is_private else pre_ack_public
             if should_ack:
                 if not is_command:
                     event.is_at_or_wake_command = True
@@ -1252,9 +1278,11 @@ class WhatsAppPlatformAdapter(Platform):
         return self._is_self_mention(participant, self_id, self_lid)
 
     async def _pre_ack(self, event: WhatsAppMessageEvent, reaction_level: str = "ack") -> None:
-        emoji = str(self.config.get("ack_reaction_emoji", "👀") or "👀")
-        if not emoji:
+        emoji_str = str(self.config.get("pre_ack_emojis", "✍️") or "✍️")
+        emojis = [e.strip() for e in re.split(r'[,，\s]+', emoji_str) if e.strip()]
+        if not emojis:
             return
+        emoji = random.choice(emojis)
         try:
             logger.info("WhatsApp pre-ack reaction: target=%s emoji=%s level=%s", event.target_jid, emoji, reaction_level)
             await event.react(emoji)
@@ -1309,7 +1337,7 @@ class WhatsAppPlatformAdapter(Platform):
             "groupAllowFrom": self.config.get("group_allow_from") or [],
             "groups": self.config.get("groups") or [],
             "sendReadReceipts": bool(self.config.get("send_read_receipts", True)),
-            "markOnline": bool(self.config.get("mark_online", True)),
+            "markOnline": bool(self.config.get("mark_online", False)),
             "mediaMaxMb": int(float(self.config.get("media_max_mb", GATEWAY_MEDIA_MAX_MB) or GATEWAY_MEDIA_MAX_MB)),
             "mediaMessageMaxMb": GATEWAY_MEDIA_MESSAGE_MAX_MB,
             "documentMaxMb": GATEWAY_DOCUMENT_MAX_MB,
@@ -1440,10 +1468,15 @@ class WhatsAppPlatformAdapter(Platform):
         await self.client.start()
         self.client.update_base_url(self._base_url)
         if self.config.get("auto_start_gateway", True):
-            try:
-                health = await self.client.health()
-                logger.info("WhatsApp Gateway already healthy: %s", self._safe_status(health))
-            except Exception:
+            force_restart = getattr(self, '_force_gateway_restart', False)
+            self._force_gateway_restart = False
+            if not force_restart:
+                try:
+                    health = await self.client.health()
+                    logger.info("WhatsApp Gateway already healthy: %s", self._safe_status(health))
+                except Exception:
+                    force_restart = True
+            if force_restart:
                 logger.info("Starting WhatsApp Gateway for platform adapter at %s", self._base_url)
                 if self.gateway_process:
                     await self.gateway_process.stop()
@@ -1474,13 +1507,12 @@ class WhatsAppPlatformAdapter(Platform):
         self._refresh_registered_commands()
 
     async def _disconnect_gateway_transport(self) -> None:
-        await self._stop_health_monitor()
-        await self.client.close()
-        if self.gateway_process:
-            await self.gateway_process.stop()
-            self.gateway_process = None
+        await self._stop_gateway_and_client()
 
     async def _shutdown_gateway_transport(self) -> None:
+        await self._stop_gateway_and_client()
+
+    async def _stop_gateway_and_client(self) -> None:
         await self._stop_health_monitor()
         await self.client.close()
         if self.gateway_process:

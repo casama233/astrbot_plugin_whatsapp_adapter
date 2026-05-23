@@ -26,7 +26,7 @@ PLUGIN_DIR = Path(__file__).resolve().parent
     PLUGIN_NAME,
     "OpenCode",
     "WhatsApp Web platform adapter backed by a local Gateway process.",
-    "0.2.1",
+    "0.2.2",
 )
 class WhatsAppAdapterPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None):
@@ -147,7 +147,9 @@ class WhatsAppAdapterPlugin(Star):
             return
         if self.page_gateway_process and self.page_gateway_process.process:
             if self.page_gateway_process.process.returncode is None:
-                return
+                # Process still running but unhealthy — stop it before restarting
+                logger.info("WhatsApp Gateway process running but unhealthy for plugin page, stopping it")
+                await self.page_gateway_process.stop()
         self.page_gateway_process = GatewayProcess(
             node_executable=str(self.config["node_executable"]),
             script_path=PLUGIN_DIR / "gateway" / "whatsapp-gateway.mjs",
@@ -271,23 +273,20 @@ class WhatsAppAdapterPlugin(Star):
                 if type(inst) is NewAdapter:
                     continue
                 logger.info("Hot-swapping WhatsApp adapter class after plugin reload: id=%s", pid)
+                # Cancel old run task first to prevent duplicate loops
+                old_run_task = getattr(inst, '_run_task', None)
+                if old_run_task is not None and not old_run_task.done():
+                    logger.info("Cancelling old run task for WhatsApp adapter before hot-swap: id=%s", pid)
+                    old_run_task.cancel()
+                    try:
+                        await asyncio.wait_for(old_run_task, timeout=5)
+                    except (asyncio.CancelledError, asyncio.TimeoutError):
+                        pass
                 inst.__class__ = NewAdapter
                 inst.clear_errors()
-                run_task = getattr(inst, '_run_task', None)
-                if run_task and not run_task.done():
-                    run_task.cancel()
-                    try:
-                        await run_task
-                    except asyncio.CancelledError:
-                        pass
                 inst._stopped.clear()
                 inst._reconnect_event.clear()
-                if inst.gateway_process:
-                    try:
-                        await inst.gateway_process.stop()
-                    except Exception:
-                        pass
-                    inst.gateway_process = None
+                inst._force_gateway_restart = True
                 inst._run_task = asyncio.create_task(inst.run())
                 logger.info("Restarted WhatsApp adapter run loop after hot-swap: id=%s", pid)
         except Exception as e:
