@@ -285,7 +285,9 @@ async def process_message_chain(
             if use_caption:
                 pending_caption = (pending_caption or "") + text
             else:
-                pending_caption = (pending_caption or "") + text
+                pending_caption, pending_mentions = await send_pending_text(
+                    client, target, pending_caption, text, pending_mentions, **_flush_kw,
+                )
         elif isinstance(component, Image):
             if not use_caption:
                 pending_caption, pending_mentions = await flush_pending_text(

@@ -26,7 +26,7 @@ PLUGIN_DIR = Path(__file__).resolve().parent
     PLUGIN_NAME,
     "OpenCode",
     "WhatsApp Web platform adapter backed by a local Gateway process.",
-    "0.2.0",
+    "0.2.1",
 )
 class WhatsAppAdapterPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None):
@@ -273,6 +273,23 @@ class WhatsAppAdapterPlugin(Star):
                 logger.info("Hot-swapping WhatsApp adapter class after plugin reload: id=%s", pid)
                 inst.__class__ = NewAdapter
                 inst.clear_errors()
+                run_task = getattr(inst, '_run_task', None)
+                if run_task and not run_task.done():
+                    run_task.cancel()
+                    try:
+                        await run_task
+                    except asyncio.CancelledError:
+                        pass
+                inst._stopped.clear()
+                inst._reconnect_event.clear()
+                if inst.gateway_process:
+                    try:
+                        await inst.gateway_process.stop()
+                    except Exception:
+                        pass
+                    inst.gateway_process = None
+                inst._run_task = asyncio.create_task(inst.run())
+                logger.info("Restarted WhatsApp adapter run loop after hot-swap: id=%s", pid)
         except Exception as e:
             logger.warning("Failed to hot-swap WhatsApp adapter class: %s", e)
 
