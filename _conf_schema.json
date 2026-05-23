@@ -1,38 +1,38 @@
 {
   "gateway_host": {
-    "description": "Gateway 绑定地址",
+    "description": "Gateway HTTP 绑定地址",
     "type": "string",
     "default": "127.0.0.1",
     "group": "connection",
-    "hint": "Gateway HTTP 监听地址。AstrBot 与 Gateway 同容器时建议保持 127.0.0.1。"
+    "hint": "除非 AstrBot 和 Gateway 分别运行在不同容器，否则建议保持 127.0.0.1。"
   },
   "gateway_port": {
-    "description": "Gateway 端口",
+    "description": "Gateway HTTP 端口",
     "type": "int",
     "default": 18789,
     "group": "connection",
     "hint": "Gateway HTTP/SSE 端口，预设 18789。"
   },
   "auto_start_gateway": {
-    "description": "自动启动 Gateway",
+    "description": "自动启动内置 Gateway",
     "type": "bool",
     "default": true,
     "group": "connection",
-    "hint": "启用后，平台启动时自动拉起内置 Node.js WhatsApp Gateway。如使用外部 Gateway 可关闭此项。"
+    "hint": "启用后，打开插件登录页时会自动启动 Node.js Gateway；平台实例也有独立的同名配置。"
   },
   "node_executable": {
-    "description": "Node.js 路径",
+    "description": "Node.js 可执行文件",
     "type": "string",
     "default": "node",
     "group": "connection",
-    "hint": "执行 Gateway 的 Node.js 命令或绝对路径。一般保持 node 即可，需 Node.js 20+。"
+    "hint": "推荐 Node.js 20+，例如 node 或 /usr/bin/node。"
   },
   "auth_dir": {
-    "description": "认证目录（留空自动）",
+    "description": "WhatsApp 登录态目录",
     "type": "string",
     "default": "",
     "group": "connection",
-    "hint": "WhatsApp 登录状态（凭证）保存目录。留空自动使用 data/plugin_data/astrbot_plugin_whatsapp_adapter/whatsapp-auth。"
+    "hint": "留空时使用 AstrBot 工作目录下的 data/astrbot_plugin_whatsapp_adapter/whatsapp-auth。"
   },
   "log_level": {
     "description": "Gateway 日志级别",
@@ -40,201 +40,5 @@
     "default": "info",
     "group": "connection",
     "hint": "可选：silent、fatal、error、warn、info、debug、trace。"
-  },
-  "dm_policy": {
-    "description": "私聊接收策略",
-    "type": "string",
-    "default": "allowlist",
-    "group": "permissions",
-    "hint": "allowlist=仅允许名单中号码；open=开放所有人私聊；disabled=关闭私聊功能。"
-  },
-  "allow_from": {
-    "description": "私聊允许名单",
-    "type": "list",
-    "default": [],
-    "group": "permissions",
-    "hint": "允许私聊的 WhatsApp 号码，建议 E.164 格式：+85212345678。[\\\"*\\\"] 表示开放所有私聊。"
-  },
-  "group_policy": {
-    "description": "群聊接收策略",
-    "type": "string",
-    "default": "disabled",
-    "group": "permissions",
-    "hint": "allowlist=仅允许在群名单中的群；open=允许所有已加入群；disabled=关闭群聊功能。"
-  },
-  "groups": {
-    "description": "允许接入的群 JID",
-    "type": "list",
-    "default": [],
-    "group": "permissions",
-    "hint": "允许机器人接入的 WhatsApp 群 JID 列表（如 120363xxx@g.us）。[\\\"*\\\"] 表示允许所有群。"
-  },
-  "group_allow_from": {
-    "description": "群聊发送者白名单",
-    "type": "list",
-    "default": [],
-    "group": "permissions",
-    "hint": "允许在群聊中触发机器人的发送者号码。留空时回退到私聊允许名单。[\\\"*\\\"] 允许所有群成员。"
-  },
-  "command_prefix": {
-    "description": "指令前缀",
-    "type": "string",
-    "default": "/",
-    "group": "commands",
-    "hint": "斜线指令触发前缀，例如 /help 会触发已注册的 help 指令。"
-  },
-  "register_commands": {
-    "description": "启用斜线指令",
-    "type": "bool",
-    "default": true,
-    "group": "commands",
-    "hint": "启用后，以前缀开头且匹配已注册指令的消息会标记为唤醒指令。"
-  },
-  "typing_indicator": {
-    "description": "发送打字状态",
-    "type": "bool",
-    "default": true,
-    "group": "presence",
-    "hint": "启用后，机器人发送回复前向 WhatsApp 显示 typing 状态，发送完恢复 available。"
-  },
-  "send_read_receipts": {
-    "description": "发送已读回执",
-    "type": "bool",
-    "default": true,
-    "group": "presence",
-    "hint": "对已接受入站消息发送 WhatsApp 已读蓝勾。"
-  },
-  "mark_online": {
-    "description": "标记在线状态",
-    "type": "bool",
-    "default": false,
-    "group": "presence",
-    "hint": "启用后定期向 WhatsApp 发送 available 状态。禁用可降低被检测为异常客户端的风险。"
-  },
-  "media_caption_mode": {
-    "description": "媒体附加文字模式",
-    "type": "string",
-    "default": "separate",
-    "group": "messaging",
-    "hint": "separate=文字与媒体分开发送（两条消息）；caption=紧邻媒体前的文字作为该媒体的描述。"
-  },
-  "text_chunk_limit": {
-    "description": "文字切片长度",
-    "type": "int",
-    "default": 4000,
-    "group": "messaging",
-    "hint": "超过此长度的出站文字会被自动切分为多条消息发送。"
-  },
-  "link_preview_single_url": {
-    "description": "链接预览",
-    "type": "bool",
-    "default": true,
-    "group": "messaging",
-    "hint": "仅当一条纯文字消息只包含一个 URL 时启用 WhatsApp 链接预览卡片。"
-  },
-  "ignore_self_messages": {
-    "description": "忽略自身消息",
-    "type": "bool",
-    "default": false,
-    "group": "messaging",
-    "hint": "启用后，发送者 JID 与机器人自身 JID 相同时忽略该消息。解决同号码自己 @自己或给自己发消息触发机器人的问题。"
-  },
-  "parse_inbound_formatting": {
-    "description": "解析入站 WhatsApp 格式",
-    "type": "bool",
-    "default": true,
-    "group": "messaging",
-    "hint": "入站 *粗体* _斜体_ ~删除线~ ```代码``` 转为 Markdown 供 LLM 阅读。"
-  },
-  "media_album_debounce_seconds": {
-    "description": "相簿去抖时间（秒）",
-    "type": "float",
-    "default": 2.5,
-    "group": "messaging",
-    "hint": "同发送者在短时间内连续发送多张无文字图片时，合并为一条相簿消息。设为 0 关闭。"
-  },
-  "reaction_level": {
-    "description": "反应级别",
-    "type": "string",
-    "default": "ack",
-    "group": "pre_ack",
-    "hint": "off=禁用所有反应；ack=仅预回应（收到消息时先发表情）；minimal=回应+LLM可发保守表情；extensive=回应+LLM可用更多表情。"
-  },
-  "ack_reaction_emoji": {
-    "description": "预回应表情",
-    "type": "string",
-    "default": "👀",
-    "group": "pre_ack",
-    "hint": "预回应时使用的 WhatsApp emoji。"
-  },
-  "ack_reaction_direct": {
-    "description": "私聊启用预回应",
-    "type": "bool",
-    "default": true,
-    "group": "pre_ack",
-    "hint": "关闭后，私聊消息不会自动触发预回应表情。"
-  },
-  "ack_reaction_group": {
-    "description": "群组回应模式",
-    "type": "string",
-    "default": "mentions",
-    "group": "pre_ack",
-    "hint": "always=群聊始终触发预回应；mentions=仅被 @ 或回复时触发；never=群聊不触发预回应。"
-  },
-  "remove_ack_after_reply": {
-    "description": "回复后清除回应",
-    "type": "bool",
-    "default": false,
-    "group": "pre_ack",
-    "hint": "启用后，机器人发送回复后自动清除预回应表情，不留残留在消息上。"
-  },
-  "gateway_health_check_interval": {
-    "description": "健康检查间隔（秒）",
-    "type": "int",
-    "default": 60,
-    "group": "advanced",
-    "hint": "后台检查 Gateway 健康状态的间隔秒数。设为 0 可关闭健康检查。"
-  },
-  "inbound_reaction_events": {
-    "description": "入站表情回应事件",
-    "type": "bool",
-    "default": false,
-    "group": "advanced",
-    "hint": "将用户对消息的表情回应（emoji reaction）转为 AstrBot 事件。默认关闭。"
-  },
-  "pre_ack_private": {
-    "description": "私聊预回应",
-    "type": "bool",
-    "default": true,
-    "group": "pre_ack",
-    "hint": "启用后，私聊收到消息时自动触发预回应表情。"
-  },
-  "pre_ack_public": {
-    "description": "群聊预回应",
-    "type": "bool",
-    "default": true,
-    "group": "pre_ack",
-    "hint": "启用后，群聊收到消息时自动触发预回应表情。"
-  },
-  "pre_ack_emojis": {
-    "description": "预回应表情列表",
-    "type": "string",
-    "default": "\u270d\ufe0f",
-    "group": "pre_ack",
-    "hint": "预回应时使用的 WhatsApp emoji，例如 💭、✍️。"
-  },
-  "pre_ack_emoji": {
-    "description": "启用预回应表情",
-    "type": "bool",
-    "default": true,
-    "group": "pre_ack",
-    "hint": "启用后，bot 收到消息时通过 WhatsApp emoji reaction 发出一条预回应。"
-  },
-  "media_max_mb": {
-    "description": "媒体上传大小限制 (MB)",
-    "type": "float",
-    "default": 50,
-    "group": "messaging",
-    "hint": "上传到 WhatsApp Gateway 的单个媒体文件大小上限（MB）。预设 50。"
   }
 }
