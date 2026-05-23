@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.2.5] - 2026-05-24
+
+### Fixed
+- 群消息未 @ 提及/回复机器人时不再触发 LLM 回复
+- `pre_ack_public=always` 仅控制预回复表情开关，不影响唤醒逻辑
+- 表情回应（emoji reaction）永不触发 LLM
+- 热重载时 SSE 连接卡死导致 Gateway 无法重启（`_events_response` 主动释放）
+- 热重载无限循环（`_stop_health_monitor` 未 catch Exception，`_restarting` 未初始化）
+- 群消息 lid→PN 映射缺失导致 allowlist 拒绝（Gateway 超时后透传 + adapter 缓存兜底）
+- `session_id` / `nickname` 使用 lid JID 导致 LLM 上下文出现未解析的 lid
+
+### Changed
+- `/` 前缀指令（含未注册）统一唤醒机器人，看齐其他平台行为
+- lid→PN 持久化缓存：启动时从 Gateway auth 目录加载，新映射自动写入磁盘
+- 出向 PN→lid 正向映射，确保消息归流到正确会话
+- Gateway 侧 `waitForLidPnMapping` 超时不再 reject，交由 adapter 最终判断
+
+### Added
+- `_LID_PN_CACHE` / `_PN_LID_CACHE` 双向映射缓存
+- `_load_lid_mappings()` / `_save_lid_mapping()` 磁盘持久化
+- `_is_sender_allowed` lid 缓存兜底匹配 allowlist
+- `WhatsAppGatewayClient._events_response` 跟踪，主动中断 SSE 连接
+
 ## [0.2.4] - 2026-05-24
 
 ### Fixed
