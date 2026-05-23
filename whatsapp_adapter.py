@@ -782,7 +782,6 @@ class WhatsAppPlatformAdapter(Platform):
     ) -> None:
         super().__init__(platform_config or {}, event_queue)
         self.config = self._merged_config(platform_config or {})
-        self.settings = platform_settings
         self.client = WhatsAppGatewayClient(self._base_url)
         self.gateway_process: GatewayProcess | None = None
         self._stopped = asyncio.Event()
@@ -869,7 +868,7 @@ class WhatsAppPlatformAdapter(Platform):
                                 if self._stopped.is_set() or self._reconnect_event.is_set():
                                     break
                                 if event.get("type") == "message":
-                                    logger.info(
+                                    logger.debug(
                                         "WhatsApp inbound message event: chat=%s sender=%s from_me=%s message_id=%s text_len=%s media_count=%s",
                                         event.get("chatJid"),
                                         event.get("senderJid"),
@@ -914,7 +913,7 @@ class WhatsAppPlatformAdapter(Platform):
                     await asyncio.sleep(3)
                     if self._reconnect_event.is_set():
                         self._reconnect_event.clear()
-                        await self._disconnect_gateway_transport()
+                        await self._shutdown_gateway_transport()
                         continue
         except asyncio.CancelledError:
             logger.info("WhatsApp 平台适配器运行已取消")
@@ -1486,10 +1485,9 @@ class WhatsAppPlatformAdapter(Platform):
 
     def _group_pre_ack_mode(self) -> str:
         value = self.config.get("pre_ack_public", "mentions")
-        normalized = self._normalize_config_value("pre_ack_public", value)
-        if isinstance(normalized, str) and normalized in {"mentions", "always", "never"}:
-            return normalized
-        return "always" if bool(normalized) else "never"
+        if isinstance(value, str) and value in {"mentions", "always", "never"}:
+            return value
+        return "always" if bool(value) else "never"
 
     def _load_plugin_config(self) -> dict[str, Any]:
         config_path = self._data_dir() / "config.json"
@@ -1536,18 +1534,9 @@ class WhatsAppPlatformAdapter(Platform):
                 if self.gateway_process.process.returncode is None:
                     return
         logger.info("Restarting WhatsApp Gateway after event stream interruption at %s", self._base_url)
-        # 終止舊行程（若存在），防止 zombie
         if self.gateway_process:
             await self.gateway_process.stop()
-        self.gateway_process = GatewayProcess(
-            node_executable=str(self.config["node_executable"]),
-            script_path=PLUGIN_DIR / "gateway" / "whatsapp-gateway.mjs",
-            host=str(self.config["gateway_host"]),
-            port=int(self.config["gateway_port"]),
-            auth_dir=self._auth_dir(),
-            log_level=str(self.config["log_level"]),
-            data_dir=self._data_dir(),
-        )
+        self.gateway_process = self._create_gateway_process()
         await self.gateway_process.start()
         await self._wait_for_gateway()
         configured = await self.client.configure(self._gateway_config())
@@ -1571,15 +1560,7 @@ class WhatsAppPlatformAdapter(Platform):
                 logger.info("正在启动 WhatsApp Gateway: %s", self._base_url)
                 if self.gateway_process:
                     await self.gateway_process.stop()
-                self.gateway_process = GatewayProcess(
-                    node_executable=str(self.config["node_executable"]),
-                    script_path=PLUGIN_DIR / "gateway" / "whatsapp-gateway.mjs",
-                    host=str(self.config["gateway_host"]),
-                    port=int(self.config["gateway_port"]),
-                    auth_dir=self._auth_dir(),
-                    log_level=str(self.config["log_level"]),
-                    data_dir=self._data_dir(),
-                )
+                self.gateway_process = self._create_gateway_process()
                 await self.gateway_process.start()
         else:
             logger.info("WhatsApp 平台自动启动已关闭，预期 Gateway 运行于 %s", self._base_url)
@@ -1603,8 +1584,16 @@ class WhatsAppPlatformAdapter(Platform):
         await self._restart_health_monitor()
         self._refresh_registered_commands()
 
-    async def _disconnect_gateway_transport(self) -> None:
-        await self._stop_gateway_and_client()
+    def _create_gateway_process(self) -> GatewayProcess:
+        return GatewayProcess(
+            node_executable=str(self.config["node_executable"]),
+            script_path=PLUGIN_DIR / "gateway" / "whatsapp-gateway.mjs",
+            host=str(self.config["gateway_host"]),
+            port=int(self.config["gateway_port"]),
+            auth_dir=self._auth_dir(),
+            log_level=str(self.config["log_level"]),
+            data_dir=self._data_dir(),
+        )
 
     async def _shutdown_gateway_transport(self) -> None:
         await self._stop_gateway_and_client()

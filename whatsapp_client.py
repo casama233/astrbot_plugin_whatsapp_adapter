@@ -40,9 +40,8 @@ class WhatsAppGatewayClient:
             )
 
     async def close(self) -> None:
-        events_resp = getattr(self, '_events_response', None)
-        if events_resp:
-            events_resp.release()
+        if self._events_response:
+            self._events_response.release()
             self._events_response = None
         if self._session and not self._session.closed:
             await self._session.close()
@@ -63,14 +62,6 @@ class WhatsAppGatewayClient:
     async def configure(self, config: dict[str, Any]) -> dict[str, Any]:
         return await self._request("POST", "/config", json_data=config)
 
-    async def resolve_mentions(self, chat_jid: str, text: str, tokens: list[str] | None = None) -> list[str]:
-        payload: dict[str, Any] = {"chatJid": chat_jid, "text": text}
-        if tokens is not None:
-            payload["tokens"] = tokens
-        result = await self._request("POST", "/mentions/resolve", json_data=payload)
-        mentions = result.get("mentions") or []
-        return [str(item) for item in mentions if str(item)]
-
     async def send_text(
         self,
         to: str,
@@ -79,9 +70,8 @@ class WhatsAppGatewayClient:
         quoted_participant: str | None = None,
         link_preview: bool = False,
         mentions: list[str] | None = None,
-        resolve_text_mentions: bool = False,
     ) -> dict[str, Any]:
-        payload: dict[str, Any] = {"to": to, "text": text, "linkPreview": link_preview, "resolveTextMentions": resolve_text_mentions}
+        payload: dict[str, Any] = {"to": to, "text": text, "linkPreview": link_preview}
         if mentions:
             payload["mentions"] = mentions
         if quoted_message_id:

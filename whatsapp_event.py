@@ -39,7 +39,6 @@ class WhatsAppMessageEvent(AstrMessageEvent):
     ) -> None:
         super().__init__(message_str, message_obj, platform_meta, session_id)
         self.client = client
-        self.bot = None
         self.target_jid = target_jid
         self.quoted_message_id = quoted_message_id
         raw = message_obj.raw_message or {}
@@ -61,7 +60,6 @@ class WhatsAppMessageEvent(AstrMessageEvent):
             [component.__class__.__name__ for component in message.chain],
         )
         await self.send_typing()
-        exception: Exception | None = None
         try:
             pending_caption, pending_mentions = await process_message_chain(
                 self.client, self.target_jid, message.chain,
@@ -80,7 +78,7 @@ class WhatsAppMessageEvent(AstrMessageEvent):
                 quoted_participant=self.quoted_participant,
             )
         except Exception as exc:
-            exception = exc
+            logger.warning("WhatsApp 事件发送完成但存在错误: target=%s error=%s", self.target_jid, exc)
             raise
         finally:
             await self.stop_typing()
@@ -91,8 +89,6 @@ class WhatsAppMessageEvent(AstrMessageEvent):
                     await self.client.react(self.target_jid, self.quoted_message_id, "", self.quoted_participant)
                 except Exception:
                     pass
-            if exception:
-                logger.warning("WhatsApp 事件发送完成但存在错误: target=%s error=%s", self.target_jid, exception)
             # 清理 URL 下載的暫存檔
             for tmp in self._temp_files:
                 try:

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-from pathlib import Path
 from typing import Any, Callable, Coroutine, Iterator
 
 from astrbot import logger
@@ -11,7 +10,7 @@ from astrbot.api.platform import At
 from astrbot.api.message_components import File, Image, Plain, Record, Video
 
 from .whatsapp_client import WhatsAppGatewayClient
-from .whatsapp_components import WhatsAppButton, WhatsAppButtons, WhatsAppEdit, WhatsAppList, WhatsAppListRow, WhatsAppPoll
+from .whatsapp_components import WhatsAppButton, WhatsAppButtons, WhatsAppEdit, WhatsAppList, WhatsAppPoll
 
 __all__ = [
     "chunk_text",
@@ -26,7 +25,6 @@ __all__ = [
     "mentions_for_text",
     "normalize_media_value",
     "process_message_chain",
-    "send_pending_text",
     "send_whatsapp_component",
     "should_link_preview",
 ]
@@ -151,31 +149,6 @@ async def flush_pending_text(
     """將累積的文字 flush 發送到 WhatsApp。"""
     if not pending:
         return None, mentions or []
-    for chunk in chunk_text(pending, text_chunk_limit):
-        chunk_mentions = await mentions_for_text(client, target, chunk, mentions or [])
-        logger.debug("Sending WhatsApp text chunk: target=%s length=%s", target, len(chunk))
-        await client.send_text(
-            target,
-            chunk,
-            quoted_message_id=quoted_message_id,
-            quoted_participant=quoted_participant,
-            link_preview=should_link_preview(chunk, link_preview_single_url),
-            mentions=chunk_mentions,
-        )
-    return None, []
-
-
-async def send_pending_text(
-    client: WhatsAppGatewayClient,
-    target: str,
-    pending: str | None,
-    text: str,
-    mentions: list[str] | None = None,
-    **kwargs: Any,
-) -> tuple[None, list[str]]:
-    """累積文字到 pending，然後 flush。"""
-    pending = (pending or "") + text
-    return await flush_pending_text(client, target, pending, mentions, **kwargs)
 
 
 async def send_whatsapp_component(
@@ -191,10 +164,6 @@ async def send_whatsapp_component(
             {"id": btn.id or f"btn_{i}", "text": btn.text}
             for i, btn in enumerate(component.buttons or [])
         ]
-        if not buttons and isinstance(component.buttons, list):
-            for i, item in enumerate(component.buttons):
-                if isinstance(item, WhatsAppButton):
-                    buttons.append({"id": item.id or f"btn_{i}", "text": item.text})
         await client.send_buttons(
             target, component.body, buttons,
             footer=component.footer,
@@ -279,8 +248,8 @@ async def process_message_chain(
             if use_caption:
                 pending_caption = (pending_caption or "") + text
             else:
-                pending_caption, pending_mentions = await send_pending_text(
-                    client, target, pending_caption, text, pending_mentions, **_flush_kw,
+                pending_caption, pending_mentions = await flush_pending_text(
+                    client, target, (pending_caption or "") + text, pending_mentions, **_flush_kw,
                 )
         elif isinstance(component, At):
             jid = mention_jid_from_at(component)
@@ -290,8 +259,8 @@ async def process_message_chain(
             if use_caption:
                 pending_caption = (pending_caption or "") + text
             else:
-                pending_caption, pending_mentions = await send_pending_text(
-                    client, target, pending_caption, text, pending_mentions, **_flush_kw,
+                pending_caption, pending_mentions = await flush_pending_text(
+                    client, target, (pending_caption or "") + text, pending_mentions, **_flush_kw,
                 )
         elif isinstance(component, Image):
             if not use_caption:
