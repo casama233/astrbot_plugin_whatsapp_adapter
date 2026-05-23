@@ -1157,6 +1157,8 @@ async function startSocket() {
       selfJid = socket.user?.id || null;
       selfLid = socket.authState?.creds?.me?.lid || null;
       if (selfLid && selfJid) updateContact({ id: selfLid, jid: selfJid });
+      // 連線成功立即標記在線，不受 markOnline 控制（確保機器人基本在線）
+      sendAvailablePresence().catch(() => {});
       startPresenceTimer();
       broadcast({ type: "status", status: "connected", selfJid, selfLid });
     }

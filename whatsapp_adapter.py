@@ -1347,7 +1347,7 @@ class WhatsAppPlatformAdapter(Platform):
         return digits or self._whatsapp_user_id(jid)
 
     async def _send_presence(self, target: str, state: str) -> None:
-        if not self.config.get("typing_indicator", True):
+        if state == "composing" and not self.config.get("typing_indicator", True):
             return
         try:
             await self.client.send_presence(target, state)
