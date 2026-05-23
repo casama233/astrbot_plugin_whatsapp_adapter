@@ -875,7 +875,7 @@ async function handleIncomingMessage(item, options = {}) {
   if (!configured) {
     log.warn({ chatJid, senderJid, messageId: primary.key.id }, "Gateway not yet configured; passing message through without allowlist check");
   }
-  const allowedResult = configured ? allowedMessageResult(chatJid, senderJid, primary) : { allowed: true, reason: "not_yet_configured", senderPhone: "" };
+  let allowedResult = configured ? allowedMessageResult(chatJid, senderJid, primary) : { allowed: true, reason: "not_yet_configured", senderPhone: "" };
   if (!isGroup) {
     log.info(
       {
@@ -1058,6 +1058,7 @@ async function handleIncomingMessage(item, options = {}) {
     chatJid,
     senderJid,
     senderPn: primary.key.senderPn || null,
+    senderPhone: allowedResult.senderPhone || resolvePhone(senderJid) || "",
     senderName: primary.pushName || senderJid,
     fromMe,
     selfJid,

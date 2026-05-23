@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.2.2] - 2026-05-23
+
+### Fixed
+- `pre_ack_emoji` / `pre_ack_private` / `pre_ack_public` / `pre_ack_emojis` config keys were dead code — `handle_msg` now reads the new `pre_ack_*` system instead of the legacy `ack_reaction_*` keys
+- Gateway process cleanup now uses `killpg` to ensure orphaned subprocesses are terminated
+- `markOnline` fallback default corrected from `True` to `False` to match documented `DEFAULT_CONFIG`
+
+### Changed
+- `_pre_ack` now supports multiple emojis (`pre_ack_emojis` accepts comma/space-separated list) — picks one at random for each reaction
+- Gateway restart on hot-swap now uses `_force_gateway_restart` flag instead of manually stopping/restarting the process
+- Backward compat aliases added for legacy `ack_reaction_*` → `pre_ack_*` config keys via `CONFIG_KEY_ALIASES`
+
+### Added
+- `senderPhone` field in message events from Gateway
+- Lock file mechanism in `run()` to prevent duplicate adapter event loops
+- `start_new_session=True` for Gateway subprocess to isolate process group
+
 ## [0.2.1] - 2026-05-23
 
 ### Added

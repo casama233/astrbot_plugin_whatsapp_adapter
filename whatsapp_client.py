@@ -296,22 +296,43 @@ class GatewayProcess:
             str(self.script_path),
             cwd=str(self.script_path.parent.parent),
             env=env,
+            start_new_session=True,
         )
 
     async def stop(self) -> None:
         if not self.process or self.process.returncode is not None:
-            return
-        try:
-            self.process.terminate()
-        except ProcessLookupError:
             self.process = None
             return
         try:
+            pgid = os.getpgid(self.process.pid)
+        except (ProcessLookupError, OSError):
+            pgid = None
+        if pgid is not None and pgid != os.getpgid(os.getpid()):
+            try:
+                os.killpg(pgid, 15)
+            except (ProcessLookupError, OSError):
+                pass
+        else:
+            try:
+                self.process.terminate()
+            except ProcessLookupError:
+                self.process = None
+                return
+        try:
             await asyncio.wait_for(self.process.wait(), timeout=10)
         except asyncio.TimeoutError:
+            if pgid is not None and pgid != os.getpgid(os.getpid()):
+                try:
+                    os.killpg(pgid, 9)
+                except (ProcessLookupError, OSError):
+                    pass
+            else:
+                try:
+                    self.process.kill()
+                except ProcessLookupError:
+                    pass
             try:
-                self.process.kill()
-            except ProcessLookupError:
+                await self.process.wait()
+            except Exception:
                 pass
-            await self.process.wait()
         self.process = None
