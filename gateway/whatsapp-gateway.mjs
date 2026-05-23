@@ -932,18 +932,9 @@ async function handleIncomingMessage(item, options = {}) {
             return;
           }
         } else {
-          broadcast({
-            type: "rejected",
-            chatJid, senderJid,
-            senderPn: primary.key.senderPn || null,
-            senderName: primary.pushName || senderJid,
-            senderPhone: "",
-            reason: "dm_allowlist_unresolved_lid", fromMe,
-            messageId: primary.key.id,
-            text: textFromMessage(primary.message) || "",
-            timestamp: Number(primary.messageTimestamp || Date.now() / 1000),
-          });
-          return;
+          // lid→PN 映射超时未解析，仍转发给 adapter 做最终 allowlist 判断
+          log.warn({ senderJid, chatJid, messageId: primary.key.id }, "lid→PN mapping unresolved within timeout, passing through to adapter");
+          allowedResult = { allowed: true, reason: "lid_unresolved_allow", senderPhone: "" };
         }
       } else {
         broadcast({

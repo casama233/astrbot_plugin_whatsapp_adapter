@@ -1217,7 +1217,15 @@ class WhatsAppPlatformAdapter(Platform):
             if policy == "open":
                 return True
             allow_from = self._coerce_str_list(self.config.get("allow_from"))
-            return any(_allowed_by(c, allow_from) for c in candidates)
+            if any(_allowed_by(c, allow_from) for c in candidates):
+                return True
+            # lid→PN 緩存兜底：如果候選中有 lid JID，嘗試用快取的 PN 匹配
+            for c in candidates:
+                if c.endswith("@lid"):
+                    pn = _LID_PN_CACHE.get(c)
+                    if pn and _allowed_by(pn, allow_from):
+                        return True
+            return False
 
         policy = self.config.get("group_policy", "disabled")
         if policy == "disabled":
