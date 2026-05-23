@@ -103,7 +103,7 @@ def mention_jid_from_at(component: At) -> str | None:
             digits,
         )
         return f"{digits}@s.whatsapp.net"
-    logger.warning("WhatsApp mention JID resolution failed: value=%s", value)
+    logger.warning("WhatsApp @提及 JID 解析失败: value=%s", value)
     return None
 
 
@@ -296,10 +296,10 @@ async def process_message_chain(
             try:
                 media_path = await _resolve(component.file)
             except ValueError as exc:
-                logger.warning("WhatsApp process chain skipped image: %s", exc)
+                logger.warning("WhatsApp 消息链跳过图片: %s", exc)
                 continue
             if not media_path:
-                logger.warning("WhatsApp process chain skipped image: empty file path")
+                logger.warning("WhatsApp 消息链跳过图片: 文件路径为空")
                 continue
             media_kind = media_kind_from_component(component, "image")
             await client.send_media(
@@ -316,10 +316,10 @@ async def process_message_chain(
             try:
                 media_path = await _resolve(component.file)
             except ValueError as exc:
-                logger.warning("WhatsApp process chain skipped audio: %s", exc)
+                logger.warning("WhatsApp 消息链跳过音频: %s", exc)
                 continue
             if not media_path:
-                logger.warning("WhatsApp process chain skipped audio: empty file path")
+                logger.warning("WhatsApp 消息链跳过音频: 文件路径为空")
                 continue
             await client.send_media(target, "audio", media_path, None, **_send_kw)
         elif isinstance(component, Video):
@@ -330,10 +330,10 @@ async def process_message_chain(
             try:
                 media_path = await _resolve(component.file)
             except ValueError as exc:
-                logger.warning("WhatsApp process chain skipped video: %s", exc)
+                logger.warning("WhatsApp 消息链跳过视频: %s", exc)
                 continue
             if not media_path:
-                logger.warning("WhatsApp process chain skipped video: empty file path")
+                logger.warning("WhatsApp 消息链跳过视频: 文件路径为空")
                 continue
             await client.send_media(
                 target, "video", media_path, pending_caption if use_caption else None, **_send_kw,
@@ -343,7 +343,7 @@ async def process_message_chain(
         elif isinstance(component, File):
             media_path = component.file or component.url
             if not media_path:
-                logger.warning("WhatsApp process chain skipped document: empty path")
+                logger.warning("WhatsApp 消息链跳过文档: 路径为空")
                 continue
             if not use_caption:
                 pending_caption, pending_mentions = await flush_pending_text(
@@ -352,7 +352,7 @@ async def process_message_chain(
             try:
                 resolved = await _resolve(media_path)
             except ValueError as exc:
-                logger.warning("WhatsApp process chain skipped document: %s", exc)
+                logger.warning("WhatsApp 消息链跳过文档: %s", exc)
                 continue
             await client.send_media(
                 target, "document", resolved, pending_caption if use_caption else None, **_send_kw,
