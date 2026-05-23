@@ -870,15 +870,12 @@ class WhatsAppPlatformAdapter(Platform):
         """熱重載平台配置：重啟 Gateway 進程以確保載入最新 Gateway 代碼與配置。"""
         self._platform_config = platform_config or {}
         self.config = self._merged_config(self._platform_config)
-        logger.info(
-            "WhatsApp platform config hot-reload: gateway=%s restarting Gateway process",
-            self._base_url,
-        )
         self._reconnect_event.set()
         await self.client.close()
         if self.gateway_process:
             await self.gateway_process.stop()
             self.gateway_process = None
+        await self._ensure_gateway_running()
 
     async def terminate(self):
         logger.info("Terminating WhatsApp platform adapter")
@@ -1477,6 +1474,7 @@ class WhatsAppPlatformAdapter(Platform):
         self._mark_running()
 
     async def _connect_gateway(self) -> None:
+        self._reconnect_event.clear()
         await self.client.start()
         self.client.update_base_url(self._base_url)
         if self.config.get("auto_start_gateway", True):
