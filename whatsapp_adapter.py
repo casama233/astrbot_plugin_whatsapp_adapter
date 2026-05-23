@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import builtins
 import json
 import os
 import random
@@ -52,14 +51,11 @@ from .whatsapp_helpers import (
 
 PLUGIN_DIR = Path(__file__).resolve().parent
 _ACTIVE_ADAPTERS: weakref.WeakSet["WhatsAppPlatformAdapter"] = weakref.WeakSet()
+_RUNTIME_OWNER_REGISTRY: dict[str, weakref.ReferenceType["WhatsAppPlatformAdapter"]] = {}
 
 
 def _runtime_owner_registry() -> dict[str, weakref.ReferenceType["WhatsAppPlatformAdapter"]]:
-    registry = getattr(builtins, "_whatsapp_adapter_runtime_registry", None)
-    if registry is None:
-        registry = {}
-        setattr(builtins, "_whatsapp_adapter_runtime_registry", registry)
-    return registry
+    return _RUNTIME_OWNER_REGISTRY
 
 LOGO_ABSOLUTE = str(PLUGIN_DIR / "logo.svg")
 
@@ -100,7 +96,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "command_prefix": "/",
     "register_commands": True,
     "pre_ack_private": True,
-    "pre_ack_public": True,
+    "pre_ack_public": "mentions",
     "pre_ack_emojis": "✍️",
     "pre_ack_emoji": True,
     "media_max_mb": 50,
@@ -742,6 +738,7 @@ class WhatsAppPlatformAdapter(Platform):
         self._reconnect_event = asyncio.Event()
         self._health_task: asyncio.Task | None = None
         self._gateway_healthy = False
+        self._restarting = False
         self._last_gateway_status_log: tuple[Any, Any, Any] | None = None
         self._platform_config = platform_config or {}
         self._registered_commands: list[str] = []
@@ -905,14 +902,12 @@ class WhatsAppPlatformAdapter(Platform):
             return None
 
         chat_jid = str(data.get("chatJid") or "")
-        chat_pn = str(data.get("chatPn") or "")
         sender_jid = str(data.get("senderJid") or chat_jid)
         sender_pn = str(data.get("senderPn") or "")
         sender_phone = str(data.get("senderPhone") or "")
 
-        phone_hint = sender_phone or chat_pn
-        if phone_hint:
-            digits = "".join(ch for ch in phone_hint if ch.isdigit())
+        if sender_phone:
+            digits = "".join(ch for ch in sender_phone if ch.isdigit())
             if digits and not sender_pn.endswith("@s.whatsapp.net"):
                 sender_pn = f"{digits}@s.whatsapp.net"
 
@@ -1171,10 +1166,9 @@ class WhatsAppPlatformAdapter(Platform):
         sender_jid = str(raw.get("senderJid") or "")
         sender_pn = str(raw.get("senderPn") or "")
         sender_phone = str(raw.get("senderPhone") or "")
-        chat_pn = str(raw.get("chatPn") or "")
 
         candidates = set()
-        for v in (chat_jid, sender_jid, sender_pn, sender_phone, chat_pn):
+        for v in (chat_jid, sender_jid, sender_pn, sender_phone):
             if v:
                 candidates.add(v)
 
@@ -1401,7 +1395,7 @@ class WhatsAppPlatformAdapter(Platform):
         return [str(value).strip()] if str(value).strip() else []
 
     def _group_pre_ack_mode(self) -> str:
-        value = self.config.get("pre_ack_public", True)
+        value = self.config.get("pre_ack_public", "mentions")
         normalized = self._normalize_config_value("pre_ack_public", value)
         if isinstance(normalized, str) and normalized in {"mentions", "always", "never"}:
             return normalized
@@ -1603,16 +1597,24 @@ class WhatsAppPlatformAdapter(Platform):
                 else:
                     self._gateway_healthy = False
                     self._record_gateway_error(f"WhatsApp Gateway not ready: {self._safe_status(status)}")
-                    await self._ensure_gateway_running()
+                    await self._safe_restart_gateway()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 self._gateway_healthy = False
                 self._record_gateway_error(f"WhatsApp Gateway health check failed: {exc}", exc_info=exc)
-                try:
-                    await self._ensure_gateway_running()
-                except Exception as restart_exc:
-                    self._record_gateway_error(f"WhatsApp Gateway health restart failed: {restart_exc}", exc_info=restart_exc)
+                await self._safe_restart_gateway()
+
+    async def _safe_restart_gateway(self) -> None:
+        if self._restarting:
+            return
+        self._restarting = True
+        try:
+            await self._ensure_gateway_running()
+        except Exception as restart_exc:
+            self._record_gateway_error(f"WhatsApp Gateway health restart failed: {restart_exc}", exc_info=restart_exc)
+        finally:
+            self._restarting = False
 
     def _mark_running(self) -> None:
         self._status = PlatformStatus.RUNNING
@@ -1692,9 +1694,10 @@ def patch_platform_manager_hot_reload() -> None:
     except Exception as exc:
         logger.debug("WhatsApp hot-reload patch skipped; platform manager unavailable: %s", exc)
         return
-    if getattr(PlatformManager, "_whatsapp_hot_reload_patched", False):
+    original_reload = getattr(PlatformManager, "_whatsapp_original_reload", None)
+    if original_reload is not None:
         return
-    original_reload = PlatformManager.reload
+    PlatformManager._whatsapp_original_reload = PlatformManager.reload
 
     async def reload(self, platform_config: dict) -> None:
         platform_id = platform_config.get("id")
@@ -1720,8 +1723,7 @@ def patch_platform_manager_hot_reload() -> None:
                     platform_id,
                     exc,
                 )
-        await original_reload(self, platform_config)
+        await PlatformManager._whatsapp_original_reload(self, platform_config)
 
     PlatformManager.reload = reload
-    PlatformManager._whatsapp_hot_reload_patched = True
     logger.info("WhatsApp platform config hot-reload enabled")

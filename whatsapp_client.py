@@ -19,6 +19,7 @@ class WhatsAppGatewayClient:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self._session: aiohttp.ClientSession | None = None
+        self._start_lock = asyncio.Lock()
 
     async def __aenter__(self) -> "WhatsAppGatewayClient":
         await self.start()
@@ -28,7 +29,11 @@ class WhatsAppGatewayClient:
         await self.close()
 
     async def start(self) -> None:
-        if self._session is None or self._session.closed:
+        if self._session and not self._session.closed:
+            return
+        async with self._start_lock:
+            if self._session and not self._session.closed:
+                return
             self._session = aiohttp.ClientSession(
                 timeout=aiohttp.ClientTimeout(total=self.timeout)
             )
@@ -216,7 +221,9 @@ class WhatsAppGatewayClient:
         if self._session is None:
             raise RuntimeError("WhatsApp gateway client session not started")
         timeout = aiohttp.ClientTimeout(total=None, sock_connect=self.timeout, sock_read=300.0)
-        async with self._session.get(f"{self.base_url}/events", timeout=timeout) as response:
+        response = None
+        try:
+            response = await self._session.get(f"{self.base_url}/events", timeout=timeout)
             response.raise_for_status()
             async for raw_line in response.content:
                 line = raw_line.decode("utf-8", errors="ignore").strip()
@@ -228,6 +235,9 @@ class WhatsAppGatewayClient:
                 if data == "[DONE]":
                     break
                 yield json.loads(data)
+        finally:
+            if response is not None:
+                response.release()
 
     async def _request(
         self,

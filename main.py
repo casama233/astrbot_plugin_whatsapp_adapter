@@ -163,18 +163,20 @@ class WhatsAppAdapterPlugin(Star):
         await self.page_gateway_process.start()
         # 輪詢 Gateway 健康狀態，最長等待 30 秒
         health_client = WhatsAppGatewayClient(self._base_url, timeout=5.0)
-        last_error: Exception | None = None
-        for attempt in range(1, 31):
-            try:
-                health = await health_client.health()
-                logger.info("WhatsApp Gateway healthy for plugin page on attempt %s: %s", attempt, health)
-                break
-            except Exception as exc:
-                last_error = exc
-                await asyncio.sleep(1)
-        else:
-            logger.warning("WhatsApp Gateway for plugin page did not become healthy: %s", last_error)
-        await health_client.close()
+        try:
+            last_error: Exception | None = None
+            for attempt in range(1, 31):
+                try:
+                    health = await health_client.health()
+                    logger.info("WhatsApp Gateway healthy for plugin page on attempt %s: %s", attempt, health)
+                    break
+                except Exception as exc:
+                    last_error = exc
+                    await asyncio.sleep(1)
+            else:
+                logger.warning("WhatsApp Gateway for plugin page did not become healthy: %s", last_error)
+        finally:
+            await health_client.close()
 
     def _auth_dir(self) -> Path:
         configured = str(self.config.get("auth_dir") or "").strip()
