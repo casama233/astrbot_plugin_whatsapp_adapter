@@ -53,6 +53,61 @@ PLUGIN_DIR = Path(__file__).resolve().parent
 _ACTIVE_ADAPTERS: weakref.WeakSet["WhatsAppPlatformAdapter"] = weakref.WeakSet()
 _RUNTIME_OWNER_REGISTRY: dict[str, weakref.ReferenceType["WhatsAppPlatformAdapter"]] = {}
 _LID_PN_CACHE: dict[str, str] = {}  # lid JID → pn JID (e.g. "xxx@lid" → "yyy@s.whatsapp.net")
+_PN_LID_CACHE: dict[str, str] = {}  # pn JID → lid JID，用於出站時目標 JID 還原
+
+
+def _lid_mapping_path(auth_dir: Path, lid_jid: str) -> Path | None:
+    """lid JID 對應的磁碟映射文件路徑（lid-mapping-{lid数字}_reverse.json）。"""
+    lid_num = lid_jid.split("@", 1)[0].split(":", 1)[0]
+    if not lid_num.isdigit():
+        return None
+    return auth_dir / f"lid-mapping-{lid_num}_reverse.json"
+
+
+def _load_lid_mappings(auth_dir: Path) -> None:
+    """從 Gateway auth 目錄加載所有 lid-mapping-*_reverse.json 到緩存。"""
+    if not auth_dir or not auth_dir.is_dir():
+        return
+    import json
+    _LID_PN_CACHE.clear()
+    _PN_LID_CACHE.clear()
+    try:
+        for f in auth_dir.iterdir():
+            m = re.match(r"^lid-mapping-(\d+)_reverse\.json$", f.name)
+            if not m:
+                continue
+            try:
+                phone = json.loads(f.read_text("utf-8"))
+                if phone and isinstance(phone, str):
+                    lid_jid = f"{m.group(1)}@lid"
+                    pn_jid = f"{phone}@s.whatsapp.net"
+                    _LID_PN_CACHE[lid_jid] = pn_jid
+                    _PN_LID_CACHE[pn_jid] = lid_jid
+            except Exception:
+                continue
+        if _LID_PN_CACHE:
+            logger.info("已加載 %d 條 lid→PN 映射到緩存", len(_LID_PN_CACHE))
+    except Exception as exc:
+        logger.debug("加載 lid 映射失敗: %s", exc)
+
+
+def _save_lid_mapping(lid_jid: str, pn_jid: str) -> None:
+    """持久化 lid→PN 映射到 Gateway auth 目錄。"""
+    if not _get_astrbot_data_path:
+        return
+    import json
+    from astrbot.core.utils.astrbot_path import get_astrbot_data_path
+    plugin_data = Path(get_astrbot_data_path()) / "plugin_data" / PLUGIN_NAME
+    auth_dir = plugin_data / "whatsapp-auth"
+    path = _lid_mapping_path(auth_dir, lid_jid)
+    if not path or path.exists():
+        return
+    try:
+        auth_dir.mkdir(parents=True, exist_ok=True)
+        pn = re.sub(r"\D", "", pn_jid.split("@", 1)[0].split(":", 1)[0])
+        path.write_text(json.dumps(pn), "utf-8")
+    except Exception:
+        pass
 
 
 def _runtime_owner_registry() -> dict[str, weakref.ReferenceType["WhatsAppPlatformAdapter"]]:
@@ -745,6 +800,7 @@ class WhatsAppPlatformAdapter(Platform):
         self._registered_commands: list[str] = []
         _ACTIVE_ADAPTERS.add(self)
         self._refresh_registered_commands()
+        _load_lid_mappings(self._auth_dir())
         logger.info(
             "WhatsApp platform adapter initialized: gateway=%s auto_start=%s dm_policy=%s allow_from=%s group_policy=%s groups=%s auth_dir=%s",
             self._base_url,
@@ -774,6 +830,11 @@ class WhatsAppPlatformAdapter(Platform):
             logger.debug("WhatsApp send_by_session skipped custom send because target session is missing")
             await super().send_by_session(session, message_chain)
             return
+
+        # PN→lid 正向解析：若目標是 PN 且有緩存 lid，用 lid 確保訊息歸流正確
+        lid_target = _PN_LID_CACHE.get(str(target)) if target else None
+        if lid_target:
+            target = lid_target
 
         logger.debug(
             "WhatsApp send_by_session: target=%s components=%s",
@@ -913,9 +974,15 @@ class WhatsAppPlatformAdapter(Platform):
 
         # 缓存 lid→PN 映射，用于出站 @mention 时解析
         if sender_jid.endswith("@lid") and sender_pn.endswith("@s.whatsapp.net"):
-            _LID_PN_CACHE[sender_jid] = sender_pn
+            if sender_jid not in _LID_PN_CACHE:
+                _LID_PN_CACHE[sender_jid] = sender_pn
+                _PN_LID_CACHE[sender_pn] = sender_jid
+                _save_lid_mapping(sender_jid, sender_pn)
         if chat_jid.endswith("@lid") and sender_pn.endswith("@s.whatsapp.net"):
-            _LID_PN_CACHE[chat_jid] = sender_pn
+            if chat_jid not in _LID_PN_CACHE:
+                _LID_PN_CACHE[chat_jid] = sender_pn
+                _PN_LID_CACHE[sender_pn] = chat_jid
+                _save_lid_mapping(chat_jid, sender_pn)
 
         # session_id 統一用 PN JID（@s.whatsapp.net），避免 lid 不穩定
         if chat_jid.endswith("@g.us"):
