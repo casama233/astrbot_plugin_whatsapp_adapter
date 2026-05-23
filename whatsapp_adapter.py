@@ -52,6 +52,7 @@ from .whatsapp_helpers import (
 PLUGIN_DIR = Path(__file__).resolve().parent
 _ACTIVE_ADAPTERS: weakref.WeakSet["WhatsAppPlatformAdapter"] = weakref.WeakSet()
 _RUNTIME_OWNER_REGISTRY: dict[str, weakref.ReferenceType["WhatsAppPlatformAdapter"]] = {}
+_LID_PN_CACHE: dict[str, str] = {}  # lid JID → pn JID (e.g. "xxx@lid" → "yyy@s.whatsapp.net")
 
 
 def _runtime_owner_registry() -> dict[str, weakref.ReferenceType["WhatsAppPlatformAdapter"]]:
@@ -907,6 +908,12 @@ class WhatsAppPlatformAdapter(Platform):
             digits = "".join(ch for ch in sender_phone if ch.isdigit())
             if digits and not sender_pn.endswith("@s.whatsapp.net"):
                 sender_pn = f"{digits}@s.whatsapp.net"
+
+        # 缓存 lid→PN 映射，用于出站 @mention 时解析
+        if sender_jid.endswith("@lid") and sender_pn.endswith("@s.whatsapp.net"):
+            _LID_PN_CACHE[sender_jid] = sender_pn
+        if chat_jid.endswith("@lid") and sender_pn.endswith("@s.whatsapp.net"):
+            _LID_PN_CACHE[chat_jid] = sender_pn
 
         # 對於 @lid 的 DM，使用 senderPn（@s.whatsapp.net）作為穩定的 session_id
         if not chat_jid.endswith("@g.us") and chat_jid.endswith("@lid") and sender_pn.endswith("@s.whatsapp.net"):
