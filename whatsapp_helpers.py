@@ -94,6 +94,11 @@ def mention_jid_from_at(component: At) -> str | None:
     if not value:
         return None
     if "@" in value:
+        if value.endswith("@lid"):
+            from .whatsapp_adapter import _LID_PN_CACHE
+            pn = _LID_PN_CACHE.get(value)
+            if pn:
+                return pn
         return value
     digits = "".join(ch for ch in value if ch.isdigit())
     if digits:
