@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.2.7] - 2026-05-24
+
+### Fixed
+- `flush_pending_text` 被误删的 `for chunk` 循环导致所有消息发送崩溃
+- 单字符粗体/斜体/删除线 Markdown 格式未转换
+- `mention_jid_for_token` 返回 `""` 而非 `None`（与 `mention_jid_from_at` 不一致）
+- 热重载后 `logo_token` 不刷新
+
+### Changed
+- `session_id` 统一使用原始 JID（lid/PN/group），不做格式转换
+- 非唤醒群消息提交 `event`（`is_wake=False`），LLM 不响应但插件可处理
+- 预回复表情系统对齐 OpenClaw 方案：`pre_ack_done_emoji`（✅）、`remove_ack_after_reply` 移除
+- 移除冗余配置 `reaction_level`、`inbound_reaction_events`、`remove_ack_after_reply`
+- Gateway `waitForLidPnMapping` 超时从 10s 改为 3s，超时后透传交由 adapter 最终判断
+- 所有日志中文化
+
+### Added
+- Gateway `POST /lid/resolve` 端点，adapter 异步查询 lid→PN 映射
+- `_LID_PN_CACHE` / `_PN_LID_CACHE` 双向缓存 + 磁盘持久化
+
 ## [0.2.6] - 2026-05-24
 
 ### Security
