@@ -4,6 +4,8 @@ import asyncio
 import json
 import random
 import re
+import shutil
+import time
 import traceback
 import weakref
 from pathlib import Path
@@ -109,6 +111,23 @@ def _runtime_owner_registry() -> dict[str, weakref.ReferenceType["WhatsAppPlatfo
     return _RUNTIME_OWNER_REGISTRY
 
 LOGO_ABSOLUTE = str(PLUGIN_DIR / "logo.svg")
+# 熱重載時建立版本化 logo 副本，使用 timestamp 確保 cache key 唯一
+_LOGO_TS = str(int(time.time() * 1000))
+_LOGO_VERSIONED = PLUGIN_DIR / f"logo_{_LOGO_TS}.svg"
+try:
+    shutil.copy2(LOGO_ABSOLUTE, _LOGO_VERSIONED)
+    LOGO_ABSOLUTE = str(_LOGO_VERSIONED)
+    # 清理 30 秒前的舊副本，避免累積
+    _now = time.time()
+    for f in PLUGIN_DIR.glob("logo_*.svg"):
+        if f.name.startswith("logo_") and f.name != _LOGO_VERSIONED.name:
+            try:
+                if _now - f.stat().st_mtime > 30:
+                    f.unlink()
+            except OSError:
+                pass
+except Exception:
+    pass
 
 GATEWAY_MEDIA_MAX_MB = 50
 GATEWAY_MEDIA_MESSAGE_MAX_MB = 100
