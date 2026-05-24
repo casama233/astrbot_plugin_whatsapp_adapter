@@ -149,6 +149,17 @@ async def flush_pending_text(
     """將累積的文字 flush 發送到 WhatsApp。"""
     if not pending:
         return None, mentions or []
+    for chunk in chunk_text(pending, text_chunk_limit):
+        chunk_mentions = await mentions_for_text(client, target, chunk, mentions or [])
+        await client.send_text(
+            target,
+            chunk,
+            quoted_message_id=quoted_message_id,
+            quoted_participant=quoted_participant,
+            link_preview=should_link_preview(chunk, link_preview_single_url),
+            mentions=chunk_mentions,
+        )
+    return None, []
 
 
 async def send_whatsapp_component(
