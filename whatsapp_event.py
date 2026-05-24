@@ -35,7 +35,8 @@ class WhatsAppMessageEvent(AstrMessageEvent):
         media_caption_mode: str = "separate",
         link_preview_single_url: bool = True,
         typing_indicator: bool = True,
-        remove_ack_after_reply: bool = False,
+        remove_ack_after_reply: bool = True,
+        ack_done_emoji: str = "",
     ) -> None:
         super().__init__(message_str, message_obj, platform_meta, session_id)
         self.client = client
@@ -48,7 +49,7 @@ class WhatsAppMessageEvent(AstrMessageEvent):
         self.link_preview_single_url = link_preview_single_url
         self.typing_indicator = typing_indicator
         self._pre_acked = False
-        self._remove_ack = remove_ack_after_reply
+        self._done_emoji = ack_done_emoji or "✅"
         self._super_sent = False
         self._temp_files: set[str] = set()
 
@@ -84,9 +85,10 @@ class WhatsAppMessageEvent(AstrMessageEvent):
             await self.stop_typing()
             await super().send(message)
             self._super_sent = True
-            if self._pre_acked and self._remove_ack:
+            if self._pre_acked:
+                done = self._done_emoji
                 try:
-                    await self.client.react(self.target_jid, self.quoted_message_id, "", self.quoted_participant)
+                    await self.client.react(self.target_jid, self.quoted_message_id, done, self.quoted_participant)
                 except Exception:
                     pass
             # 清理 URL 下載的暫存檔
@@ -111,9 +113,9 @@ class WhatsAppMessageEvent(AstrMessageEvent):
             if not self._super_sent:
                 await super().send(MessageChain())
             await self.stop_typing()
-            if self._pre_acked and self._remove_ack:
+            if self._pre_acked:
                 try:
-                    await self.client.react(self.target_jid, self.quoted_message_id, "", self.quoted_participant)
+                    await self.client.react(self.target_jid, self.quoted_message_id, self._done_emoji, self.quoted_participant)
                 except Exception:
                     pass
 
