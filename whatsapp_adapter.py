@@ -887,7 +887,7 @@ class WhatsAppPlatformAdapter(Platform):
                                 if self._stopped.is_set() or self._reconnect_event.is_set():
                                     break
                                 if event.get("type") == "message":
-                                    logger.debug(
+                                    logger.info(
                                         "WhatsApp inbound message event: chat=%s sender=%s from_me=%s message_id=%s text_len=%s media_count=%s",
                                         event.get("chatJid"),
                                         event.get("senderJid"),
@@ -1090,7 +1090,7 @@ class WhatsAppPlatformAdapter(Platform):
                           message.session_id, message.message_id)
             return
         if not sender_allowed:
-            logger.debug("忽略未授權發送者: session=%s sender=%s",
+            logger.info("忽略未授權發送者: session=%s sender=%s",
                           message.session_id, raw.get("senderJid"))
             return
         if pre_ack_enabled and reaction_level != "off" and not is_reaction_only:
@@ -1305,6 +1305,9 @@ class WhatsAppPlatformAdapter(Platform):
                     pn = _LID_PN_CACHE.get(c)
                     if pn and _allowed_by(pn, allow_from):
                         return True
+            # Gateway 已放行的 lid 用戶（lid_unresolved_allow）：信任 Gateway 判斷
+            if sender_jid.endswith("@lid") and not sender_phone and not sender_pn:
+                return True
             return False
 
         policy = self.config.get("group_policy", "disabled")
@@ -1318,7 +1321,12 @@ class WhatsAppPlatformAdapter(Platform):
         group_allow_from = self._coerce_str_list(self.config.get("group_allow_from"))
         if not group_allow_from:
             group_allow_from = self._coerce_str_list(self.config.get("allow_from"))
-        return any(_allowed_by(c, group_allow_from) for c in candidates)
+        if any(_allowed_by(c, group_allow_from) for c in candidates):
+            return True
+        # lid 用戶無 PN 時信任 Gateway 放行判斷
+        if sender_jid.endswith("@lid") and not sender_phone and not sender_pn:
+            return True
+        return False
 
     def _message_mentions_self(self, data: dict[str, Any]) -> bool:
         self_id = str(data.get("selfJid") or "")
