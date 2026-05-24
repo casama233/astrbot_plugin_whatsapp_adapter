@@ -1075,7 +1075,7 @@ class WhatsAppPlatformAdapter(Platform):
             typing_indicator=bool(self.config.get("typing_indicator", True)),
             remove_ack_after_reply=bool(self.config.get("remove_ack_after_reply", False)),
         )
-        sender_allowed = self._is_sender_allowed(raw, is_private)
+        sender_allowed = await self._is_sender_allowed(raw, is_private)
         reaction_level = str(self.config.get("reaction_level", "ack") or "ack")
         pre_ack_enabled = bool(self.config.get("pre_ack_emoji", True))
         pre_ack_private = bool(self.config.get("pre_ack_private", True))
@@ -1261,7 +1261,7 @@ class WhatsAppPlatformAdapter(Platform):
             bool(self_lid) and self._same_whatsapp_user(mentioned, self_lid)
         )
 
-    def _is_sender_allowed(self, raw: dict[str, Any], is_private: bool) -> bool:
+    async def _is_sender_allowed(self, raw: dict[str, Any], is_private: bool) -> bool:
         chat_jid = str(raw.get("chatJid") or "")
         sender_jid = str(raw.get("senderJid") or "")
         sender_pn = str(raw.get("senderPn") or "")
@@ -1299,12 +1299,23 @@ class WhatsAppPlatformAdapter(Platform):
             allow_from = self._coerce_str_list(self.config.get("allow_from"))
             if any(_allowed_by(c, allow_from) for c in candidates):
                 return True
-            # lid→PN 緩存兜底：如果候選中有 lid JID，嘗試用快取的 PN 匹配
+            # lid→PN 緩存兜底
             for c in candidates:
                 if c.endswith("@lid"):
                     pn = _LID_PN_CACHE.get(c)
                     if pn and _allowed_by(pn, allow_from):
                         return True
+            # 主動向 Gateway 查詢 lid 映射（等 3 秒）
+            if sender_jid.endswith("@lid") and not sender_phone and not sender_pn:
+                try:
+                    pn = await asyncio.wait_for(self.client.resolve_lid(sender_jid), timeout=4)
+                    if pn and _allowed_by(pn, allow_from):
+                        _LID_PN_CACHE[sender_jid] = pn
+                        _PN_LID_CACHE[pn] = sender_jid
+                        _save_lid_mapping(sender_jid, pn)
+                        return True
+                except Exception:
+                    pass
             return False
 
         policy = self.config.get("group_policy", "disabled")
@@ -1318,7 +1329,20 @@ class WhatsAppPlatformAdapter(Platform):
         group_allow_from = self._coerce_str_list(self.config.get("group_allow_from"))
         if not group_allow_from:
             group_allow_from = self._coerce_str_list(self.config.get("allow_from"))
-        return any(_allowed_by(c, group_allow_from) for c in candidates)
+        if any(_allowed_by(c, group_allow_from) for c in candidates):
+            return True
+        # lid 兜底查詢（同上）
+        if sender_jid.endswith("@lid") and not sender_phone and not sender_pn:
+            try:
+                pn = await asyncio.wait_for(self.client.resolve_lid(sender_jid), timeout=4)
+                if pn and _allowed_by(pn, group_allow_from):
+                    _LID_PN_CACHE[sender_jid] = pn
+                    _PN_LID_CACHE[pn] = sender_jid
+                    _save_lid_mapping(sender_jid, pn)
+                    return True
+            except Exception:
+                pass
+        return False
 
     def _message_mentions_self(self, data: dict[str, Any]) -> bool:
         self_id = str(data.get("selfJid") or "")

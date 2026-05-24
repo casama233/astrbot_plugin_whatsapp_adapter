@@ -1384,6 +1384,22 @@ const server = createServer(async (req, res) => {
       sendJson(res, 200, { ok: true, mentions: resolveMentionTokens(tokens) });
       return;
     }
+    if (req.method === "POST" && url.pathname === "/lid/resolve") {
+      const body = await readJson(req);
+      const lidJid = String(body.lidJid || "").trim();
+      if (!lidJid.endsWith("@lid")) {
+        sendJson(res, 400, { ok: false, error: "lidJid must end with @lid" });
+        return;
+      }
+      const existing = resolveLidToPn(lidJid);
+      if (existing) {
+        sendJson(res, 200, { ok: true, pnJid: existing });
+        return;
+      }
+      const resolved = await waitForLidPnMapping(lidJid, 3000);
+      sendJson(res, 200, { ok: true, pnJid: resolved });
+      return;
+    }
     if (req.method === "POST" && url.pathname === "/restart") {
       startSocket().catch((error) => log.error({ error }, "manual restart failed"));
       sendJson(res, 200, { ok: true, status: "restarting" });

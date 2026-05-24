@@ -62,6 +62,10 @@ class WhatsAppGatewayClient:
     async def configure(self, config: dict[str, Any]) -> dict[str, Any]:
         return await self._request("POST", "/config", json_data=config)
 
+    async def resolve_lid(self, lid_jid: str) -> str | None:
+        result = await self._request("POST", "/lid/resolve", json_data={"lidJid": lid_jid})
+        return result.get("pnJid") or None
+
     async def send_text(
         self,
         to: str,
