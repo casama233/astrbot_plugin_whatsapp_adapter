@@ -157,8 +157,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "send_read_receipts": True,
     "mark_online": False,
     "gateway_health_check_interval": 60,
-    "reaction_level": "ack",
-    "remove_ack_after_reply": False,
+    "remove_ack_after_reply": True,
+    "pre_ack_done_emoji": "✅",
     "parse_inbound_formatting": True,
     "inbound_reaction_events": False,
     "media_album_debounce_seconds": 2.5,
@@ -206,6 +206,7 @@ CONFIG_KEY_ALIASES: dict[str, str] = {
     "群聊预回应": "pre_ack_public",
     "预回应表情列表": "pre_ack_emojis",
     "启用预回应表情": "pre_ack_emoji",
+    "回复完成表情": "pre_ack_done_emoji",
     "媒体上传大小限制(MB)": "media_max_mb",
     "ack_reaction_emoji": "pre_ack_emojis",
     "ack_reaction_direct": "pre_ack_private",
@@ -392,6 +393,12 @@ CONFIG_METADATA: dict[str, Any] = {
         "type": "bool",
         "group": "pre_ack",
         "hint": "启用后，bot 收到消息时通过 WhatsApp emoji reaction 发出一条预回应。",
+    },
+    "pre_ack_done_emoji": {
+        "description": "回复完成表情",
+        "type": "string",
+        "group": "pre_ack",
+        "hint": "AI 回复完成后追加到原消息的完成表情，例如 ✅。设为空字符串可禁用。",
     },
     "media_max_mb": {
         "description": "媒体上传大小限制 (MB)",
@@ -1073,10 +1080,10 @@ class WhatsAppPlatformAdapter(Platform):
             media_caption_mode=str(self.config.get("media_caption_mode") or "separate"),
             link_preview_single_url=bool(self.config.get("link_preview_single_url", True)),
             typing_indicator=bool(self.config.get("typing_indicator", True)),
-            remove_ack_after_reply=bool(self.config.get("remove_ack_after_reply", False)),
+            remove_ack_after_reply=bool(self.config.get("remove_ack_after_reply", True)),
+            ack_done_emoji=str(self.config.get("pre_ack_done_emoji", "✅") or "✅"),
         )
         sender_allowed = await self._is_sender_allowed(raw, is_private)
-        reaction_level = str(self.config.get("reaction_level", "ack") or "ack")
         pre_ack_enabled = bool(self.config.get("pre_ack_emoji", True))
         pre_ack_private = bool(self.config.get("pre_ack_private", True))
         # 獨立判斷群消息是否應該喚醒機器人（與預回復表情分開）
@@ -1093,7 +1100,7 @@ class WhatsAppPlatformAdapter(Platform):
             logger.info("忽略未授權發送者: session=%s sender=%s",
                           message.session_id, raw.get("senderJid"))
             return
-        if pre_ack_enabled and reaction_level != "off" and not is_reaction_only:
+        if pre_ack_enabled and not is_reaction_only:
             if is_private:
                 should_ack = pre_ack_private
             else:
@@ -1105,7 +1112,7 @@ class WhatsAppPlatformAdapter(Platform):
                 if not is_command:
                     event.is_at_or_wake_command = True
                     event.is_wake = True
-                await self._pre_ack(event, reaction_level)
+                await self._pre_ack(event)
         if is_command:
             event.is_at_or_wake_command = True
         logger.info(
@@ -1363,14 +1370,13 @@ class WhatsAppPlatformAdapter(Platform):
         self_lid = str(data.get("selfLid") or "")
         return self._is_self_mention(participant, self_id, self_lid)
 
-    async def _pre_ack(self, event: WhatsAppMessageEvent, reaction_level: str = "ack") -> None:
+    async def _pre_ack(self, event: WhatsAppMessageEvent) -> None:
         emoji_str = str(self.config.get("pre_ack_emojis", "✍️") or "✍️")
         emojis = [e.strip() for e in re.split(r'[,，\s]+', emoji_str) if e.strip()]
         if not emojis:
             return
         emoji = random.choice(emojis)
         try:
-            logger.info("WhatsApp 预回复表情: target=%s emoji=%s level=%s", event.target_jid, emoji, reaction_level)
             await event.react(emoji)
             event._pre_acked = True
         except Exception as exc:
