@@ -10,7 +10,7 @@ from astrbot.api.platform import At
 from astrbot.api.message_components import File, Image, Plain, Record, Video
 
 from .whatsapp_client import WhatsAppGatewayClient
-from .whatsapp_components import WhatsAppButton, WhatsAppButtons, WhatsAppEdit, WhatsAppList, WhatsAppPoll
+from .whatsapp_components import WhatsAppButtons, WhatsAppEdit, WhatsAppList, WhatsAppPoll
 
 __all__ = [
     "chunk_text",
@@ -32,9 +32,9 @@ __all__ = [
 
 def format_whatsapp_markdown(text: str) -> str:
     """出站 Markdown → WhatsApp 格式。"""
-    text = re.sub(r"\*\*([^*\n][\s\S]*?[^*\n])\*\*", r"*\1*", text)
-    text = re.sub(r"__([^_\n][\s\S]*?[^_\n])__", r"_\1_", text)
-    text = re.sub(r"~~([^~\n][\s\S]*?[^~\n])~~", r"~\1~", text)
+    text = re.sub(r"\*\*([^*\n][\s\S]*?[^*\n]?)\*\*", r"*\1*", text)
+    text = re.sub(r"__([^_\n][\s\S]*?[^_\n]?)__", r"_\1_", text)
+    text = re.sub(r"~~([^~\n][\s\S]*?[^~\n]?)~~", r"~\1~", text)
     text = re.sub(r"(?<!`)`([^`\n]+)`(?!`)", r"```\1```", text)
     return text
 
@@ -42,9 +42,9 @@ def format_whatsapp_markdown(text: str) -> str:
 def format_markdown_from_whatsapp(text: str) -> str:
     """入站 WhatsApp 格式 → Markdown。"""
     text = re.sub(r"```([^`\n]+)```", r"`\1`", text)
-    text = re.sub(r"(?<!\*)\*([^*\n][\s\S]*?[^*\n])\*(?!\*)", r"**\1**", text)
-    text = re.sub(r"(?<!_)_([^_\n][\s\S]*?[^_\n])_(?!_)", r"*\1*", text)
-    text = re.sub(r"(?<!~)~([^~\n][\s\S]*?[^~\n])~(?!~)", r"~~\1~~", text)
+    text = re.sub(r"(?<!\*)\*([^*\n][\s\S]*?[^*\n]?)\*(?!\*)", r"**\1**", text)
+    text = re.sub(r"(?<!_)_([^_\n][\s\S]*?[^_\n]?)_(?!_)", r"*\1*", text)
+    text = re.sub(r"(?<!~)~([^~\n][\s\S]*?[^~\n]?)~(?!~)", r"~~\1~~", text)
     return text
 
 
@@ -97,6 +97,7 @@ def mention_jid_from_at(component: At) -> str | None:
             pn = _LID_PN_CACHE.get(value)
             if pn:
                 return pn
+            logger.warning("WhatsApp @提及 lid 未缓存，使用原始 JID: %s", value)
         return value
     digits = "".join(ch for ch in value if ch.isdigit())
     if digits:
@@ -110,10 +111,10 @@ def mention_jid_from_at(component: At) -> str | None:
     return None
 
 
-def mention_jid_for_token(token: str) -> str:
-    """純文字 @token → 數字 + @s.whatsapp.net。"""
+def mention_jid_for_token(token: str) -> str | None:
+    """純文字 @token → 數字 + @s.whatsapp.net，無法解析時返回 None。"""
     digits = "".join(ch for ch in token if ch.isdigit())
-    return f"{digits}@s.whatsapp.net" if digits else ""
+    return f"{digits}@s.whatsapp.net" if digits else None
 
 
 async def mentions_for_text(
@@ -122,7 +123,7 @@ async def mentions_for_text(
     text: str,
     explicit_mentions: list[str],
 ) -> list[str]:
-    """回傳顯式提及（At 元件）清單，不解析純文字 @token。"""
+    """回傳顯式提及（At 元件）清單（client/target/text 參數預留給未來 @token 解析）。"""
     return list(dict.fromkeys(explicit_mentions))
 
 
@@ -287,6 +288,10 @@ async def process_message_chain(
                 logger.warning("WhatsApp 消息链跳过图片: 文件路径为空")
                 continue
             media_kind = media_kind_from_component(component, "image")
+            if media_kind == "sticker" and use_caption and pending_caption:
+                pending_caption, pending_mentions = await flush_pending_text(
+                    client, target, pending_caption, pending_mentions, **_flush_kw,
+                )
             await client.send_media(
                 target, media_kind, media_path,
                 None if media_kind == "sticker" else pending_caption if use_caption else None,
