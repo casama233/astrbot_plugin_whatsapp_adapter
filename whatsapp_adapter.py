@@ -893,6 +893,12 @@ class WhatsAppPlatformAdapter(Platform):
             normalized_chat_jid = chat_jid
         elif sender_pn.endswith("@s.whatsapp.net") and (chat_jid.endswith("@lid") or sender_jid.endswith("@lid")):
             normalized_chat_jid = sender_pn
+        elif chat_jid.endswith("@lid") or sender_jid.endswith("@lid"):
+            cached = _LID_PN_CACHE.get(sender_jid if sender_jid.endswith("@lid") else chat_jid)
+            if cached:
+                normalized_chat_jid = cached
+            else:
+                normalized_chat_jid = chat_jid
         else:
             normalized_chat_jid = chat_jid
         extras = data.get("extras") or {}
