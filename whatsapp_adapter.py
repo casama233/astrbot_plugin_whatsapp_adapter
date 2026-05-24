@@ -191,7 +191,6 @@ CONFIG_KEY_ALIASES: dict[str, str] = {
     "发送已读回执": "send_read_receipts",
     "标记在线状态": "mark_online",
     "Gateway 健康检查间隔": "gateway_health_check_interval",
-    "反应级别": "reaction_level",
     "预回应表情": "pre_ack_emojis",
     "私聊启用手动回应": "pre_ack_private",
     "群组回应模式": "pre_ack_public",
@@ -346,12 +345,6 @@ CONFIG_METADATA: dict[str, Any] = {
         "group": "messaging",
         "hint": "同发送者在短时间内连续发送多张无文字图片时，合并为一条相簿消息。设为 0 关闭。",
     },
-    "reaction_level": {
-        "description": "反应级别",
-        "type": "string",
-        "group": "pre_ack",
-        "hint": "off=禁用所有反应；ack=仅预回应回应（收到消息时先发表情）；minimal=回应+LLM可发保守表情；extensive=回应+LLM可用更多表情。",
-    },
     "remove_ack_after_reply": {
         "description": "回复后清除回应",
         "type": "bool",
@@ -498,10 +491,6 @@ WHATSAPP_I18N_RESOURCES: dict[str, dict] = {
             "description": "相簿去抖时间（秒）",
             "hint": "同发送者在短时间内连续发送多张无文字图片时，合并为一条相簿消息。设为 0 关闭。",
         },
-        "reaction_level": {
-            "description": "反应级别",
-            "hint": "off=禁用所有反应；ack=仅预回应（收到消息时先发表情）；minimal=回应+LLM可发保守表情；extensive=回应+LLM可用更多表情。",
-        },
         "remove_ack_after_reply": {
             "description": "回复后清除回应",
             "hint": "启用后，机器人发送回复后自动清除预回应表情，不留残留在消息上。",
@@ -624,10 +613,6 @@ WHATSAPP_I18N_RESOURCES: dict[str, dict] = {
             "description": "Album debounce (seconds)",
             "hint": "Merges consecutive images from the same sender within this window into one album message. Set 0 to disable.",
         },
-        "reaction_level": {
-            "description": "Reaction level",
-            "hint": "off=no reactions; ack=pre-ack only; minimal=ack + conservative agent reactions; extensive=ack + more agent reactions.",
-        },
         "remove_ack_after_reply": {
             "description": "Remove ack after reply",
             "hint": "When enabled, the pre-ack emoji is removed after the bot sends its reply.",
@@ -749,10 +734,6 @@ WHATSAPP_I18N_RESOURCES: dict[str, dict] = {
         "media_album_debounce_seconds": {
             "description": "相簿去抖時間（秒）",
             "hint": "同傳送者在短時間內連續傳送多張無文字圖片時，合併為一條相簿訊息。設為 0 關閉。",
-        },
-        "reaction_level": {
-            "description": "反應級別",
-            "hint": "off=停用所有反應；ack=僅預回應（收到訊息時先發表情）；minimal=回應+LLM可發保守表情；extensive=回應+LLM可用更多表情。",
         },
         "remove_ack_after_reply": {
             "description": "回覆後清除回應",
