@@ -970,12 +970,7 @@ class WhatsAppPlatformAdapter(Platform):
         sender_allowed = await self._is_sender_allowed(raw, is_private)
         pre_ack_enabled = bool(self.config.get("pre_ack_emoji", True))
         pre_ack_private = bool(self.config.get("pre_ack_private", True))
-        # 獨立判斷群消息是否應該喚醒機器人（與預回復表情分開）
-        is_group_wake = is_private or is_self_mentioned or is_reply_to_self or is_command or has_prefix
-        if not is_group_wake:
-            logger.debug("忽略非喚醒群消息: session=%s msg=%s text=%s",
-                          message.session_id, message.message_id, (message.message_str or "")[:40])
-            return
+        # 非喚醒消息仍提交給 AstrBot（讓插件統計等處理），但不設 is_wake
         if is_reaction_only:
             logger.debug("忽略表情回應事件: session=%s msg=%s",
                           message.session_id, message.message_id)
