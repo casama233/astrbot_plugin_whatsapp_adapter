@@ -157,10 +157,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "send_read_receipts": True,
     "mark_online": False,
     "gateway_health_check_interval": 60,
-    "remove_ack_after_reply": True,
     "pre_ack_done_emoji": "✅",
     "parse_inbound_formatting": True,
-    "inbound_reaction_events": False,
     "media_album_debounce_seconds": 2.5,
     "ignore_self_messages": False,
     "command_prefix": "/",
@@ -194,13 +192,7 @@ CONFIG_KEY_ALIASES: dict[str, str] = {
     "预回应表情": "pre_ack_emojis",
     "私聊启用手动回应": "pre_ack_private",
     "群组回应模式": "pre_ack_public",
-    "回复后清除回应": "remove_ack_after_reply",
     "解析入站格式": "parse_inbound_formatting",
-    "入站表情回应事件": "inbound_reaction_events",
-    "媒体相册去抖秒数": "media_album_debounce_seconds",
-    "忽略自身消息": "ignore_self_messages",
-    "指令前缀": "command_prefix",
-    "注册斜线指令": "register_commands",
     "私聊预回应": "pre_ack_private",
     "群聊预回应": "pre_ack_public",
     "预回应表情列表": "pre_ack_emojis",
@@ -345,58 +337,9 @@ CONFIG_METADATA: dict[str, Any] = {
         "group": "messaging",
         "hint": "同发送者在短时间内连续发送多张无文字图片时，合并为一条相簿消息。设为 0 关闭。",
     },
-    "remove_ack_after_reply": {
-        "description": "回复后清除回应",
-        "type": "bool",
-        "group": "pre_ack",
-        "hint": "启用后，机器人发送回复后自动清除预回应表情，不留残留在消息上。",
-    },
-    "gateway_health_check_interval": {
-        "description": "健康检查间隔（秒）",
-        "type": "int",
-        "group": "advanced",
-        "hint": "后台检查 Gateway 健康状态的间隔秒数。设为 0 可关闭健康检查。",
-    },
-    "inbound_reaction_events": {
-        "description": "入站表情回应事件",
-        "type": "bool",
-        "group": "advanced",
-        "hint": "将用户对消息的表情回应（emoji reaction）转为 AstrBot 事件。默认关闭。",
-    },
-    "pre_ack_private": {
-        "description": "私聊预回应",
-        "type": "bool",
-        "group": "pre_ack",
-        "hint": "启用后，私聊收到消息时自动触发预回应表情。",
-    },
-    "pre_ack_public": {
-        "description": "群聊预回应模式",
-        "type": "string",
-        "group": "pre_ack",
-        "hint": "always=始终触发预回应；mentions=仅被 @ 或回复时触发；never=不触发预回应。",
-    },
-    "pre_ack_emojis": {
-        "description": "预回应表情列表",
-        "type": "string",
-        "group": "pre_ack",
-        "hint": "预回应时使用的 WhatsApp emoji，例如 💭、✍️。",
-    },
-    "pre_ack_emoji": {
-        "description": "启用预回应表情",
-        "type": "bool",
-        "group": "pre_ack",
-        "hint": "启用后，bot 收到消息时通过 WhatsApp emoji reaction 发出一条预回应。",
-    },
-    "pre_ack_done_emoji": {
-        "description": "回复完成表情",
-        "type": "string",
-        "group": "pre_ack",
-        "hint": "AI 回复完成后追加到原消息的完成表情，例如 ✅。设为空字符串可禁用。",
-    },
-    "media_max_mb": {
-        "description": "媒体上传大小限制 (MB)",
-        "type": "float",
-        "group": "messaging",
+        "media_album_debounce_seconds": {
+            "type": "float",
+            "group": "messaging",
         "hint": "上传到 WhatsApp Gateway 的单个媒体文件大小上限（MB）。预设 50。",
     },
 }
@@ -490,18 +433,6 @@ WHATSAPP_I18N_RESOURCES: dict[str, dict] = {
         "media_album_debounce_seconds": {
             "description": "相簿去抖时间（秒）",
             "hint": "同发送者在短时间内连续发送多张无文字图片时，合并为一条相簿消息。设为 0 关闭。",
-        },
-        "remove_ack_after_reply": {
-            "description": "回复后清除回应",
-            "hint": "启用后，机器人发送回复后自动清除预回应表情，不留残留在消息上。",
-        },
-        "gateway_health_check_interval": {
-            "description": "健康检查间隔（秒）",
-            "hint": "后台检查 Gateway 健康状态的间隔秒数。设为 0 可关闭健康检查。",
-        },
-        "inbound_reaction_events": {
-            "description": "入站表情回应事件",
-            "hint": "将用户对消息的表情回应（emoji reaction）转为 AstrBot 事件。默认关闭。",
         },
         "pre_ack_private": {
             "description": "私聊预回应",
@@ -613,18 +544,6 @@ WHATSAPP_I18N_RESOURCES: dict[str, dict] = {
             "description": "Album debounce (seconds)",
             "hint": "Merges consecutive images from the same sender within this window into one album message. Set 0 to disable.",
         },
-        "remove_ack_after_reply": {
-            "description": "Remove ack after reply",
-            "hint": "When enabled, the pre-ack emoji is removed after the bot sends its reply.",
-        },
-        "gateway_health_check_interval": {
-            "description": "Health check interval (s)",
-            "hint": "Interval in seconds for background Gateway health checks. Set 0 to disable.",
-        },
-        "inbound_reaction_events": {
-            "description": "Inbound reaction events",
-            "hint": "Converts emoji reactions on messages to AstrBot events. Disabled by default.",
-        },
         "pre_ack_private": {
             "description": "DM pre-ack",
             "hint": "When enabled, private messages auto-trigger a pre-ack emoji reaction.",
@@ -734,18 +653,6 @@ WHATSAPP_I18N_RESOURCES: dict[str, dict] = {
         "media_album_debounce_seconds": {
             "description": "相簿去抖時間（秒）",
             "hint": "同傳送者在短時間內連續傳送多張無文字圖片時，合併為一條相簿訊息。設為 0 關閉。",
-        },
-        "remove_ack_after_reply": {
-            "description": "回覆後清除回應",
-            "hint": "啟用後，機器人傳送回覆後自動清除預回應表情，不留殘留在訊息上。",
-        },
-        "gateway_health_check_interval": {
-            "description": "健康檢查間隔（秒）",
-            "hint": "後台檢查 Gateway 健康狀態的間隔秒數。設為 0 可關閉健康檢查。",
-        },
-        "inbound_reaction_events": {
-            "description": "入站表情回應事件",
-            "hint": "將使用者對訊息的表情回應（emoji reaction）轉為 AstrBot 事件。預設關閉。",
         },
         "pre_ack_private": {
             "description": "私聊預回應",
@@ -991,9 +898,6 @@ class WhatsAppPlatformAdapter(Platform):
         extras = data.get("extras") or {}
         reaction = extras.get("reaction")
         if self._is_reaction_only(data):
-            if not bool(self.config.get("inbound_reaction_events", False)):
-                logger.debug("忽略表情回应消息: message_id=%s", data.get("messageId"))
-                return None
             text = self._reaction_message_text(reaction)
         else:
             text = str(data.get("text") or "")
@@ -1061,7 +965,6 @@ class WhatsAppPlatformAdapter(Platform):
             media_caption_mode=str(self.config.get("media_caption_mode") or "separate"),
             link_preview_single_url=bool(self.config.get("link_preview_single_url", True)),
             typing_indicator=bool(self.config.get("typing_indicator", True)),
-            remove_ack_after_reply=bool(self.config.get("remove_ack_after_reply", True)),
             ack_done_emoji=str(self.config.get("pre_ack_done_emoji", "✅") or "✅"),
         )
         sender_allowed = await self._is_sender_allowed(raw, is_private)

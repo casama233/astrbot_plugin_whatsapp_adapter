@@ -35,7 +35,6 @@ class WhatsAppMessageEvent(AstrMessageEvent):
         media_caption_mode: str = "separate",
         link_preview_single_url: bool = True,
         typing_indicator: bool = True,
-        remove_ack_after_reply: bool = True,
         ack_done_emoji: str = "",
     ) -> None:
         super().__init__(message_str, message_obj, platform_meta, session_id)
