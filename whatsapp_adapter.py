@@ -1676,11 +1676,15 @@ class WhatsAppPlatformAdapter(Platform):
 
         current = (event.get("status"), event.get("ready"), event.get("selfJid"))
         if current == self._last_gateway_status_log:
-            logger.debug("WhatsApp Gateway 事件: 状态=%s (重复)", event.get("status"))
+            status_text = event.get("status", "?")
+            status_cn = {"connected": "已连接", "starting": "启动中", "disconnected": "已断开", "connecting": "连接中", "logout": "已登出"}.get(status_text, status_text)
+            logger.debug("WhatsApp Gateway 事件: 状态=%s (重复)", status_cn)
             return
         self._last_gateway_status_log = current
+        status_text = event.get("status", "?")
+        status_cn = {"connected": "已连接", "starting": "启动中", "disconnected": "已断开", "connecting": "连接中", "logout": "已登出"}.get(status_text, status_text)
         logger.info("WhatsApp Gateway: %s%s",
-                     event.get("status", "?"),
+                     status_cn,
                      f" (self={event['selfJid']})" if event.get("selfJid") else "")
 
     def _count_label(self, value: Any) -> str:
