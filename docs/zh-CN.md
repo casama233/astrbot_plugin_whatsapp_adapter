@@ -75,11 +75,9 @@ pip install -r requirements.txt
 | `typing_indicator` | `true` | 回复前显示 composing |
 | `send_read_receipts` | `true` | 发送已读蓝勾 |
 | `mark_online` | `false` | 标记 available 在线（关闭可降低被检测为异常客户端的风险） |
-| `reaction_level` | `"ack"` | 反应级别，`off` 禁用/`ack` 启用 |
 | `ack_reaction_emoji` | `"👀"` | 预回应表情 |
 | `ack_reaction_direct` | `true` | 私聊触发预回应 |
 | `ack_reaction_group` | `"mentions"` | 群组模式：`always`/`mentions`/`never` |
-| `remove_ack_after_reply` | `false` | 回复后自动清除预回应 |
 | `ignore_self_messages` | `false` | 忽略自身号码的消息 |
 
 ### 指令 & 高级
@@ -130,7 +128,7 @@ WhatsAppEdit(message_id="xxx", text="新内容")
 2. 后续增量通过 `/edit/text` 编辑同一消息逐步追加（0.8s 节流）
 3. 遇到媒体组件先 flush 文字，再单独发送媒体
 4. 编辑失败时自动降级为新消息接续
-5. 回复完成后自动清除预回应表情（`remove_ack_after_reply`）
+5. 回复完成后自动用 `pre_ack_done_emoji` 替换预回复表情
 
 ## 斜线指令
 

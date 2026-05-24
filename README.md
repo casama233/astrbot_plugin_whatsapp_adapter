@@ -139,11 +139,9 @@ pip install -r requirements.txt
 
 | 键 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
-| `reaction_level` | str | `"ack"` | 反应级别：`off` 禁用, `ack` 启用, `minimal`/`extensive` 预留 |
 | `ack_reaction_emoji` | str | `"👀"` | 单聊预回应表情 |
 | `ack_reaction_direct` | bool | `true` | 私聊触发预回应 |
 | `ack_reaction_group` | str | `"mentions"` | 群组模式：`always` 全触发, `mentions` 仅 @/回复, `never` 不触发 |
-| `remove_ack_after_reply` | bool | `false` | 回复后自动清除预回应表情 |
 
 ### 高级
 
