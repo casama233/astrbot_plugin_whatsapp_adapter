@@ -821,7 +821,7 @@ class WhatsAppPlatformAdapter(Platform):
     async def send_by_session(self, session: MessageSesion, message_chain: MessageChain):
         target = getattr(session, "session_id", None) or getattr(session, "message_session_id", None)
         if not target:
-            logger.debug("WhatsApp send_by_session skipped custom send because target session is missing")
+            logger.debug("WhatsApp send_by_session 跳过自訂發送（無目標會話）")
             await super().send_by_session(session, message_chain)
             return
 
@@ -857,7 +857,7 @@ class WhatsAppPlatformAdapter(Platform):
             self._stopped.clear()
             self._reconnect_event.clear()
         await self._claim_runtime_owner()
-        logger.info("Starting WhatsApp adapter event loop: gateway=%s", self._base_url)
+        logger.info("正在启动 WhatsApp 适配器事件循环: gateway=%s", self._base_url)
         try:
             while not self._stopped.is_set():
                 try:
@@ -934,7 +934,7 @@ class WhatsAppPlatformAdapter(Platform):
         await self._ensure_gateway_running()
 
     async def terminate(self):
-        logger.info("Terminating WhatsApp platform adapter")
+        logger.info("正在终止 WhatsApp 平台适配器")
         self._stopped.set()
         self._reconnect_event.set()
         run_task = getattr(self, '_run_task', None)
@@ -951,7 +951,7 @@ class WhatsAppPlatformAdapter(Platform):
 
     async def convert_message(self, data: dict[str, Any]) -> AstrBotMessage | None:
         if data.get("fromMe"):
-            logger.debug("Ignoring WhatsApp message from self: message_id=%s", data.get("messageId"))
+            logger.debug("忽略自身消息: message_id=%s", data.get("messageId"))
             return None
 
         chat_jid = str(data.get("chatJid") or "")
@@ -985,7 +985,7 @@ class WhatsAppPlatformAdapter(Platform):
         reaction = extras.get("reaction")
         if self._is_reaction_only(data):
             if not bool(self.config.get("inbound_reaction_events", False)):
-                logger.debug("Ignoring WhatsApp reaction-only message: message_id=%s", data.get("messageId"))
+                logger.debug("忽略表情回应消息: message_id=%s", data.get("messageId"))
                 return None
             text = self._reaction_message_text(reaction)
         else:
@@ -1033,7 +1033,7 @@ class WhatsAppPlatformAdapter(Platform):
             self_id = str(raw.get("selfJid") or "")
             self_lid = str(raw.get("selfLid") or "")
             if sender_jid and self._is_self_mention(sender_jid, self_id, self_lid):
-                logger.info("Ignored self message: sender=%s", sender_jid)
+                logger.info("忽略自身消息: sender=%s", sender_jid)
                 return
         is_private = message.type == MessageType.FRIEND_MESSAGE
         is_self_mentioned = self._message_mentions_self(raw)
@@ -1346,7 +1346,7 @@ class WhatsAppPlatformAdapter(Platform):
         try:
             await self.client.send_presence(target, state)
         except Exception as exc:
-            logger.debug("WhatsApp presence update failed: target=%s state=%s error=%s", target, state, exc)
+            logger.debug("WhatsApp 在线状态更新失败: target=%s state=%s error=%s", target, state, exc)
 
     def _is_reaction_only(self, data: dict[str, Any]) -> bool:
         extras = data.get("extras") or {}
@@ -1422,9 +1422,9 @@ class WhatsAppPlatformAdapter(Platform):
         try:
             import shutil
             shutil.copytree(str(old_root), str(new_root), symlinks=False)
-            logger.info("Migrated plugin data from %s to %s", old_root, new_root)
+            logger.info("已迁移插件数据: %s → %s", old_root, new_root)
         except Exception as exc:
-            logger.warning("Failed to migrate old plugin data from %s to %s: %s", old_root, new_root, exc)
+            logger.warning("迁移旧插件数据失败: %s → %s: %s", old_root, new_root, exc)
 
     def _merged_config(self, platform_config: dict[str, Any]) -> dict[str, Any]:
         plugin_config = self._normalize_config(self._load_plugin_config())
@@ -1497,7 +1497,7 @@ class WhatsAppPlatformAdapter(Platform):
         except FileNotFoundError:
             return {}
         except Exception as exc:
-            logger.warning("Failed to load WhatsApp plugin config from %s: %s", config_path, exc)
+            logger.warning("加载 WhatsApp 插件配置失败: %s: %s", config_path, exc)
             return {}
         return data if isinstance(data, dict) else {}
 
@@ -1511,7 +1511,7 @@ class WhatsAppPlatformAdapter(Platform):
             except Exception as exc:
                 last_error = exc
                 if attempt in {1, 5, 15, 30, 60}:
-                    logger.debug("Waiting for WhatsApp Gateway health attempt %s failed: %s", attempt, exc)
+                    logger.debug("等待 WhatsApp Gateway 健康检查第 %s 次失败: %s", attempt, exc)
                 await asyncio.sleep(1)
         raise WhatsAppGatewayError(f"WhatsApp Gateway did not become healthy: {last_error}")
 
@@ -1533,7 +1533,7 @@ class WhatsAppPlatformAdapter(Platform):
             if self.gateway_process and self.gateway_process.process:
                 if self.gateway_process.process.returncode is None:
                     return
-        logger.info("Restarting WhatsApp Gateway after event stream interruption at %s", self._base_url)
+        logger.info("事件流中断，正在重启 WhatsApp Gateway: %s", self._base_url)
         if self.gateway_process:
             await self.gateway_process.stop()
         self.gateway_process = self._create_gateway_process()
@@ -1645,7 +1645,7 @@ class WhatsAppPlatformAdapter(Platform):
             try:
                 await existing.terminate()
             except Exception as exc:
-                logger.warning("Failed to terminate stale WhatsApp adapter runtime owner: key=%s error=%s", key, exc)
+                logger.warning("终止旧 WhatsApp 适配器运行时所有权失败: key=%s error=%s", key, exc)
         registry[key] = weakref.ref(self)
 
     def _release_runtime_owner(self) -> None:
@@ -1786,7 +1786,7 @@ def patch_platform_manager_hot_reload() -> None:
     try:
         from astrbot.core.platform.manager import PlatformManager
     except Exception as exc:
-        logger.debug("WhatsApp hot-reload patch skipped; platform manager unavailable: %s", exc)
+        logger.debug("WhatsApp 热重载补丁跳过（平台管理器不可用）: %s", exc)
         return
     original_reload = getattr(PlatformManager, "_whatsapp_original_reload", None)
     if original_reload is not None:

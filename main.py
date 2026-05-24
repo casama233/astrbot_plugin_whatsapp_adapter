@@ -95,7 +95,7 @@ class WhatsAppAdapterPlugin(Star):
             status["plugin"] = PLUGIN_NAME
             status["gatewayHealthy"] = bool(status.get("ok", True) and status.get("ready"))
             status["configuredAuthDir"] = str(self._auth_dir())
-            logger.debug("WhatsApp plugin page status requested: %s", self._safe_status(status))
+            logger.debug("WhatsApp 管理页状态请求: %s", self._safe_status(status))
             return jsonify(status)
         except Exception as exc:
             logger.warning("WhatsApp 管理页状态获取失败: %s", exc)
@@ -138,7 +138,7 @@ class WhatsAppAdapterPlugin(Star):
         await self.page_client.start()
         try:
             health = await self.page_client.health()
-            logger.debug("WhatsApp Gateway already healthy for plugin page: %s", self._safe_status(health))
+            logger.debug("WhatsApp Gateway 已就绪（管理页）: %s", self._safe_status(health))
             return
         except Exception:
             pass
@@ -208,9 +208,9 @@ class WhatsAppAdapterPlugin(Star):
         try:
             import shutil
             shutil.copytree(str(old_root), str(new_root), symlinks=False)
-            logger.info("Migrated plugin page data from %s to %s", old_root, new_root)
+            logger.info("已迁移管理页数据: %s → %s", old_root, new_root)
         except Exception as exc:
-            logger.warning("Failed to migrate old plugin page data from %s to %s: %s", old_root, new_root, exc)
+            logger.warning("迁移管理页数据失败: %s → %s: %s", old_root, new_root, exc)
 
     def _safe_status(self, status: dict[str, Any]) -> dict[str, Any]:
         safe = dict(status)
