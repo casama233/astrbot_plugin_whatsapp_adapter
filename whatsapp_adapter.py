@@ -783,7 +783,7 @@ class WhatsAppPlatformAdapter(Platform):
                                     break
                                 if event.get("type") == "message":
                                     logger.info(
-                                        "WhatsApp inbound message event: chat=%s sender=%s from_me=%s message_id=%s text_len=%s media_count=%s",
+                                        "WhatsApp 入向消息: 聊天=%s 发送者=%s 自身=%s 消息ID=%s 文字长度=%s 媒体数=%s",
                                         event.get("chatJid"),
                                         event.get("senderJid"),
                                         event.get("fromMe"),
@@ -1034,7 +1034,7 @@ class WhatsAppPlatformAdapter(Platform):
                 continue
             at_id = self_id if self._is_self_mention(mentioned, self_id, self_lid) else mentioned
             logger.info(
-                "WhatsApp mention mapped: mentioned=%s at_id=%s self_id=%s self_lid=%s",
+                "WhatsApp @提及映射: 提及=%s at_id=%s self_id=%s self_lid=%s",
                 mentioned,
                 at_id,
                 self_id,
