@@ -888,17 +888,11 @@ class WhatsAppPlatformAdapter(Platform):
             _LID_PN_CACHE[chat_jid] = sender_pn
             _save_lid_mapping(chat_jid, sender_pn)
 
-        # session_id 統一用 PN JID（@s.whatsapp.net），避免 lid 不穩定
+        # session_id 統一使用原始 JID（lid 或 group），不做 PN 轉換
         if chat_jid.endswith("@g.us"):
             normalized_chat_jid = chat_jid
-        elif sender_pn.endswith("@s.whatsapp.net") and (chat_jid.endswith("@lid") or sender_jid.endswith("@lid")):
-            normalized_chat_jid = sender_pn
         elif chat_jid.endswith("@lid") or sender_jid.endswith("@lid"):
-            cached = _LID_PN_CACHE.get(sender_jid if sender_jid.endswith("@lid") else chat_jid)
-            if cached:
-                normalized_chat_jid = cached
-            else:
-                normalized_chat_jid = chat_jid
+            normalized_chat_jid = sender_jid if sender_jid.endswith("@lid") else chat_jid
         else:
             normalized_chat_jid = chat_jid
         extras = data.get("extras") or {}
