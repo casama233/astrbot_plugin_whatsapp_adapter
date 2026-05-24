@@ -150,7 +150,7 @@ pip install -r requirements.txt
 | 键 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
 | `gateway_health_check_interval` | int | `60` | 健康检查间隔（秒）；`0` 关闭 |
-| `inbound_reaction_events` | bool | `false` | 将 emoji reaction 转为 AstrBot 事件 |
+| `pre_ack_done_emoji` | string | `"✅"` | 回复完成表情 |
 
 ### Gateway 媒体大小限制（硬编码）
 

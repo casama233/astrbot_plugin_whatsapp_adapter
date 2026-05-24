@@ -89,7 +89,6 @@ pip install -r requirements.txt
 | `command_prefix` | `/` | 斜线指令前缀 |
 | `register_commands` | `true` | 启用斜线指令识别 |
 | `gateway_health_check_interval` | `60` | 健康检查间隔秒数，0=关闭 |
-| `inbound_reaction_events` | `false` | 入站 emoji reaction 转为事件 |
 
 ## 交互式组件
 
