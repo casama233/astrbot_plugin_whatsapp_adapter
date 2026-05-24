@@ -159,7 +159,7 @@ class WhatsAppMessageEvent(AstrMessageEvent):
                 try:
                     await self.client.edit_text(self.target_jid, message_id, chunk, mentions=chunk_mentions)
                 except Exception as exc:
-                    logger.debug("WhatsApp streaming edit failed, sending a new text message: target=%s message_id=%s error=%s", self.target_jid, message_id, exc)
+                    logger.debug("WhatsApp 流式编辑失败，改发新消息: target=%s message_id=%s error=%s", self.target_jid, message_id, exc)
                     result = await self.client.send_text(
                         self.target_jid,
                         chunk,
@@ -234,7 +234,7 @@ class WhatsAppMessageEvent(AstrMessageEvent):
         try:
             await self.client.send_presence(self.target_jid, "composing")
         except Exception as exc:
-            logger.debug("WhatsApp typing presence failed: target=%s error=%s", self.target_jid, exc)
+            logger.debug("WhatsApp 输入状态更新失败: target=%s error=%s", self.target_jid, exc)
 
     async def stop_typing(self) -> None:
         if not self.typing_indicator:
@@ -242,7 +242,7 @@ class WhatsAppMessageEvent(AstrMessageEvent):
         try:
             await self.client.send_presence(self.target_jid, "available")
         except Exception as exc:
-            logger.debug("WhatsApp stop typing presence failed: target=%s error=%s", self.target_jid, exc)
+            logger.debug("WhatsApp 停止输入状态更新失败: target=%s error=%s", self.target_jid, exc)
 
     async def edit_message(self, message_id: str, text: str, participant: str | None = None) -> dict:
         """編輯先前由本機器人發送的文字訊息。"""
