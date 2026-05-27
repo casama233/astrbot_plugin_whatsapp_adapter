@@ -22,7 +22,7 @@
     },
     "auth_dir": {
       "description": "WhatsApp auth directory",
-      "hint": "Empty means data/astrbot_plugin_whatsapp_adapter/whatsapp-auth under AstrBot's working directory."
+      "hint": "Empty means data/plugin_data/astrbot_plugin_whatsapp_adapter/whatsapp-auth under AstrBot's working directory."
     },
     "log_level": {
       "description": "Gateway log level"

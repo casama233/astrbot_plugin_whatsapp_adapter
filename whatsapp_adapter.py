@@ -56,6 +56,21 @@ _LID_PN_CACHE: dict[str, str] = {}  # lid JID → pn JID (e.g. "xxx@lid" → "yy
 _PN_LID_CACHE: dict[str, str] = {}  # pn JID → lid JID，用於出站時目標 JID 還原
 
 
+def _base_pn_jid(pn_jid: str) -> str:
+    user = str(pn_jid or "").split("@", 1)[0].split(":", 1)[0]
+    return f"{user}@s.whatsapp.net" if user else ""
+
+
+def _cache_lid_mapping(lid_jid: str, pn_jid: str) -> None:
+    if not lid_jid or not pn_jid:
+        return
+    _LID_PN_CACHE[lid_jid] = pn_jid
+    _PN_LID_CACHE[pn_jid] = lid_jid
+    base_pn = _base_pn_jid(pn_jid)
+    if base_pn:
+        _PN_LID_CACHE[base_pn] = lid_jid
+
+
 def _lid_mapping_path(auth_dir: Path, lid_jid: str) -> Path | None:
     """lid JID 對應的磁碟映射文件路徑（lid-mapping-{lid数字}_reverse.json）。"""
     lid_num = lid_jid.split("@", 1)[0].split(":", 1)[0]
@@ -80,8 +95,7 @@ def _load_lid_mappings(auth_dir: Path) -> None:
                 if phone and isinstance(phone, str):
                     lid_jid = f"{m.group(1)}@lid"
                     pn_jid = f"{phone}@s.whatsapp.net"
-                    _LID_PN_CACHE[lid_jid] = pn_jid
-                    _PN_LID_CACHE[pn_jid] = lid_jid
+                    _cache_lid_mapping(lid_jid, pn_jid)
             except Exception:
                 continue
         if _LID_PN_CACHE:
@@ -90,12 +104,10 @@ def _load_lid_mappings(auth_dir: Path) -> None:
         logger.debug("加載 lid 映射失敗: %s", exc)
 
 
-def _save_lid_mapping(lid_jid: str, pn_jid: str) -> None:
+def _save_lid_mapping(auth_dir: Path, lid_jid: str, pn_jid: str) -> None:
     """持久化 lid→PN 映射到 Gateway auth 目錄。"""
-    if not _get_astrbot_data_path:
+    if not auth_dir:
         return
-    plugin_data = Path(_get_astrbot_data_path()) / "plugin_data" / PLUGIN_NAME
-    auth_dir = plugin_data / "whatsapp-auth"
     path = _lid_mapping_path(auth_dir, lid_jid)
     if not path or path.exists():
         return
@@ -740,7 +752,10 @@ class WhatsAppPlatformAdapter(Platform):
             return
 
         # PN→lid 正向解析：若目標是 PN 且有緩存 lid，用 lid 確保訊息歸流正確
-        lid_target = _PN_LID_CACHE.get(str(target)) if target else None
+        target_key = str(target)
+        lid_target = _PN_LID_CACHE.get(target_key) if target else None
+        if not lid_target and target_key.endswith("@s.whatsapp.net"):
+            lid_target = _PN_LID_CACHE.get(_base_pn_jid(target_key))
         if lid_target:
             target = lid_target
 
@@ -881,12 +896,11 @@ class WhatsAppPlatformAdapter(Platform):
         # 缓存 lid→PN 映射，用于出站 @mention 时解析
         if sender_jid.endswith("@lid") and sender_pn.endswith("@s.whatsapp.net"):
             if sender_jid not in _LID_PN_CACHE:
-                _LID_PN_CACHE[sender_jid] = sender_pn
-                _PN_LID_CACHE[sender_pn] = sender_jid
-                _save_lid_mapping(sender_jid, sender_pn)
+                _cache_lid_mapping(sender_jid, sender_pn)
+                _save_lid_mapping(self._auth_dir(), sender_jid, sender_pn)
         if chat_jid.endswith("@lid") and chat_jid not in _LID_PN_CACHE and sender_pn.endswith("@s.whatsapp.net"):
-            _LID_PN_CACHE[chat_jid] = sender_pn
-            _save_lid_mapping(chat_jid, sender_pn)
+            _cache_lid_mapping(chat_jid, sender_pn)
+            _save_lid_mapping(self._auth_dir(), chat_jid, sender_pn)
 
         # session_id 統一使用原始 JID（lid 或 group），不做 PN 轉換
         if chat_jid.endswith("@g.us"):
@@ -1159,20 +1173,27 @@ class WhatsAppPlatformAdapter(Platform):
                 candidates.add(v)
 
         def _normalize_phone(value: str) -> str:
-            digits = re.sub(r"\D", "", value)
-            return f"+{digits}" if digits else ""
+            text = str(value or "").strip()
+            if text == "*":
+                return "*"
+            digits = re.sub(r"\D", "", text)
+            return f"+{digits}" if digits else text
 
         def _allowed_by(value: str, allow_list: list) -> bool:
             if not allow_list:
                 return False
             normalized = _normalize_phone(value)
+            normalized_jid = self._whatsapp_user_id(value)
             for item in allow_list:
                 item_str = str(item or "").strip()
-                if item_str == "*" or _normalize_phone(item_str) == "*":
+                if item_str == "*":
                     return True
-                if _normalize_phone(item_str) == normalized:
+                item_phone = _normalize_phone(item_str)
+                if item_phone and normalized and item_phone == normalized:
                     return True
                 if item_str == value:
+                    return True
+                if self._whatsapp_user_id(item_str) == normalized_jid:
                     return True
             return False
 
@@ -1196,9 +1217,8 @@ class WhatsAppPlatformAdapter(Platform):
                 try:
                     pn = await asyncio.wait_for(self.client.resolve_lid(sender_jid), timeout=4)
                     if pn and _allowed_by(pn, allow_from):
-                        _LID_PN_CACHE[sender_jid] = pn
-                        _PN_LID_CACHE[pn] = sender_jid
-                        _save_lid_mapping(sender_jid, pn)
+                        _cache_lid_mapping(sender_jid, pn)
+                        _save_lid_mapping(self._auth_dir(), sender_jid, pn)
                         return True
                 except Exception:
                     pass
@@ -1222,9 +1242,8 @@ class WhatsAppPlatformAdapter(Platform):
             try:
                 pn = await asyncio.wait_for(self.client.resolve_lid(sender_jid), timeout=4)
                 if pn and _allowed_by(pn, group_allow_from):
-                    _LID_PN_CACHE[sender_jid] = pn
-                    _PN_LID_CACHE[pn] = sender_jid
-                    _save_lid_mapping(sender_jid, pn)
+                    _cache_lid_mapping(sender_jid, pn)
+                    _save_lid_mapping(self._auth_dir(), sender_jid, pn)
                     return True
             except Exception:
                 pass
@@ -1338,7 +1357,7 @@ class WhatsAppPlatformAdapter(Platform):
     def _resolve_data_base() -> Path:
         if _get_astrbot_data_path:
             return Path(_get_astrbot_data_path()) / "plugin_data"
-        return Path.cwd() / "data"
+        return Path.cwd() / "data" / "plugin_data"
 
     def _migrate_old_data(self) -> None:
         old_root = Path.cwd() / "data" / _OLD_DATA_DIR_NAME

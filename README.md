@@ -97,7 +97,7 @@ pip install -r requirements.txt
 | `gateway_port` | int | `18789` | Gateway HTTP/SSE 端口 |
 | `auto_start_gateway` | bool | `true` | 自动启动内置 Node.js Gateway |
 | `node_executable` | string | `node` | Node.js 可执行文件路径 |
-| `auth_dir` | string | `""` | WhatsApp 登录态目录，留空自动使用 `data/astrbot_plugin_whatsapp_adapter/whatsapp-auth` |
+| `auth_dir` | string | `""` | WhatsApp 登录态目录，留空自动使用 `data/plugin_data/astrbot_plugin_whatsapp_adapter/whatsapp-auth` |
 | `log_level` | string | `info` | Gateway 日志级别：`silent`、`fatal`、`error`、`warn`、`info`、`debug`、`trace` |
 
 ### 权限

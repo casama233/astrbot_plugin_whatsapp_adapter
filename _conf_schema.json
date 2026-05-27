@@ -32,7 +32,7 @@
     "type": "string",
     "default": "",
     "group": "connection",
-    "hint": "留空时使用 AstrBot 工作目录下的 data/astrbot_plugin_whatsapp_adapter/whatsapp-auth。"
+    "hint": "留空时使用 AstrBot 工作目录下的 data/plugin_data/astrbot_plugin_whatsapp_adapter/whatsapp-auth。"
   },
   "log_level": {
     "description": "Gateway 日志级别",
