@@ -87,6 +87,12 @@ function resolvePhone(jid) {
   return digits ? `+${digits}` : null;
 }
 
+function normalizeLidJid(value) {
+  const text = String(value || "").trim();
+  if (!text) return null;
+  return text.endsWith("@lid") ? text : `${text}@lid`;
+}
+
 /**
  * 嘗試將 LID JID 解析為 PN JID（如 "208070378541290@lid" → "85266631531:20@s.whatsapp.net"）
  * 透過 knownContacts 查找 LID→PN 映射
@@ -932,9 +938,19 @@ async function handleIncomingMessage(item, options = {}) {
             return;
           }
         } else {
-          // lid→PN 映射超时未解析，仍转发给 adapter 做最终 allowlist 判断
-          log.warn({ senderJid, chatJid, messageId: primary.key.id }, "lid→PN mapping unresolved within timeout, passing through to adapter");
-          allowedResult = { allowed: true, reason: "lid_unresolved_allow", senderPhone: "" };
+          log.warn({ senderJid, chatJid, messageId: primary.key.id }, "lid→PN mapping unresolved within timeout, rejecting allowlist message");
+          broadcast({
+            type: "rejected",
+            chatJid, senderJid,
+            senderPn: primary.key.senderPn || null,
+            senderName: primary.pushName || senderJid,
+            senderPhone: "",
+            reason: "lid_unresolved", fromMe,
+            messageId: primary.key.id,
+            text: textFromMessage(primary.message) || "",
+            timestamp: Number(primary.messageTimestamp || Date.now() / 1000),
+          });
+          return;
         }
       } else {
         broadcast({
@@ -1155,7 +1171,7 @@ async function startSocket() {
       latestQrDataUrl = null;
       connectionStatus = "connected";
       selfJid = socket.user?.id || null;
-      selfLid = socket.authState?.creds?.me?.lid || null;
+      selfLid = normalizeLidJid(socket.authState?.creds?.me?.lid);
       if (selfLid && selfJid) updateContact({ id: selfLid, jid: selfJid });
       // 連線成功立即標記在線，不受 markOnline 控制（確保機器人基本在線）
       sendAvailablePresence().catch(() => {});

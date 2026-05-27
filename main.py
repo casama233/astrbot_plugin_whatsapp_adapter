@@ -26,7 +26,7 @@ PLUGIN_DIR = Path(__file__).resolve().parent
     PLUGIN_NAME,
     "OpenCode",
     "WhatsApp Web platform adapter backed by a local Gateway process.",
-    "0.2.7",
+    "0.2.8",
 )
 class WhatsAppAdapterPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None):
@@ -196,7 +196,7 @@ class WhatsAppAdapterPlugin(Star):
     def _resolve_data_base() -> Path:
         if _get_astrbot_data_path:
             return Path(_get_astrbot_data_path()) / "plugin_data"
-        return Path.cwd() / "data"
+        return Path.cwd() / "data" / "plugin_data"
 
     def _migrate_old_data(self) -> None:
         old_root = Path.cwd() / "data" / PLUGIN_NAME

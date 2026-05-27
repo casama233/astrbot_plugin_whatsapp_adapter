@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.8] - 2026-05-27
+
+### Fixed
+- 使用真实 `auth_dir` 持久化 lid→PN 映射，避免自定义登录态目录重启后丢失映射
+- Gateway 与 adapter 的 allowlist 匹配规则对齐，支持 phone、PN JID、LID JID 与 local-part 形式
+- 出站 PN→lid 还原兼容 PN device suffix，避免回复进入错误会话
+- Gateway 连接成功时规范化 `selfLid` 为完整 `@lid` JID，提升自身消息与 @ 提及判断稳定性
+- fallback 数据目录改为 `data/plugin_data/{plugin_name}`，符合 AstrBot 官方插件存储规范
+
+### Changed
+- Gateway 在 allowlist 模式下无法解析 LID→PN 时明确拒绝并广播 `lid_unresolved`，不再作为 accepted 消息透传
+
 ## [0.2.7] - 2026-05-24
 
 ### Fixed
