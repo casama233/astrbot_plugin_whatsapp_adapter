@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.10] - 2026-06-06
+
+### Fixed
+- 收件端持續顯示「此訊息不會自動刪除 / 傳送者可能正在使用版本較舊的WhatsApp」警告：根因為 Baileys 7.0.0-rc13 在 `messages.js:600` 把 `ephemeralSettingTimestamp` 欄位註解掉，導致收件端把發送端當作「舊版 WhatsApp」。新增 `apply_ephemeral` 配置（預設關閉）徹底不帶 `ephemeralExpiration`，警告即消失；同時把 `chats.update` / `chats.upsert` 對 ephemeral 快取的更新也一併略過
+
 ## [0.2.9] - 2026-06-06
 
 ### Fixed

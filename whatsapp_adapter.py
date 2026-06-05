@@ -179,6 +179,7 @@ RUNTIME_DEFAULT_CONFIG: dict[str, Any] = {
     "pre_ack_emojis": "👀",
     "pre_ack_emoji": True,
     "media_max_mb": 50,
+    "apply_ephemeral": False,
 }
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -193,6 +194,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "pre_ack_private": True,
     "pre_ack_public": "mentions",
     "pre_ack_done_emoji": "✅",
+    "apply_ephemeral": False,
 }
 
 UI_CONFIG_KEYS = tuple(DEFAULT_CONFIG)
@@ -412,6 +414,12 @@ CONFIG_METADATA: dict[str, Any] = {
         "group": "messaging",
         "hint": "上传到 WhatsApp Gateway 的单个媒体文件大小上限（MB）。预设 50。",
     },
+    "apply_ephemeral": {
+        "description": "应用聊天室的消失讯息设定",
+        "type": "bool",
+        "group": "messaging",
+        "hint": "开启后，发送消息时会带入聊天室的消失讯息计时器。关闭（默认）可避免 Baileys 触发的「此訊息不會自動刪除 / 傳送者可能正在使用版本較舊的 WhatsApp」警告。",
+    },
     "gateway_health_check_interval": {
         "description": "Gateway 健康检查间隔",
         "type": "int",
@@ -534,6 +542,10 @@ WHATSAPP_I18N_RESOURCES: dict[str, dict] = {
             "description": "媒体上传大小限制 (MB)",
             "hint": "上传到 WhatsApp Gateway 的单个媒体文件大小上限（MB）。预设 50。",
         },
+        "apply_ephemeral": {
+            "description": "应用聊天室的消失讯息设定",
+            "hint": "开启后，外寄消息会带入聊天室的消失讯息计时器。关闭（默认）可避免 Baileys 触发的「此訊息不會自動刪除 / 傳送者可能正在使用版本較舊的 WhatsApp」警告。",
+        },
         "gateway_health_check_interval": {
             "description": "Gateway 健康检查间隔",
             "hint": "定期检查 Gateway 状态的间隔秒数。设为 0 关闭健康检查。",
@@ -652,6 +664,10 @@ WHATSAPP_I18N_RESOURCES: dict[str, dict] = {
             "description": "Media upload size limit (MB)",
             "hint": "Maximum size per media file uploaded to the WhatsApp Gateway (MB). Default 50.",
         },
+        "apply_ephemeral": {
+            "description": "Apply chat disappearing-message timer",
+            "hint": "When enabled, outgoing messages inherit the chat's disappearing-message timer. Off (default) avoids the Baileys-triggered 'This message will not auto-delete / The sender may be using an older version of WhatsApp' warning.",
+        },
         "gateway_health_check_interval": {
             "description": "Gateway health interval",
             "hint": "Interval in seconds for periodic Gateway health checks. Set 0 to disable.",
@@ -769,6 +785,10 @@ WHATSAPP_I18N_RESOURCES: dict[str, dict] = {
         "media_max_mb": {
             "description": "媒體上傳大小限制 (MB)",
             "hint": "上傳到 WhatsApp Gateway 的單個媒體檔案大小上限（MB）。預設 50。",
+        },
+        "apply_ephemeral": {
+            "description": "套用聊天室的消失訊息設定",
+            "hint": "開啟後，外寄訊息會帶入聊天室的消失訊息計時器。關閉（預設）可避免 Baileys 觸發的「此訊息不會自動刪除 / 傳送者可能正在使用版本較舊的 WhatsApp」警告。",
         },
         "gateway_health_check_interval": {
             "description": "Gateway 健康檢查間隔",
@@ -1528,6 +1548,7 @@ class WhatsAppPlatformAdapter(Platform):
                 int(float(self.config.get("media_album_debounce_seconds") or 0) * 1000),
             ),
             "ignoreSelfMessages": bool(self.config.get("ignore_self_messages", False)),
+            "applyEphemeral": bool(self.config.get("apply_ephemeral", False)),
         }
 
     def _auth_dir(self) -> Path:
