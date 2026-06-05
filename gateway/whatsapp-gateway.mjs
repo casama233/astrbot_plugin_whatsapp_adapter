@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { mkdir, readdir, readFile, rm, stat } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createWriteStream, statSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -58,6 +58,34 @@ function updateContact(contact) {
   }
 }
 
+function pnJidFromValue(value) {
+  const raw = String(value || "").trim();
+  if (!raw || raw === "*" || raw.endsWith("@g.us")) return null;
+  if (raw.endsWith("@s.whatsapp.net")) return raw;
+  if (raw.endsWith("@lid")) return resolveLidToPn(raw);
+  const digits = raw.replace(/\D/g, "");
+  return digits ? `${digits}@s.whatsapp.net` : null;
+}
+
+async function persistLidMapping(lidJid, pnJid) {
+  const lidNum = normalizeJid(lidJid).replace(/\D/g, "");
+  const pnNum = normalizeJid(pnJid).replace(/\D/g, "");
+  if (!lidNum || !pnNum) return;
+  try {
+    await mkdir(authDir, { recursive: true });
+    await writeFile(path.join(authDir, `lid-mapping-${lidNum}_reverse.json`), JSON.stringify(pnNum), "utf-8");
+  } catch (error) {
+    log.debug({ error, lidJid, pnJid }, "failed to persist lid→pn mapping");
+  }
+}
+
+function rememberLidPnMapping(lidJid, pnJid, persist = true) {
+  if (!lidJid || !pnJid || !String(lidJid).endsWith("@lid") || !String(pnJid).endsWith("@s.whatsapp.net")) return false;
+  updateContact({ id: lidJid, jid: pnJid, lid: lidJid });
+  if (persist) persistLidMapping(lidJid, pnJid).catch(() => {});
+  return true;
+}
+
 /**
  * 從任何 JID 解析出 E.164 電話號碼字串（如 "+85266631531"）
  *  - PN JID (@s.whatsapp.net) → 直接提取數字
@@ -107,6 +135,22 @@ function resolveLidToPn(lidJid) {
   return null;
 }
 
+async function resolveLidToPnDeep(lidJid) {
+  const existing = resolveLidToPn(lidJid);
+  if (existing) return existing;
+  if (!socket?.signalRepository?.lidMapping || !String(lidJid || "").endsWith("@lid")) return null;
+  try {
+    const pn = await socket.signalRepository.lidMapping.getPNForLID(lidJid);
+    if (pn?.endsWith?.("@s.whatsapp.net")) {
+      rememberLidPnMapping(lidJid, pn);
+      return pn;
+    }
+  } catch (error) {
+    log.debug({ error, lidJid }, "lidMapping.getPNForLID failed");
+  }
+  return null;
+}
+
 /**
  * 從 auth 目錄載入磁碟上已有的 lid-mapping-*_reverse.json
  * 在 Gateway 重啟時恢復 Lid→PN 映射，補償 Baileys 不重播既有映射事件。
@@ -124,7 +168,7 @@ async function loadLidMappingsFromDisk() {
         if (phone && typeof phone === "string") {
           const lid = `${match[1]}@lid`;
           const pnJid = `${phone}@s.whatsapp.net`;
-          updateContact({ id: lid, jid: pnJid });
+          rememberLidPnMapping(lid, pnJid, false);
           loaded++;
         }
       } catch {
@@ -142,20 +186,20 @@ async function loadLidMappingsFromDisk() {
  * Baileys 在收到 Lid 訊息後會透過 contacts.upsert / lid-mapping.update / chats.phoneNumberShare
  * 提供 Lid→PN 映射，但可能比 messages.upsert 稍晚到達。
  */
-function waitForLidPnMapping(lidJid, timeoutMs) {
-  const existing = resolveLidToPn(lidJid);
-  if (existing) return Promise.resolve(existing);
+async function waitForLidPnMapping(lidJid, timeoutMs) {
+  const existing = await resolveLidToPnDeep(lidJid);
+  if (existing) return existing;
   return (async () => {
     if (socket?.presenceSubscribe) {
       try { await socket.presenceSubscribe(lidJid); } catch {}
     }
-    const afterSubscribe = resolveLidToPn(lidJid);
+    const afterSubscribe = await resolveLidToPnDeep(lidJid);
     if (afterSubscribe) return afterSubscribe;
     return new Promise((resolve) => {
       const EVENTS = ["contacts.upsert", "lid-mapping.update", "chats.phoneNumberShare"];
       const timer = setTimeout(() => {
         for (const evt of EVENTS) socket.ev.off(evt, handler);
-        resolve(resolveLidToPn(lidJid));
+        resolve(resolveLidToPnDeep(lidJid));
       }, timeoutMs);
       const handler = (...args) => {
         const data = args[0];
@@ -172,18 +216,19 @@ function waitForLidPnMapping(lidJid, timeoutMs) {
           if (matched) pn = [matched.jid, matched.id].find((j) => j && j.endsWith("@s.whatsapp.net"));
         }
         if (pn) {
+          rememberLidPnMapping(lidJid, pn);
           clearTimeout(timer);
           for (const evt of EVENTS) socket.ev.off(evt, handler);
           resolve(pn);
         }
       };
       for (const evt of EVENTS) socket.ev.on(evt, handler);
-      const recheck = resolveLidToPn(lidJid);
-      if (recheck) {
+      resolveLidToPnDeep(lidJid).then((recheck) => {
+        if (!recheck) return;
         clearTimeout(timer);
         for (const evt of EVENTS) socket.ev.off(evt, handler);
         resolve(recheck);
-      }
+      });
     });
   })();
 }
@@ -266,6 +311,57 @@ let runtimeConfig = {
   mediaAlbumDebounceMs: 2500,
 };
 
+function configuredAllowlistPnJids() {
+  const values = [
+    ...(runtimeConfig.allowFrom || []),
+    ...(runtimeConfig.groupAllowFrom || []),
+  ];
+  const result = [];
+  const seen = new Set();
+  for (const value of values) {
+    const pnJid = pnJidFromValue(value);
+    if (pnJid && !seen.has(pnJid)) {
+      seen.add(pnJid);
+      result.push(pnJid);
+    }
+  }
+  return result;
+}
+
+async function resolvePnToLid(pnJid) {
+  if (!socket || !pnJid?.endsWith?.("@s.whatsapp.net")) return null;
+  let normalizedPn = pnJid;
+  try {
+    const result = await socket.onWhatsApp(normalizeJid(pnJid));
+    const found = (result || []).find((item) => item?.exists && item?.jid?.endsWith?.("@s.whatsapp.net"));
+    if (found?.jid) normalizedPn = found.jid;
+  } catch (error) {
+    log.debug({ error, pnJid }, "onWhatsApp lookup failed while resolving allowlist LID");
+  }
+  try {
+    const lid = await socket.signalRepository?.lidMapping?.getLIDForPN?.(normalizedPn);
+    if (lid?.endsWith?.("@lid")) {
+      rememberLidPnMapping(lid, normalizedPn);
+      return lid;
+    }
+  } catch (error) {
+    log.debug({ error, pnJid: normalizedPn }, "lidMapping.getLIDForPN failed");
+  }
+  return null;
+}
+
+async function refreshAllowlistLidMappings(reason = "manual") {
+  if (!socket || !ready) return 0;
+  const pnJids = configuredAllowlistPnJids();
+  let resolved = 0;
+  for (const pnJid of pnJids) {
+    const lid = await resolvePnToLid(pnJid);
+    if (lid) resolved++;
+  }
+  if (resolved) log.info({ reason, resolved, count: pnJids.length }, "refreshed allowlist LID mappings");
+  return resolved;
+}
+
 function stopPresenceTimer() {
   if (presenceTimer) clearInterval(presenceTimer);
   presenceTimer = null;
@@ -343,7 +439,7 @@ async function rememberGroupParticipants(chatJid) {
       rememberMentionIdentity(jid);
       if (jid && String(jid).endsWith("@lid")) {
         const resolved = resolveLidToPn(jid);
-        if (resolved) updateContact({ id: jid, jid: resolved });
+        if (resolved) rememberLidPnMapping(jid, resolved);
       }
     }
   } catch (error) {
@@ -466,6 +562,15 @@ function allowedMessageResult(chatJid, senderJid, item) {
     reason: "group_allowlist",
     senderPhone,
   };
+}
+
+async function refreshAndRetryAllowedMessage(chatJid, senderJid, item) {
+  await refreshAllowlistLidMappings("inbound_unresolved_lid");
+  const cachedPn = resolveLidToPn(senderJid) || resolveLidToPn(chatJid);
+  if (cachedPn && senderJid.endsWith("@lid")) {
+    rememberLidPnMapping(senderJid, cachedPn);
+  }
+  return allowedMessageResult(chatJid, senderJid, item);
 }
 
 function textFromMessage(message) {
@@ -870,7 +975,7 @@ async function handleIncomingMessage(item, options = {}) {
       if (digits) pnJid = `${digits}@s.whatsapp.net`;
       else pnJid = null;
     }
-    if (pnJid) updateContact({ id: senderJid, jid: pnJid });
+    if (pnJid) rememberLidPnMapping(senderJid, pnJid);
   }
   rememberGroupParticipants(chatJid).catch(() => {});
   if (primary.message?.protocolMessage) {
@@ -882,6 +987,10 @@ async function handleIncomingMessage(item, options = {}) {
     log.warn({ chatJid, senderJid, messageId: primary.key.id }, "Gateway not yet configured; passing message through without allowlist check");
   }
   let allowedResult = configured ? allowedMessageResult(chatJid, senderJid, primary) : { allowed: true, reason: "not_yet_configured", senderPhone: "" };
+  if (configured && !allowedResult.allowed && !allowedResult.senderPhone && senderJid.endsWith("@lid")) {
+    const retry = await refreshAndRetryAllowedMessage(chatJid, senderJid, primary);
+    if (retry.allowed || retry.senderPhone) allowedResult = retry;
+  }
   if (!isGroup) {
     log.info(
       {
@@ -919,7 +1028,7 @@ async function handleIncomingMessage(item, options = {}) {
       if (!allowedResult.senderPhone && senderJid.endsWith("@lid")) {
         const resolved = await waitForLidPnMapping(senderJid, 3000);
         if (resolved) {
-          updateContact({ id: senderJid, jid: resolved });
+          rememberLidPnMapping(senderJid, resolved);
           const retry = allowedMessageResult(chatJid, senderJid, primary);
           if (retry.allowed) {
             allowedResult = retry;
@@ -1138,18 +1247,14 @@ async function startSocket() {
   });
   // lid-mapping.update — Baileys 提供 LID→PN 映射，統一存入 contact store
   socket.ev.on("lid-mapping.update", (mapping) => {
-    if (mapping?.lid && mapping?.pn) {
-      updateContact({ id: mapping.lid, jid: mapping.pn });
-    }
-    if (mapping?.lidJid && mapping?.pnJid) {
-      updateContact({ id: mapping.lidJid, jid: mapping.pnJid });
-    }
+    if (mapping?.lid && mapping?.pn) rememberLidPnMapping(mapping.lid, mapping.pn);
+    if (mapping?.lidJid && mapping?.pnJid) rememberLidPnMapping(mapping.lidJid, mapping.pnJid);
   });
   // chats.phoneNumberShare — Baileys 在收到 LID 格式訊息時提供 LID→PN 映射
   socket.ev.on("chats.phoneNumberShare", ({ lid, jid }) => {
     if (lid && jid) {
       log.debug({ lid, pn: jid }, "phoneNumberShare: LID→PN mapping received");
-      updateContact({ id: lid, jid });
+      rememberLidPnMapping(lid, jid);
     }
   });
   socket.ev.on("connection.update", (update) => {
@@ -1172,11 +1277,14 @@ async function startSocket() {
       connectionStatus = "connected";
       selfJid = socket.user?.id || null;
       selfLid = normalizeLidJid(socket.authState?.creds?.me?.lid);
-      if (selfLid && selfJid) updateContact({ id: selfLid, jid: selfJid });
+      if (selfLid && selfJid) rememberLidPnMapping(selfLid, selfJid);
       // 連線成功立即標記在線，不受 markOnline 控制（確保機器人基本在線）
       sendAvailablePresence().catch(() => {});
       startPresenceTimer();
       broadcast({ type: "status", status: "connected", selfJid, selfLid });
+      refreshAllowlistLidMappings("connection_open").catch((error) =>
+        log.debug({ error }, "allowlist LID mapping refresh failed after connect"),
+      );
     }
     if (connection === "close") {
       ready = false;
@@ -1390,6 +1498,9 @@ const server = createServer(async (req, res) => {
       runtimeConfig = { ...runtimeConfig, ...body };
       configured = true;
       if (ready) startPresenceTimer();
+      if (ready) refreshAllowlistLidMappings("config_update").catch((error) =>
+        log.debug({ error }, "allowlist LID mapping refresh failed after config update"),
+      );
       sendJson(res, 200, { ok: true, config: runtimeConfig });
       return;
     }

@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 from typing import AsyncGenerator
 
 from astrbot.api.event import AstrMessageEvent, MessageChain
 from astrbot.api.message_components import Plain
 from astrbot.api.platform import AstrBotMessage, At, PlatformMetadata
 from astrbot.core.utils.io import download_image_by_url
+from astrbot.core.utils.metrics import Metric
 from astrbot import logger
 
 from .whatsapp_client import WhatsAppGatewayClient
@@ -36,6 +38,7 @@ class WhatsAppMessageEvent(AstrMessageEvent):
         link_preview_single_url: bool = True,
         typing_indicator: bool = True,
         ack_done_emoji: str = "",
+        unsupported_streaming_strategy: str = "",
     ) -> None:
         super().__init__(message_str, message_obj, platform_meta, session_id)
         self.client = client
@@ -47,6 +50,7 @@ class WhatsAppMessageEvent(AstrMessageEvent):
         self.media_caption_mode = media_caption_mode
         self.link_preview_single_url = link_preview_single_url
         self.typing_indicator = typing_indicator
+        self.unsupported_streaming_strategy = unsupported_streaming_strategy
         self._pre_acked = False
         self._done_emoji = ack_done_emoji or "✅"
         self._super_sent = False
@@ -99,9 +103,9 @@ class WhatsAppMessageEvent(AstrMessageEvent):
             self._temp_files.clear()
 
     async def send_streaming(self, generator: AsyncGenerator[MessageChain, None], use_fallback: bool = False):
+        logger.info("WhatsApp 进入流式回复: target=%s use_fallback=%s", self.target_jid, use_fallback)
         if use_fallback:
-            await self._send_streaming_fallback(generator)
-            return
+            logger.debug("WhatsApp 忽略 realtime_segmenting fallback，使用消息编辑实现流式回复")
 
         await self.send_typing()
         try:
@@ -109,14 +113,20 @@ class WhatsAppMessageEvent(AstrMessageEvent):
         except Exception as exc:
             logger.warning("WhatsApp 流式回复出错: target=%s error=%s", self.target_jid, exc)
         finally:
-            if not self._super_sent:
-                await super().send(MessageChain())
+            self._mark_streaming_sent()
             await self.stop_typing()
             if self._pre_acked:
                 try:
                     await self.client.react(self.target_jid, self.quoted_message_id, self._done_emoji, self.quoted_participant)
                 except Exception:
                     pass
+
+    def _mark_streaming_sent(self) -> None:
+        asyncio.create_task(
+            Metric.upload(msg_event_tick=1, adapter_name=self.platform_meta.name),
+        )
+        self._has_send_oper = True
+        self._super_sent = True
 
     async def _send_streaming_fallback(self, generator: AsyncGenerator[MessageChain, None]) -> None:
         async for chain in generator:
@@ -130,11 +140,29 @@ class WhatsAppMessageEvent(AstrMessageEvent):
         last_update = 0.0
         last_typing_update = 0.0
         mentions: list[str] = []
-        throttle_seconds = 0.8
+        edit_failed = False
+        fallback_sent_len = 0
+        # WhatsApp message edits are rate-limited conservatively to avoid noisy
+        # update bursts that can look like automation abuse.
+        throttle_seconds = 2.0
         max_edit_length = min(self.text_chunk_limit, 3500)
+        realtime_fallback = self.unsupported_streaming_strategy == "realtime_segmenting"
+
+        def fallback_segments(final: bool = False) -> list[str]:
+            if not realtime_fallback:
+                return [text_buffer] if final and text_buffer else []
+            pending = text_buffer[fallback_sent_len:]
+            if not pending:
+                return []
+            parts = re.findall(r".*?[。？！!?~…\n]+|.+$", pending, re.DOTALL)
+            if not parts:
+                return [pending] if final else []
+            if not final and parts and not re.search(r"[。？！!?~…\n]+$", parts[-1]):
+                parts.pop()
+            return [part for part in parts if part.strip()]
 
         async def publish(force: bool = False) -> None:
-            nonlocal message_id, last_sent, last_update, text_buffer, mentions
+            nonlocal message_id, last_sent, last_update, text_buffer, mentions, edit_failed, fallback_sent_len
             if not text_buffer or text_buffer == last_sent:
                 return
             now = asyncio.get_running_loop().time()
@@ -142,6 +170,21 @@ class WhatsAppMessageEvent(AstrMessageEvent):
                 return
             chunk = text_buffer[:max_edit_length]
             if chunk == last_sent:
+                return
+            if edit_failed and not force:
+                segments = fallback_segments(final=False)
+                for segment in segments:
+                    segment_mentions = await mentions_for_text(self.client, self.target_jid, segment, mentions)
+                    await self.client.send_text(
+                        self.target_jid,
+                        segment,
+                        quoted_message_id=self.quoted_message_id,
+                        quoted_participant=self.quoted_participant,
+                        link_preview=False,
+                        mentions=segment_mentions,
+                    )
+                    fallback_sent_len += len(segment)
+                last_update = now
                 return
             chunk_mentions = await mentions_for_text(self.client, self.target_jid, chunk, mentions)
             if not message_id:
@@ -160,16 +203,31 @@ class WhatsAppMessageEvent(AstrMessageEvent):
                 try:
                     await self.client.edit_text(self.target_jid, message_id, chunk, mentions=chunk_mentions)
                 except Exception as exc:
-                    logger.debug("WhatsApp 流式编辑失败，改发新消息: target=%s message_id=%s error=%s", self.target_jid, message_id, exc)
-                    result = await self.client.send_text(
-                        self.target_jid,
-                        chunk,
-                        quoted_message_id=self.quoted_message_id,
-                        quoted_participant=self.quoted_participant,
-                        link_preview=False,
-                        mentions=chunk_mentions,
-                    )
-                    message_id = str(result.get("id") or "") or None
+                    if not edit_failed:
+                        logger.warning(
+                            "WhatsApp 流式编辑失败，停止中途更新以避免刷屏，将在结束时补发最终文本: target=%s message_id=%s error=%s",
+                            self.target_jid,
+                            message_id,
+                            exc,
+                        )
+                    edit_failed = True
+                    if not force:
+                        last_update = now
+                        return
+                    segments = fallback_segments(final=True)
+                    for segment in segments:
+                        segment_mentions = await mentions_for_text(self.client, self.target_jid, segment, mentions)
+                        await self.client.send_text(
+                            self.target_jid,
+                            segment,
+                            quoted_message_id=self.quoted_message_id,
+                            quoted_participant=self.quoted_participant,
+                            link_preview=False,
+                            mentions=segment_mentions,
+                        )
+                        fallback_sent_len += len(segment)
+                    message_id = None
+                    edit_failed = False
             last_sent = chunk
             last_update = now
             # 如果緩衝區超過單次編輯上限，循環推送剩餘內容
@@ -272,4 +330,3 @@ class WhatsAppMessageEvent(AstrMessageEvent):
             self._temp_files.add(local_path)
             return local_path
         return value
-
