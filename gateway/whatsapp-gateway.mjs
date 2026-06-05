@@ -309,6 +309,10 @@ let runtimeConfig = {
   documentMaxMb: 2048,
   audioMaxMb: 16,
   mediaAlbumDebounceMs: 2500,
+  // 預設關閉：Baileys 7.0.0-rc13 省略了 ephemeralSettingTimestamp 欄位，
+  // 導致收件端把發送端當作「舊版 WhatsApp」並顯示「此訊息不會自動刪除」警告。
+  // 開啟後會把聊天室的消失訊息設定套用到外寄訊息（可能觸發上述警告）。
+  applyEphemeral: false,
 };
 
 function configuredAllowlistPnJids() {
@@ -909,6 +913,7 @@ function isAlbumCandidate(item) {
 }
 
 function getEphemeralExpiration(jid) {
+  if (!runtimeConfig.applyEphemeral) return undefined;
   return chatEphemeral.get(String(jid || "")) || undefined;
 }
 
@@ -1228,6 +1233,7 @@ async function startSocket() {
     for (const contact of contacts || []) rememberContact(contact);
   });
   socket.ev.on("chats.upsert", (chats) => {
+    if (!runtimeConfig.applyEphemeral) return;
     for (const chat of chats || []) {
       if (chat?.id && chat?.ephemeralExpiration) {
         chatEphemeral.set(chat.id, chat.ephemeralExpiration);
@@ -1235,6 +1241,10 @@ async function startSocket() {
     }
   });
   socket.ev.on("chats.update", (chats) => {
+    if (!runtimeConfig.applyEphemeral) {
+      chatEphemeral.clear();
+      return;
+    }
     for (const chat of chats || []) {
       if (chat?.id) {
         if (chat.ephemeralExpiration !== undefined) {
@@ -1494,6 +1504,10 @@ const server = createServer(async (req, res) => {
           sendJson(res, 400, { ok: false, error: `${key} must be a non-negative finite number` });
           return;
         }
+      }
+      if (body.applyEphemeral !== undefined && typeof body.applyEphemeral !== "boolean") {
+        sendJson(res, 400, { ok: false, error: "applyEphemeral must be a boolean" });
+        return;
       }
       runtimeConfig = { ...runtimeConfig, ...body };
       configured = true;
