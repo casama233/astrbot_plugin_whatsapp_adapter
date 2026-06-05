@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import random
 import re
 import shutil
 import time
@@ -155,7 +154,7 @@ BASE_GATEWAY_CONFIG: dict[str, Any] = {
     "log_level": "info",
 }
 
-DEFAULT_CONFIG: dict[str, Any] = {
+RUNTIME_DEFAULT_CONFIG: dict[str, Any] = {
     **BASE_GATEWAY_CONFIG,
     "dm_policy": "allowlist",
     "allow_from": [],
@@ -177,10 +176,27 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "register_commands": True,
     "pre_ack_private": True,
     "pre_ack_public": "mentions",
-    "pre_ack_emojis": "✍️",
+    "pre_ack_emojis": "👀",
     "pre_ack_emoji": True,
     "media_max_mb": 50,
 }
+
+DEFAULT_CONFIG: dict[str, Any] = {
+    **BASE_GATEWAY_CONFIG,
+    "dm_policy": "allowlist",
+    "allow_from": [],
+    "group_policy": "disabled",
+    "groups": [],
+    "group_allow_from": [],
+    "pre_ack_emoji": True,
+    "pre_ack_emojis": "👀",
+    "pre_ack_private": True,
+    "pre_ack_public": "mentions",
+    "pre_ack_done_emoji": "✅",
+}
+
+UI_CONFIG_KEYS = tuple(DEFAULT_CONFIG)
+PERSISTED_PLATFORM_KEYS = set(UI_CONFIG_KEYS) | {"type", "enable", "id"}
 
 CONFIG_KEY_ALIASES: dict[str, str] = {
     "Gateway 绑定地址": "gateway_host",
@@ -207,13 +223,24 @@ CONFIG_KEY_ALIASES: dict[str, str] = {
     "解析入站格式": "parse_inbound_formatting",
     "私聊预回应": "pre_ack_private",
     "群聊预回应": "pre_ack_public",
-    "预回应表情列表": "pre_ack_emojis",
+    "预回应表情": "pre_ack_emojis",
     "启用预回应表情": "pre_ack_emoji",
     "回复完成表情": "pre_ack_done_emoji",
     "媒体上传大小限制(MB)": "media_max_mb",
     "ack_reaction_emoji": "pre_ack_emojis",
     "ack_reaction_direct": "pre_ack_private",
     "ack_reaction_group": "pre_ack_public",
+}
+
+DEPRECATED_CONFIG_KEYS = {
+    "reaction_level",
+    "remove_ack_after_reply",
+    "inbound_reaction_events",
+    "ack_reaction_emoji",
+    "ack_reaction_direct",
+    "ack_reaction_group",
+    "私聊启用手动回应",
+    "群组回应模式",
 }
 
 CONFIG_METADATA: dict[str, Any] = {
@@ -349,10 +376,47 @@ CONFIG_METADATA: dict[str, Any] = {
         "group": "messaging",
         "hint": "同发送者在短时间内连续发送多张无文字图片时，合并为一条相簿消息。设为 0 关闭。",
     },
-        "media_album_debounce_seconds": {
-            "type": "float",
-            "group": "messaging",
+    "pre_ack_emoji": {
+        "description": "启用预回应表情",
+        "type": "bool",
+        "group": "ack",
+        "hint": "启用后，bot 收到消息时通过 WhatsApp emoji reaction 发出一条预回应。",
+    },
+    "pre_ack_private": {
+        "description": "私聊预回应",
+        "type": "bool",
+        "group": "ack",
+        "hint": "启用后，私聊收到消息时自动触发预回应表情。",
+    },
+    "pre_ack_public": {
+        "description": "群聊预回应模式",
+        "type": "string",
+        "group": "ack",
+        "hint": "always=始终触发预回应；mentions=仅被 @ 或回复时触发；never=不触发预回应。",
+    },
+    "pre_ack_emojis": {
+        "description": "预回应表情",
+        "type": "string",
+        "group": "ack",
+        "hint": "收到消息时发送的 WhatsApp reaction。默认 👀。",
+    },
+    "pre_ack_done_emoji": {
+        "description": "回复完成表情",
+        "type": "string",
+        "group": "ack",
+        "hint": "已发送预回应时，机器人回复完成后替换/发送的完成 reaction。留空使用 ✅。",
+    },
+    "media_max_mb": {
+        "description": "媒体上传大小限制 (MB)",
+        "type": "int",
+        "group": "messaging",
         "hint": "上传到 WhatsApp Gateway 的单个媒体文件大小上限（MB）。预设 50。",
+    },
+    "gateway_health_check_interval": {
+        "description": "Gateway 健康检查间隔",
+        "type": "int",
+        "group": "connection",
+        "hint": "定期检查 Gateway 状态的间隔秒数。设为 0 关闭健康检查。",
     },
 }
 
@@ -455,16 +519,24 @@ WHATSAPP_I18N_RESOURCES: dict[str, dict] = {
             "hint": "always=始终触发预回应；mentions=仅被 @ 或回复时触发；never=不触发预回应。",
         },
         "pre_ack_emojis": {
-            "description": "预回应表情列表",
-            "hint": "预回应时使用的 WhatsApp emoji，例如 💭、✍️。",
+            "description": "预回应表情",
+            "hint": "收到消息时发送的 WhatsApp reaction。默认 👀。",
         },
         "pre_ack_emoji": {
             "description": "启用预回应表情",
             "hint": "启用后，bot 收到消息时通过 WhatsApp emoji reaction 发出一条预回应。",
         },
+        "pre_ack_done_emoji": {
+            "description": "回复完成表情",
+            "hint": "已发送预回应时，机器人回复完成后替换/发送的完成 reaction。留空使用 ✅。",
+        },
         "media_max_mb": {
             "description": "媒体上传大小限制 (MB)",
             "hint": "上传到 WhatsApp Gateway 的单个媒体文件大小上限（MB）。预设 50。",
+        },
+        "gateway_health_check_interval": {
+            "description": "Gateway 健康检查间隔",
+            "hint": "定期检查 Gateway 状态的间隔秒数。设为 0 关闭健康检查。",
         },
     },
     "en-US": {
@@ -565,16 +637,24 @@ WHATSAPP_I18N_RESOURCES: dict[str, dict] = {
             "hint": "always=always react; mentions=only on @mentions or replies; never=no pre-ack.",
         },
         "pre_ack_emojis": {
-            "description": "Pre-ack emojis",
-            "hint": "WhatsApp emojis used for pre-ack reactions, e.g. 💭, ✍️.",
+            "description": "Pre-ack emoji",
+            "hint": "WhatsApp reaction sent when a message is received. Default 👀.",
         },
         "pre_ack_emoji": {
             "description": "Enable pre-ack emoji",
             "hint": "When enabled, the bot sends a WhatsApp emoji reaction for each message received.",
         },
+        "pre_ack_done_emoji": {
+            "description": "Reply-complete emoji",
+            "hint": "Completion reaction sent after the bot replies when pre-ack was used. Empty uses ✅.",
+        },
         "media_max_mb": {
             "description": "Media upload size limit (MB)",
             "hint": "Maximum size per media file uploaded to the WhatsApp Gateway (MB). Default 50.",
+        },
+        "gateway_health_check_interval": {
+            "description": "Gateway health interval",
+            "hint": "Interval in seconds for periodic Gateway health checks. Set 0 to disable.",
         },
     },
     "zh-TW": {
@@ -675,18 +755,36 @@ WHATSAPP_I18N_RESOURCES: dict[str, dict] = {
             "hint": "always=始終觸發預回應；mentions=僅被 @ 或回覆時觸發；never=不觸發預回應。",
         },
         "pre_ack_emojis": {
-            "description": "預回應表情列表",
-            "hint": "預回應時使用的 WhatsApp emoji，例如 💭、✍️。",
+            "description": "預回應表情",
+            "hint": "收到訊息時傳送的 WhatsApp reaction。預設 👀。",
         },
         "pre_ack_emoji": {
             "description": "啟用預回應表情",
             "hint": "啟用後，bot 收到訊息時透過 WhatsApp emoji reaction 發出一條預回應。",
         },
+        "pre_ack_done_emoji": {
+            "description": "回覆完成表情",
+            "hint": "已傳送預回應時，機器人回覆完成後替換/傳送的完成 reaction。留空使用 ✅。",
+        },
         "media_max_mb": {
             "description": "媒體上傳大小限制 (MB)",
             "hint": "上傳到 WhatsApp Gateway 的單個媒體檔案大小上限（MB）。預設 50。",
         },
+        "gateway_health_check_interval": {
+            "description": "Gateway 健康檢查間隔",
+            "hint": "定期檢查 Gateway 狀態的間隔秒數。設為 0 關閉健康檢查。",
+        },
     },
+}
+
+CONFIG_METADATA = {
+    key: value
+    for key, value in ((key, CONFIG_METADATA[key]) for key in UI_CONFIG_KEYS if key in CONFIG_METADATA)
+    if key in UI_CONFIG_KEYS
+}
+WHATSAPP_I18N_RESOURCES = {
+    locale: {key: resources[key] for key in UI_CONFIG_KEYS if key in resources}
+    for locale, resources in WHATSAPP_I18N_RESOURCES.items()
 }
 
 @register_platform_adapter(
@@ -706,6 +804,11 @@ class WhatsAppPlatformAdapter(Platform):
         platform_settings: dict[str, Any],
         event_queue: asyncio.Queue,
     ) -> None:
+        if isinstance(platform_config, dict):
+            sanitized_inplace = sanitize_whatsapp_platform_config(platform_config)
+            if platform_config is not sanitized_inplace:
+                platform_config.clear()
+                platform_config.update(sanitized_inplace)
         super().__init__(platform_config or {}, event_queue)
         self.config = self._merged_config(platform_config or {})
         self.client = WhatsAppGatewayClient(self._base_url)
@@ -717,7 +820,11 @@ class WhatsAppPlatformAdapter(Platform):
         self._restarting = False
         self._last_gateway_status_log: tuple[Any, Any, Any] | None = None
         self._platform_config = platform_config or {}
+        self._platform_settings = platform_settings or {}
         self._registered_commands: list[str] = []
+        self._send_text_buffers: dict[str, str] = {}
+        self._send_text_sessions: dict[str, MessageSesion] = {}
+        self._send_text_tasks: dict[str, asyncio.Task] = {}
         _ACTIVE_ADAPTERS.add(self)
         self._refresh_registered_commands()
         _load_lid_mappings(self._auth_dir())
@@ -759,6 +866,84 @@ class WhatsAppPlatformAdapter(Platform):
         if lid_target:
             target = lid_target
 
+        plain_text = self._plain_text_only(message_chain)
+        if plain_text is not None and self._segmented_reply_enabled():
+            self._buffer_segmented_text(str(target), session, plain_text)
+            return
+
+        logger.debug(
+            "WhatsApp send_by_session: target=%s components=%s",
+            target,
+            [component.__class__.__name__ for component in message_chain.chain],
+        )
+        await self._send_presence(target, "composing")
+        try:
+            pending_caption, pending_mentions = await process_message_chain(
+                self.client, target, message_chain.chain,
+                link_preview_single_url=bool(self.config.get("link_preview_single_url", True)),
+                text_chunk_limit=int(self.config.get("text_chunk_limit") or 4000),
+                use_caption=str(self.config.get("media_caption_mode") or "separate") == "caption",
+            )
+            await flush_pending_text(
+                self.client, target, pending_caption, pending_mentions,
+                link_preview_single_url=bool(self.config.get("link_preview_single_url", True)),
+                text_chunk_limit=int(self.config.get("text_chunk_limit") or 4000),
+            )
+            await super().send_by_session(session, message_chain)
+        finally:
+            await self._send_presence(target, "available")
+
+    def _segmented_reply_enabled(self) -> bool:
+        self._ensure_send_buffer_state()
+        segmented = (getattr(self, "_platform_settings", {}) or {}).get("segmented_reply") or {}
+        return bool(segmented.get("enable"))
+
+    def _ensure_send_buffer_state(self) -> None:
+        if not hasattr(self, "_platform_settings"):
+            self._platform_settings = {}
+        if not hasattr(self, "_send_text_buffers"):
+            self._send_text_buffers = {}
+        if not hasattr(self, "_send_text_sessions"):
+            self._send_text_sessions = {}
+        if not hasattr(self, "_send_text_tasks"):
+            self._send_text_tasks = {}
+
+    def _plain_text_only(self, message_chain: MessageChain) -> str | None:
+        parts: list[str] = []
+        for component in message_chain.chain:
+            if not isinstance(component, Plain):
+                return None
+            parts.append(str(component.text or ""))
+        text = "".join(parts)
+        return text if text.strip() else None
+
+    def _buffer_segmented_text(self, target: str, session: MessageSesion, text: str) -> None:
+        self._ensure_send_buffer_state()
+        previous = self._send_text_buffers.get(target)
+        self._send_text_buffers[target] = f"{previous}\n\n{text}" if previous else text
+        self._send_text_sessions[target] = session
+        task = self._send_text_tasks.get(target)
+        if task and not task.done():
+            task.cancel()
+        self._send_text_tasks[target] = asyncio.create_task(self._flush_segmented_text_later(target))
+
+    async def _flush_segmented_text_later(self, target: str) -> None:
+        try:
+            self._ensure_send_buffer_state()
+            await asyncio.sleep(2.2)
+            text = self._send_text_buffers.pop(target, "")
+            session = self._send_text_sessions.pop(target, None)
+            self._send_text_tasks.pop(target, None)
+            if not text or session is None:
+                return
+            logger.debug("WhatsApp 聚合分段纯文本发送: target=%s text_len=%s", target, len(text))
+            await self._send_text_message(target, session, MessageChain().message(text))
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("WhatsApp 聚合分段文本发送失败: target=%s error=%s", target, exc)
+
+    async def _send_text_message(self, target: str, session: MessageSesion, message_chain: MessageChain) -> None:
         logger.debug(
             "WhatsApp send_by_session: target=%s components=%s",
             target,
@@ -852,15 +1037,17 @@ class WhatsAppPlatformAdapter(Platform):
             self._release_runtime_owner()
 
     async def reload(self, platform_config: dict[str, Any]) -> None:
-        """熱重載平台配置：重啟 Gateway 進程以確保載入最新 Gateway 代碼與配置。"""
+        """熱重載平台配置：僅供插件配置重載時同步運行中實例。"""
         self._platform_config = platform_config or {}
         self.config = self._merged_config(self._platform_config)
+        self.client.update_base_url(self._base_url)
+        await self._stop_health_monitor()
+        self._force_gateway_restart = True
+        _load_lid_mappings(self._auth_dir())
+        self._refresh_registered_commands()
+        if self._stopped.is_set():
+            return
         self._reconnect_event.set()
-        await self.client.close()
-        if self.gateway_process:
-            await self.gateway_process.stop()
-            self.gateway_process = None
-        await self._ensure_gateway_running()
 
     async def terminate(self):
         logger.info("正在终止 WhatsApp 平台适配器")
@@ -980,6 +1167,9 @@ class WhatsAppPlatformAdapter(Platform):
             link_preview_single_url=bool(self.config.get("link_preview_single_url", True)),
             typing_indicator=bool(self.config.get("typing_indicator", True)),
             ack_done_emoji=str(self.config.get("pre_ack_done_emoji", "✅") or "✅"),
+            unsupported_streaming_strategy=str(
+                (getattr(self, "_platform_settings", {}) or {}).get("unsupported_streaming_strategy") or ""
+            ),
         )
         sender_allowed = await self._is_sender_allowed(raw, is_private)
         pre_ack_enabled = bool(self.config.get("pre_ack_emoji", True))
@@ -1269,11 +1459,12 @@ class WhatsAppPlatformAdapter(Platform):
         return self._is_self_mention(participant, self_id, self_lid)
 
     async def _pre_ack(self, event: WhatsAppMessageEvent) -> None:
-        emoji_str = str(self.config.get("pre_ack_emojis", "✍️") or "✍️")
-        emojis = [e.strip() for e in re.split(r'[,，\s]+', emoji_str) if e.strip()]
-        if not emojis:
+        emoji = str(self.config.get("pre_ack_emojis", "👀") or "👀").strip()
+        if not emoji:
             return
-        emoji = random.choice(emojis)
+        emoji = re.split(r'[,，\s]+', emoji, maxsplit=1)[0].strip()
+        if not emoji:
+            return
         try:
             await event.react(emoji)
             event._pre_acked = True
@@ -1376,7 +1567,7 @@ class WhatsAppPlatformAdapter(Platform):
     def _merged_config(self, platform_config: dict[str, Any]) -> dict[str, Any]:
         plugin_config = self._normalize_config(self._load_plugin_config())
         platform_config = self._normalize_config(platform_config)
-        merged = {**DEFAULT_CONFIG, **platform_config, **plugin_config}
+        merged = {**RUNTIME_DEFAULT_CONFIG, **platform_config, **plugin_config}
         logger.debug(
             "WhatsApp config merged: platform_keys=%s plugin_overrides=%s effective=%s",
             sorted(platform_config.keys()),
@@ -1388,6 +1579,11 @@ class WhatsAppPlatformAdapter(Platform):
     def _normalize_config(self, config: dict[str, Any]) -> dict[str, Any]:
         normalized: dict[str, Any] = {}
         for key, value in config.items():
+            if key in DEPRECATED_CONFIG_KEYS:
+                if key in CONFIG_KEY_ALIASES:
+                    normalized_key = CONFIG_KEY_ALIASES[key]
+                    normalized[normalized_key] = self._normalize_config_value(normalized_key, value)
+                continue
             normalized_key = CONFIG_KEY_ALIASES.get(key, key)
             normalized[normalized_key] = self._normalize_config_value(normalized_key, value)
         return normalized
@@ -1434,7 +1630,9 @@ class WhatsAppPlatformAdapter(Platform):
         value = self.config.get("pre_ack_public", "mentions")
         if isinstance(value, str) and value in {"mentions", "always", "never"}:
             return value
-        return "always" if bool(value) else "never"
+        if isinstance(value, bool):
+            return "mentions" if value else "never"
+        return "mentions"
 
     def _load_plugin_config(self) -> dict[str, Any]:
         config_path = self._data_dir() / "config.json"
@@ -1464,9 +1662,15 @@ class WhatsAppPlatformAdapter(Platform):
 
     async def _ensure_gateway_running(self) -> None:
         if not self.config.get("auto_start_gateway", True):
+            try:
+                await self.client.configure(self._gateway_config())
+                logger.info("WhatsApp Gateway: 已重新配置（外部 Gateway）")
+            except Exception as exc:
+                logger.warning("配置外部 WhatsApp Gateway 失败: %s", exc)
             return
         # 確保 Gateway 進程健康且配置已同步
-        needs_restart = False
+        needs_restart = bool(getattr(self, "_force_gateway_restart", False))
+        self._force_gateway_restart = False
         try:
             health = await self.client.health()
             if not health.get("configured", False):
@@ -1480,7 +1684,7 @@ class WhatsAppPlatformAdapter(Platform):
             if self.gateway_process and self.gateway_process.process:
                 if self.gateway_process.process.returncode is None:
                     return
-        logger.info("事件流中断，正在重启 WhatsApp Gateway: %s", self._base_url)
+        logger.info("正在重启 WhatsApp Gateway: %s", self._base_url)
         if self.gateway_process:
             await self.gateway_process.stop()
         self.gateway_process = self._create_gateway_process()
@@ -1733,6 +1937,29 @@ def get_active_whatsapp_adapters() -> list["WhatsAppPlatformAdapter"]:
     return list(_ACTIVE_ADAPTERS)
 
 
+def sanitize_whatsapp_platform_config(config: dict[str, Any]) -> dict[str, Any]:
+    sanitized: dict[str, Any] = {}
+    for key in UI_CONFIG_KEYS:
+        if key not in config:
+            continue
+        value = config[key]
+        if key == "pre_ack_public":
+            value = _coerce_pre_ack_public(value)
+        sanitized[key] = value
+    for key in ("type", "enable", "id"):
+        if key in config:
+            sanitized[key] = config[key]
+    return sanitized
+
+
+def _coerce_pre_ack_public(value: Any) -> str:
+    if isinstance(value, str) and value in {"always", "mentions", "never"}:
+        return value
+    if isinstance(value, bool):
+        return "mentions" if value else "never"
+    return "mentions"
+
+
 def patch_platform_manager_hot_reload() -> None:
     try:
         from astrbot.core.platform.manager import PlatformManager
@@ -1746,28 +1973,9 @@ def patch_platform_manager_hot_reload() -> None:
 
     async def reload(self, platform_config: dict) -> None:
         platform_id = platform_config.get("id")
-        info = self._inst_map.get(platform_id) if platform_id else None
-        inst = info.get("inst") if info else None
-        if (
-            platform_config.get("enable")
-            and platform_config.get("type") == "whatsapp"
-            and inst is not None
-            and hasattr(inst, "reload")
-        ):
-            try:
-                await inst.reload(platform_config)
-                for index, platform in enumerate(self.platforms_config):
-                    if platform.get("id") == platform_id:
-                        self.platforms_config[index] = platform_config
-                        break
-                logger.info("WhatsApp 平台已原地热重载: id=%s", platform_id)
-                return
-            except Exception as exc:
-                logger.warning(
-                    "WhatsApp 原地热重载失败，回退到完整平台重载: id=%s error=%s",
-                    platform_id,
-                    exc,
-                )
+        if platform_config.get("type") == "whatsapp":
+            platform_config = sanitize_whatsapp_platform_config(platform_config)
+            logger.info("WhatsApp 平台配置变更，使用 AstrBot 原生完整重载流程: id=%s", platform_id)
         await PlatformManager._whatsapp_original_reload(self, platform_config)
 
     PlatformManager.reload = reload

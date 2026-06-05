@@ -10,7 +10,8 @@
       "hint": "除非 AstrBot 和 Gateway 分別執行在不同容器，否則建議保持 127.0.0.1。"
     },
     "gateway_port": {
-      "description": "Gateway HTTP 連接埠"
+      "description": "Gateway HTTP 連接埠",
+      "hint": "Gateway HTTP/SSE 連接埠，預設 18789。"
     },
     "auto_start_gateway": {
       "description": "自動啟動內建 Gateway",
@@ -25,7 +26,8 @@
       "hint": "留空時使用 AstrBot 工作目錄下的 data/plugin_data/astrbot_plugin_whatsapp_adapter/whatsapp-auth。"
     },
     "log_level": {
-      "description": "Gateway 日誌級別"
+      "description": "Gateway 日誌級別",
+      "hint": "可選：silent、fatal、error、warn、info、debug、trace。"
     }
   },
   "pages": {

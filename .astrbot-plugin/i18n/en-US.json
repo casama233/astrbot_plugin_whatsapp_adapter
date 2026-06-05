@@ -10,7 +10,8 @@
       "hint": "Keep 127.0.0.1 unless AstrBot and the Gateway run in different containers."
     },
     "gateway_port": {
-      "description": "Gateway HTTP port"
+      "description": "Gateway HTTP port",
+      "hint": "Gateway HTTP/SSE port, default 18789."
     },
     "auto_start_gateway": {
       "description": "Auto-start bundled Gateway",
@@ -25,7 +26,8 @@
       "hint": "Empty means data/plugin_data/astrbot_plugin_whatsapp_adapter/whatsapp-auth under AstrBot's working directory."
     },
     "log_level": {
-      "description": "Gateway log level"
+      "description": "Gateway log level",
+      "hint": "Options: silent, fatal, error, warn, info, debug, trace."
     }
   },
   "pages": {

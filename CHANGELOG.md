@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.2.9] - 2026-06-06
+
+### Fixed
+- WhatsApp 流式回覆进入分段轰炸：`send_streaming(use_fallback=True)` 改走 `_send_streaming_edit()` 编辑同一条消息，不再每段发新消息
+- 流式编辑 `throttle_seconds` 从 0.8s 提升至 2.0s，降低 WhatsApp 风控风险
+- 流式编辑失败后无限补发：新增 `edit_failed` 状态机 + `unsupported_streaming_strategy` 受控降级（按自然句子边界 fallback 或仅补发最终文本）
+- 外部插件（Conversa）绕过 `send_streaming()` 每 1.5s `context.send_message()` 分段刷屏：`send_by_session()` 新增 2.2s 纯文字聚合器，仅对 `segmented_reply.enable=true` 启用
+- 热替换（hot-swap）后旧 adapter 实例缺失新属性崩溃：新增 `_ensure_send_buffer_state()` 惰性初始化，`main.py` 热替换时同步 `_platform_settings`
+- 编辑适配器配置保存后掉线无响应：`reload()` 不再直接停 Gateway/client，改设 `_reconnect_event` 让事件循环自动重建；`_ensure_gateway_running()` 对外部 Gateway 重新下发配置
+- 适配器配置保存后 `pre_ack_public` 旧值 `true`（bool）未迁移至 `"mentions"` 字符串，`sanitize_whatsapp_platform_config()` 增加 bool→str 强制转换
+- `_group_pre_ack_mode()` 对 bool 的 fallback 错误（`True→"always"` 修正为 `True→"mentions"`，对齐原 `ack_reaction_group=true` 语义）
+
+### Changed
+- `RUNTIME_DEFAULT_CONFIG`（运行期全量默认）与 `DEFAULT_CONFIG`（UI 可见配置）分离
+- `CONFIG_METADATA` / `WHATSAPP_I18N_RESOURCES` 仅保留 `UI_CONFIG_KEYS` 中的项，适配器 UI 不再暴露媒体切片/typing/健康检查等进阶配置
+- `pre_ack_emojis` 默认值从 `✍️` 改为 `👀`（对齐用户实际使用值），配置文案从「预回应表情列表」改为「预回应表情」
+- `_pre_ack()` 改为取单个有效 emoji，不再 `random.choice`
+- 移除 `import random`（已无使用）
+- 适配器配置保存后 clean 逻辑改为 `sanitize_whatsapp_platform_config()`，覆盖热替换与 `patch_platform_manager_hot_reload()`
+
+### Deprecated
+- 新增 `DEPRECATED_CONFIG_KEYS`：`reaction_level`、`remove_ack_after_reply`、`inbound_reaction_events`、`ack_reaction_emoji`、`ack_reaction_direct`、`ack_reaction_group`、`私聊启用手动回应`、`群组回应模式`
+- 保留 `CONFIG_KEY_ALIASES` 映射 `ack_reaction_*` → `pre_ack_*`，兼容老用户现有配置
+
+### Added
+- `sanitize_whatsapp_platform_config()` / `_coerce_pre_ack_public()`：统一清洗与迁移运行时/持久化的 WhatsApp 平台配置
+- `_ensure_send_buffer_state()`：惰性初始化适配器 buffer 相关新属性（`_send_text_buffers` / `_send_text_sessions` / `_send_text_tasks`）
+- 适配器配置 CONFIG_METADATA 补全：`pre_ack_emoji`、`pre_ack_private`、`pre_ack_public`、`pre_ack_emojis`、`pre_ack_done_emoji`、`media_max_mb`、`gateway_health_check_interval`
+- 插件页 i18n 补全：`gateway_port` / `log_level` hint（zh-CN / zh-TW / en-US）
+
 ## [0.2.8] - 2026-05-27
 
 ### Fixed

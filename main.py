@@ -261,10 +261,16 @@ class WhatsAppAdapterPlugin(Star):
             if not pm.platform_insts:
                 return
             from .whatsapp_adapter import _ACTIVE_ADAPTERS, WhatsAppPlatformAdapter as NewAdapter
+            from .whatsapp_adapter import sanitize_whatsapp_platform_config
             platform_configs = getattr(pm, 'platforms_config', [])
-            for config in platform_configs:
+            for idx, config in enumerate(platform_configs):
                 if config.get('type') != 'whatsapp' or not config.get('enable', False):
                     continue
+                sanitized_config = sanitize_whatsapp_platform_config(config)
+                if sanitized_config != config:
+                    platform_configs[idx] = sanitized_config
+                    config.clear()
+                    config.update(sanitized_config)
                 pid = config.get('id')
                 if not pid:
                     continue
@@ -282,6 +288,8 @@ class WhatsAppAdapterPlugin(Star):
                     logger.warning("终止旧 WhatsApp 适配器失败: id=%s error=%s", pid, exc)
                 inst.__class__ = NewAdapter
                 _ACTIVE_ADAPTERS.add(inst)
+                inst._platform_settings = self.context.get_config().get("platform_settings", {})
+                inst._ensure_send_buffer_state()
                 inst.clear_errors()
                 inst._stopped.clear()
                 inst._reconnect_event.clear()
