@@ -39,6 +39,7 @@ class WhatsAppMessageEvent(AstrMessageEvent):
         typing_indicator: bool = True,
         ack_done_emoji: str = "",
         unsupported_streaming_strategy: str = "",
+        streaming_edit_throttle: float = 1.0,
     ) -> None:
         super().__init__(message_str, message_obj, platform_meta, session_id)
         self.client = client
@@ -51,6 +52,7 @@ class WhatsAppMessageEvent(AstrMessageEvent):
         self.link_preview_single_url = link_preview_single_url
         self.typing_indicator = typing_indicator
         self.unsupported_streaming_strategy = unsupported_streaming_strategy
+        self.streaming_edit_throttle = max(0.1, streaming_edit_throttle)
         self._pre_acked = False
         self._done_emoji = ack_done_emoji or "✅"
         self._super_sent = False
@@ -142,9 +144,7 @@ class WhatsAppMessageEvent(AstrMessageEvent):
         mentions: list[str] = []
         edit_failed = False
         fallback_sent_len = 0
-        # WhatsApp message edits are rate-limited conservatively to avoid noisy
-        # update bursts that can look like automation abuse.
-        throttle_seconds = 2.0
+        throttle_seconds = self.streaming_edit_throttle
         max_edit_length = min(self.text_chunk_limit, 3500)
         realtime_fallback = self.unsupported_streaming_strategy == "realtime_segmenting"
 

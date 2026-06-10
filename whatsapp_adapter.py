@@ -180,6 +180,7 @@ RUNTIME_DEFAULT_CONFIG: dict[str, Any] = {
     "pre_ack_emoji": True,
     "media_max_mb": 50,
     "apply_ephemeral": False,
+    "streaming_edit_throttle": 1.0,
 }
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -195,6 +196,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "pre_ack_public": "mentions",
     "pre_ack_done_emoji": "✅",
     "apply_ephemeral": False,
+    "streaming_edit_throttle": 1.0,
 }
 
 UI_CONFIG_KEYS = tuple(DEFAULT_CONFIG)
@@ -419,6 +421,12 @@ CONFIG_METADATA: dict[str, Any] = {
         "type": "bool",
         "group": "messaging",
         "hint": "开启后，发送消息时会带入聊天室的消失讯息计时器。关闭（默认）可避免 Baileys 触发的「此訊息不會自動刪除 / 傳送者可能正在使用版本較舊的 WhatsApp」警告。",
+    },
+    "streaming_edit_throttle": {
+        "description": "流式编辑间隔（秒）",
+        "type": "float",
+        "group": "messaging",
+        "hint": "流式回复时每次编辑消息的最小间隔（秒）。过小可能导致 WhatsApp 风控。",
     },
     "gateway_health_check_interval": {
         "description": "Gateway 健康检查间隔",
@@ -668,6 +676,10 @@ WHATSAPP_I18N_RESOURCES: dict[str, dict] = {
             "description": "Apply chat disappearing-message timer",
             "hint": "When enabled, outgoing messages inherit the chat's disappearing-message timer. Off (default) avoids the Baileys-triggered 'This message will not auto-delete / The sender may be using an older version of WhatsApp' warning.",
         },
+        "streaming_edit_throttle": {
+            "description": "Streaming edit interval (s)",
+            "hint": "Minimum interval in seconds between message edits during streaming replies. Lower values may trigger WhatsApp rate limits.",
+        },
         "gateway_health_check_interval": {
             "description": "Gateway health interval",
             "hint": "Interval in seconds for periodic Gateway health checks. Set 0 to disable.",
@@ -789,6 +801,10 @@ WHATSAPP_I18N_RESOURCES: dict[str, dict] = {
         "apply_ephemeral": {
             "description": "套用聊天室的消失訊息設定",
             "hint": "開啟後，外寄訊息會帶入聊天室的消失訊息計時器。關閉（預設）可避免 Baileys 觸發的「此訊息不會自動刪除 / 傳送者可能正在使用版本較舊的 WhatsApp」警告。",
+        },
+        "streaming_edit_throttle": {
+            "description": "流式編輯間隔（秒）",
+            "hint": "流式回覆時每次編輯訊息的最小間隔（秒）。過小可能觸發 WhatsApp 風控。",
         },
         "gateway_health_check_interval": {
             "description": "Gateway 健康檢查間隔",
@@ -1190,6 +1206,7 @@ class WhatsAppPlatformAdapter(Platform):
             unsupported_streaming_strategy=str(
                 (getattr(self, "_platform_settings", {}) or {}).get("unsupported_streaming_strategy") or ""
             ),
+            streaming_edit_throttle=float(self.config.get("streaming_edit_throttle") or 1.0),
         )
         sender_allowed = await self._is_sender_allowed(raw, is_private)
         pre_ack_enabled = bool(self.config.get("pre_ack_emoji", True))
