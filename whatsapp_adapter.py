@@ -554,6 +554,10 @@ WHATSAPP_I18N_RESOURCES: dict[str, dict] = {
             "description": "应用聊天室的消失讯息设定",
             "hint": "开启后，外寄消息会带入聊天室的消失讯息计时器。关闭（默认）可避免 Baileys 触发的「此訊息不會自動刪除 / 傳送者可能正在使用版本較舊的 WhatsApp」警告。",
         },
+        "streaming_edit_throttle": {
+            "description": "流式编辑间隔（秒）",
+            "hint": "流式回复时每次编辑消息的最小间隔（秒）。过小可能导致 WhatsApp 风控。",
+        },
         "gateway_health_check_interval": {
             "description": "Gateway 健康检查间隔",
             "hint": "定期检查 Gateway 状态的间隔秒数。设为 0 关闭健康检查。",

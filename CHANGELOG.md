@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.12] - 2026-06-11
+
+### Fixed
+- 流式编辑间隔 `streaming_edit_throttle` 配置项未汉化：补充 WHATSAPP_I18N_RESOURCES 中 zh-CN 区域的缺失条目
+
 ## [0.2.11] - 2026-06-11
 
 ### Added
