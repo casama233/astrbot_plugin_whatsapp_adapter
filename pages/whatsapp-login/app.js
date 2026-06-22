@@ -79,6 +79,10 @@ function setTag(el, state, label) {
   el.textContent = label;
 }
 
+function clearChildren(el) {
+  while (el.firstChild) el.firstChild.remove();
+}
+
 // ─── Log ───
 function log(level, msg) {
   const empty = els.eventLog.querySelector(".log-empty");
@@ -86,7 +90,14 @@ function log(level, msg) {
 
   const entry = document.createElement("div");
   entry.className = "log-entry";
-  entry.innerHTML = `<span class="log-time">${fmtTime()}</span><span class="log-msg ${level}">${msg}</span>`;
+  const time = document.createElement("span");
+  time.className = "log-time";
+  time.textContent = fmtTime();
+  const message = document.createElement("span");
+  message.className = "log-msg";
+  if (["info", "warn", "error"].includes(level)) message.classList.add(level);
+  message.textContent = msg;
+  entry.append(time, message);
   els.eventLog.appendChild(entry);
   els.eventLog.scrollTop = els.eventLog.scrollHeight;
 
@@ -155,12 +166,32 @@ function renderSession(data) {
 // ─── Render QR ───
 function renderQr(data) {
   if (data.ready) {
-    els.qrWrap.innerHTML = `
-      <div class="qr-placeholder connected">
-        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#25D366" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
-        <p style="font-weight:600">WhatsApp 已连接</p>
-        <p style="font-size:0.85rem;color:#1b7a42">无需扫码。如需更换账号请点击「登出」。</p>
-      </div>`;
+    clearChildren(els.qrWrap);
+    const placeholder = document.createElement("div");
+    placeholder.className = "qr-placeholder connected";
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("width", "48");
+    svg.setAttribute("height", "48");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("stroke", "#25D366");
+    svg.setAttribute("stroke-width", "2");
+    svg.setAttribute("stroke-linecap", "round");
+    svg.setAttribute("stroke-linejoin", "round");
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", "M22 11.08V12a10 10 0 1 1-5.93-9.14");
+    const polyline = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+    polyline.setAttribute("points", "22 4 12 14.01 9 11.01");
+    svg.append(path, polyline);
+    const title = document.createElement("p");
+    title.style.fontWeight = "600";
+    title.textContent = "WhatsApp 已连接";
+    const hint = document.createElement("p");
+    hint.style.fontSize = "0.85rem";
+    hint.style.color = "#1b7a42";
+    hint.textContent = "无需扫码。如需更换账号请点击「登出」。";
+    placeholder.append(svg, title, hint);
+    els.qrWrap.appendChild(placeholder);
     els.qrPhase.textContent = "已连接";
     els.qrPhase.className = "phase-badge connected";
     els.qrHint.textContent = "如需更换账号，请点击「登出并重新扫码」。";
@@ -168,7 +199,11 @@ function renderQr(data) {
   }
 
   if (data.qrDataUrl) {
-    els.qrWrap.innerHTML = `<img src="${data.qrDataUrl}" alt="WhatsApp QR 码" />`;
+    clearChildren(els.qrWrap);
+    const img = document.createElement("img");
+    img.src = data.qrDataUrl;
+    img.alt = "WhatsApp QR 码";
+    els.qrWrap.appendChild(img);
     els.qrPhase.textContent = "等待扫码";
     els.qrPhase.className = "phase-badge connecting";
     els.qrHint.textContent = "二维码定期刷新。扫码失败时点击下方按钮刷新。";
@@ -176,12 +211,18 @@ function renderQr(data) {
   }
 
   // No QR yet
-  els.qrWrap.innerHTML = `
-    <div class="qr-placeholder">
-      <div class="spinner"></div>
-      <p>正在连接 WhatsApp Web...</p>
-      <p style="font-size:0.82rem">首次启动需要数秒生成二维码</p>
-    </div>`;
+  clearChildren(els.qrWrap);
+  const placeholder = document.createElement("div");
+  placeholder.className = "qr-placeholder";
+  const spinner = document.createElement("div");
+  spinner.className = "spinner";
+  const title = document.createElement("p");
+  title.textContent = "正在连接 WhatsApp Web...";
+  const hint = document.createElement("p");
+  hint.style.fontSize = "0.82rem";
+  hint.textContent = "首次启动需要数秒生成二维码";
+  placeholder.append(spinner, title, hint);
+  els.qrWrap.appendChild(placeholder);
   els.qrPhase.textContent = "连接中";
   els.qrPhase.className = "phase-badge connecting";
   els.qrHint.textContent = "首次启动需要几秒钟连接 WhatsApp。";
@@ -271,7 +312,11 @@ els.logoutBtn.addEventListener("click", async () => {
 });
 
 els.clearLogBtn.addEventListener("click", () => {
-  els.eventLog.innerHTML = '<div class="log-empty">日志已清空</div>';
+  clearChildren(els.eventLog);
+  const empty = document.createElement("div");
+  empty.className = "log-empty";
+  empty.textContent = "日志已清空";
+  els.eventLog.appendChild(empty);
 });
 
 // ─── Init ───
