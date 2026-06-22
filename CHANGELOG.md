@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.13] - 2026-06-23
+
+### Security
+- 插件管理页移除 `innerHTML` 渲染外部数据，改用 DOM API 与 `textContent`，避免日志与二维码数据触发 XSS 风险
+
+### Fixed
+- 容器重建后 `node_modules` 缺失导致 WhatsApp Gateway 无法监听 `127.0.0.1:18789`：Gateway 启动前会检查 Node 依赖，缺失时自动执行 `npm install --omit=dev`
+- `npm` 不存在或依赖安装失败时直接输出明确错误与安装日志，不再只表现为 Gateway 健康检查超时
+
 ## [0.2.12] - 2026-06-11
 
 ### Fixed
