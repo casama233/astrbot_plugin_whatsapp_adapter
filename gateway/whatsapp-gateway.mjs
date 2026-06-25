@@ -1448,7 +1448,12 @@ function mimeTypeForExt(ext) {
 function normalizeLocalMediaPath(pathOrUrl) {
   const value = String(pathOrUrl || "");
   if (!/^file:\/\//i.test(value)) return value;
-  return `/${value.replace(/^file:/i, "").replace(/^\/+/, "")}`;
+  const normalized = `/${value.replace(/^file:/i, "").replace(/^\/+/, "")}`;
+  try {
+    return decodeURIComponent(normalized);
+  } catch {
+    return normalized;
+  }
 }
 
 function isSingleUrlText(text) {
@@ -1477,9 +1482,20 @@ const server = createServer(async (req, res) => {
         connection: "keep-alive",
       });
       sseClients.add(res);
+      const heartbeat = setInterval(() => {
+        try {
+          res.write(": keepalive\n\n");
+        } catch {
+          clearInterval(heartbeat);
+          sseClients.delete(res);
+        }
+      }, 240000);
       sendSse(res, { type: "status", status: connectionStatus, ready, selfJid });
       if (latestQr) sendSse(res, { type: "qr", qr: latestQr, qrDataUrl: latestQrDataUrl });
-      req.on("close", () => sseClients.delete(res));
+      req.on("close", () => {
+        clearInterval(heartbeat);
+        sseClients.delete(res);
+      });
       return;
     }
     if (req.method === "POST" && url.pathname === "/config") {

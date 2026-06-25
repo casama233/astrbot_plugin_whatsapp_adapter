@@ -4,6 +4,7 @@ import asyncio
 import os
 import re
 from typing import AsyncGenerator
+from urllib.parse import unquote
 
 from astrbot.api.event import AstrMessageEvent, MessageChain
 from astrbot.api.message_components import Plain
@@ -324,7 +325,7 @@ class WhatsAppMessageEvent(AstrMessageEvent):
         if not value:
             raise ValueError("empty media path")
         if value.startswith("file://"):
-            return "/" + value.removeprefix("file:").lstrip("/")
+            return unquote("/" + value.removeprefix("file:").lstrip("/"))
         if value.startswith("http://") or value.startswith("https://"):
             local_path = await download_image_by_url(value)
             self._temp_files.add(local_path)
