@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from typing import Any, Callable, Coroutine, Iterator
+from urllib.parse import unquote
 
 from astrbot import logger
 from astrbot.api.platform import At
@@ -75,7 +76,7 @@ def normalize_media_value(value: str | None) -> str:
     if not value:
         return ""
     if value.startswith("file://"):
-        return "/" + value.removeprefix("file:").lstrip("/")
+        return unquote("/" + value.removeprefix("file:").lstrip("/"))
     return value
 
 
@@ -216,6 +217,39 @@ async def send_whatsapp_component(
 MediaResolver = Callable[[str | None], Coroutine[Any, Any, str]]
 
 
+def _first_component_value(component: Any, *names: str) -> str:
+    for name in names:
+        value = getattr(component, name, None)
+        if value:
+            return str(value)
+    return ""
+
+
+async def _resolve_media_component(
+    component: Any,
+    *names: str,
+    resolve_media_func: MediaResolver | None = None,
+    allow_url: bool = True,
+) -> str:
+    if isinstance(component, File) and hasattr(component, "get_file"):
+        value = await component.get_file(allow_return_url=allow_url)
+        if value:
+            if allow_url and (value.startswith("http://") or value.startswith("https://")):
+                return value
+            return await resolve_media_func(value) if resolve_media_func else normalize_media_value(value)
+
+    value = _first_component_value(component, *names, "file", "url", "path")
+    if allow_url and (value.startswith("http://") or value.startswith("https://")):
+        return value
+    if value.startswith("base64://") or value.startswith("data:"):
+        converter = getattr(component, "convert_to_file_path", None)
+        if converter:
+            return str(await converter())
+    if resolve_media_func:
+        return await resolve_media_func(value)
+    return normalize_media_value(value)
+
+
 async def process_message_chain(
     client: WhatsAppGatewayClient,
     target: str,
@@ -247,11 +281,6 @@ async def process_message_chain(
     if quoted_participant:
         _send_kw["quoted_participant"] = quoted_participant
 
-    async def _resolve(value: str | None) -> str:
-        if resolve_media_func:
-            return await resolve_media_func(value)
-        return normalize_media_value(value or "") or ""
-
     for component in chain:
         if isinstance(component, Plain):
             text = format_whatsapp_markdown(component.text or "")
@@ -280,8 +309,10 @@ async def process_message_chain(
                     client, target, pending_caption, pending_mentions, **_flush_kw,
                 )
             try:
-                media_path = await _resolve(component.file)
-            except ValueError as exc:
+                media_path = await _resolve_media_component(
+                    component, "path", "file", "url", resolve_media_func=resolve_media_func,
+                )
+            except Exception as exc:
                 logger.warning("WhatsApp 消息链跳过图片: %s", exc)
                 continue
             if not media_path:
@@ -304,8 +335,10 @@ async def process_message_chain(
                 client, target, pending_caption, pending_mentions, **_flush_kw,
             )
             try:
-                media_path = await _resolve(component.file)
-            except ValueError as exc:
+                media_path = await _resolve_media_component(
+                    component, "path", "file", "url", resolve_media_func=resolve_media_func,
+                )
+            except Exception as exc:
                 logger.warning("WhatsApp 消息链跳过音频: %s", exc)
                 continue
             if not media_path:
@@ -318,8 +351,10 @@ async def process_message_chain(
                     client, target, pending_caption, pending_mentions, **_flush_kw,
                 )
             try:
-                media_path = await _resolve(component.file)
-            except ValueError as exc:
+                media_path = await _resolve_media_component(
+                    component, "path", "file", "url", resolve_media_func=resolve_media_func,
+                )
+            except Exception as exc:
                 logger.warning("WhatsApp 消息链跳过视频: %s", exc)
                 continue
             if not media_path:
@@ -331,18 +366,19 @@ async def process_message_chain(
             pending_caption = None
             pending_mentions = []
         elif isinstance(component, File):
-            media_path = component.file or component.url
-            if not media_path:
-                logger.warning("WhatsApp 消息链跳过文档: 路径为空")
-                continue
             if not use_caption:
                 pending_caption, pending_mentions = await flush_pending_text(
                     client, target, pending_caption, pending_mentions, **_flush_kw,
                 )
             try:
-                resolved = await _resolve(media_path)
-            except ValueError as exc:
+                resolved = await _resolve_media_component(
+                    component, "file_", "file", "url", resolve_media_func=resolve_media_func,
+                )
+            except Exception as exc:
                 logger.warning("WhatsApp 消息链跳过文档: %s", exc)
+                continue
+            if not resolved:
+                logger.warning("WhatsApp 消息链跳过文档: 路径为空")
                 continue
             await client.send_media(
                 target, "document", resolved, pending_caption if use_caption else None, **_send_kw,

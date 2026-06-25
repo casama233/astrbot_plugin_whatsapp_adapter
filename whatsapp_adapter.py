@@ -859,6 +859,7 @@ class WhatsAppPlatformAdapter(Platform):
         self._gateway_healthy = False
         self._restarting = False
         self._last_gateway_status_log: tuple[Any, Any, Any] | None = None
+        self._quiet_next_gateway_connect = False
         self._platform_config = platform_config or {}
         self._platform_settings = platform_settings or {}
         self._registered_commands: list[str] = []
@@ -1055,7 +1056,8 @@ class WhatsAppPlatformAdapter(Platform):
                         break
                     is_timeout = isinstance(exc, TimeoutError) or "Timeout" in type(exc).__name__
                     if is_timeout:
-                        logger.info("WhatsApp Gateway 事件流空闲超时，正在重连: %s", exc)
+                        logger.debug("WhatsApp Gateway 事件流空闲超时，正在重连: %s", exc)
+                        self._quiet_next_gateway_connect = True
                     else:
                         logger.warning("WhatsApp Gateway 事件流中断: %s", exc)
                         self._record_gateway_error(f"WhatsApp Gateway 事件流中断: {exc}", exc_info=exc)
@@ -1688,12 +1690,13 @@ class WhatsAppPlatformAdapter(Platform):
             return {}
         return data if isinstance(data, dict) else {}
 
-    async def _wait_for_gateway(self) -> None:
+    async def _wait_for_gateway(self, quiet: bool = False) -> None:
         last_error: Exception | None = None
         for attempt in range(1, 61):
             try:
                 health = await self.client.health()
-                logger.info("WhatsApp Gateway: 连接正常 (第%s次尝试)", attempt)
+                log = logger.debug if quiet else logger.info
+                log("WhatsApp Gateway: 连接正常 (第%s次尝试)", attempt)
                 return
             except Exception as exc:
                 last_error = exc
@@ -1738,6 +1741,8 @@ class WhatsAppPlatformAdapter(Platform):
 
     async def _connect_gateway(self) -> None:
         self._reconnect_event.clear()
+        quiet = bool(getattr(self, "_quiet_next_gateway_connect", False))
+        self._quiet_next_gateway_connect = False
         await self.client.start()
         self.client.update_base_url(self._base_url)
         if self.config.get("auto_start_gateway", True):
@@ -1758,21 +1763,22 @@ class WhatsAppPlatformAdapter(Platform):
         else:
             logger.info("WhatsApp 平台自动启动已关闭，预期 Gateway 运行于 %s", self._base_url)
 
-        await self._wait_for_gateway()
+        await self._wait_for_gateway(quiet=quiet)
         configured = await self.client.configure(self._gateway_config())
-        logger.info("WhatsApp Gateway 配置: 私聊策略=%s 群聊策略=%s 已读回执=%s",
-                     configured.get("config", {}).get("dmPolicy"),
-                     configured.get("config", {}).get("groupPolicy"),
-                     configured.get("config", {}).get("sendReadReceipts"))
+        log = logger.debug if quiet else logger.info
+        log("WhatsApp Gateway 配置: 私聊策略=%s 群聊策略=%s 已读回执=%s",
+            configured.get("config", {}).get("dmPolicy"),
+            configured.get("config", {}).get("groupPolicy"),
+            configured.get("config", {}).get("sendReadReceipts"))
         try:
             status = await self.client.status()
-            logger.info("WhatsApp Gateway: 状态=%s 就绪=%s%s",
-                         status.get("status", "?"),
-                         bool(status.get("ready")),
-                         f" self={status['selfJid']}" if status.get("selfJid") else "")
+            log("WhatsApp Gateway: 状态=%s 就绪=%s%s",
+                status.get("status", "?"),
+                bool(status.get("ready")),
+                f" self={status['selfJid']}" if status.get("selfJid") else "")
         except Exception as exc:
             logger.warning("获取 WhatsApp Gateway 状态失败: %s", exc)
-        logger.info("WhatsApp 适配器已连接: %s", self._base_url)
+        log("WhatsApp 适配器已连接: %s", self._base_url)
         self._mark_running()
         await self._restart_health_monitor()
         self._refresh_registered_commands()

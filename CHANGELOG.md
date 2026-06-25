@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.14] - 2026-06-26
+
+### Changed
+- 降低正常 SSE 空闲超时重连日志噪音，空闲重连链路改为 debug 级别，保留首次启动、手动重启与异常中断的可见日志
+
+### Fixed
+- 兼容 AstrBot 4.26.1 `Image` / `Record` / `Video` / `File` 组件的异步媒体解析接口，改善本地文件、URL、base64/data URI 的发送体验
+- 优先使用 AstrBot 媒体组件的真实 `path` 字段，并正确解码 `file://` URI，修复含空格或中文路径的媒体发送问题
+- `File` 组件发送改用 `get_file(allow_return_url=True)`，避免异步上下文读取 `File.file` 导致文件路径为空或警告
+- Gateway SSE 增加 keepalive，减少无事件时客户端读超时导致的周期性重连
+
 ## [0.2.13] - 2026-06-23
 
 ### Security
