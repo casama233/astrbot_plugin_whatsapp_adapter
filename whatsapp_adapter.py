@@ -1873,12 +1873,17 @@ class WhatsAppPlatformAdapter(Platform):
             try:
                 status = await self.client.status()
                 ready = bool(status.get("ready"))
+                gw_status = status.get("status", "")
                 ok = bool(status.get("ok", True)) and ready
                 if ok:
                     if not self._gateway_healthy:
                         logger.info("WhatsApp Gateway: 已恢复健康")
                     self._gateway_healthy = True
                     self._mark_running()
+                elif gw_status in ("logged_out", "starting"):
+                    if self._gateway_healthy:
+                        logger.debug("WhatsApp Gateway 处于 %s 状态，跳过自动重启", gw_status)
+                    self._gateway_healthy = False
                 else:
                     self._gateway_healthy = False
                     self._record_gateway_error(f"WhatsApp Gateway not ready: {self._safe_status(status)}")

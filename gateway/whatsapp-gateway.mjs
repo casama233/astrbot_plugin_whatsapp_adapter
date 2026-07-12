@@ -37,6 +37,7 @@ let ready = false;
 let configured = false;
 let selfJid = null;
 let selfLid = null;
+let lastError = null;
 const messageCache = new Map();
 const maxMessageCacheSize = 500;
 const mentionDirectory = new Map();
@@ -1195,7 +1196,11 @@ async function handleIncomingMessage(item, options = {}) {
   });
 }
 
-async function startSocket() {
+const MAX_EXPLICIT_RETRIES = 2;
+
+async function startSocket(opts = {}) {
+  const explicit = Boolean(opts.explicit);
+  const retryCount = Number(opts.retryCount) || 0;
   const generation = ++socketGeneration;
   if (reconnectTimer) clearTimeout(reconnectTimer);
   reconnectTimer = null;
@@ -1223,7 +1228,10 @@ async function startSocket() {
     syncFullHistory: false,
   });
 
-  socket.ev.on("creds.update", saveCreds);
+  socket.ev.on("creds.update", (...args) => {
+    if (generation !== socketGeneration) return;
+    saveCreds(...args);
+  });
   socket.ev.on("contacts.upsert", (contacts) => {
     for (const contact of contacts || []) {
       rememberContact(contact);
@@ -1284,6 +1292,7 @@ async function startSocket() {
       ready = true;
       latestQr = null;
       latestQrDataUrl = null;
+      lastError = null;
       connectionStatus = "connected";
       selfJid = socket.user?.id || null;
       selfLid = normalizeLidJid(socket.authState?.creds?.me?.lid);
@@ -1301,13 +1310,25 @@ async function startSocket() {
       stopPresenceTimer();
       clearAlbumBuffers();
       const statusCode = lastDisconnect?.error?.output?.statusCode;
+      const errorMsg = lastDisconnect?.error?.message || lastDisconnect?.error?.output?.payload?.message || `statusCode=${statusCode}`;
+      lastError = `连接关闭: ${errorMsg}`;
       connectionStatus = statusCode === DisconnectReason.loggedOut ? "logged_out" : "disconnected";
-      broadcast({ type: "status", status: "disconnected", statusCode });
+      broadcast({ type: "status", status: "disconnected", statusCode, lastError });
       if (statusCode !== DisconnectReason.loggedOut) {
         if (reconnectTimer) clearTimeout(reconnectTimer);
         reconnectTimer = setTimeout(() => {
           if (generation === socketGeneration) startSocket().catch((error) => log.error({ error }, "reconnect failed"));
         }, 3000);
+      } else if (explicit && retryCount < MAX_EXPLICIT_RETRIES) {
+        log.info({ retryCount: retryCount + 1, max: MAX_EXPLICIT_RETRIES }, "explicit start got loggedOut, retrying");
+        if (reconnectTimer) clearTimeout(reconnectTimer);
+        reconnectTimer = setTimeout(() => {
+          if (generation === socketGeneration) {
+            startSocket({ explicit: true, retryCount: retryCount + 1 }).catch((error) =>
+              log.error({ error }, "explicit retry failed"),
+            );
+          }
+        }, 2000);
       }
     }
   });
@@ -1348,6 +1369,7 @@ function statusPayload() {
     authDir,
     hasQr: Boolean(latestQr),
     lastPresenceAt,
+    lastError,
     config: runtimeConfig,
   };
 }
@@ -1558,25 +1580,32 @@ const server = createServer(async (req, res) => {
       return;
     }
     if (req.method === "POST" && url.pathname === "/restart") {
-      startSocket().catch((error) => log.error({ error }, "manual restart failed"));
+      startSocket({ explicit: true }).catch((error) => log.error({ error }, "manual restart failed"));
       sendJson(res, 200, { ok: true, status: "restarting" });
       return;
     }
     if (req.method === "POST" && url.pathname === "/logout") {
-      if (socket?.logout) {
-        await socket.logout().catch((error) => log.debug({ error }, "socket logout failed"));
+      const oldSocket = socket;
+      ++socketGeneration;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+      if (oldSocket?.logout) {
+        await oldSocket.logout().catch((error) => log.debug({ error }, "socket logout failed"));
       }
-      if (socket?.end) socket.end(undefined);
+      if (oldSocket?.end) oldSocket.end(undefined);
       socket = null;
       ready = false;
       selfJid = null;
+      selfLid = null;
       latestQr = null;
       latestQrDataUrl = null;
+      lastError = null;
       stopPresenceTimer();
       connectionStatus = "logged_out";
       await rm(authDir, { recursive: true, force: true });
       broadcast({ type: "status", status: "logged_out", ready: false });
-      startSocket().catch((error) => log.error({ error }, "restart after logout failed"));
+      await new Promise((r) => setTimeout(r, 500));
+      startSocket({ explicit: true }).catch((error) => log.error({ error }, "restart after logout failed"));
       sendJson(res, 200, { ok: true, status: "logged_out" });
       return;
     }

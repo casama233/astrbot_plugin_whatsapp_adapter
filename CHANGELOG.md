@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.15] - 2026-07-13
+
+### Fixed
+- 修复 WhatsApp 登录失效后点击「登出并重新扫码」仍继续使用旧 auth 凭据的问题：logout 时立即让旧 socket 事件失效，并阻止旧 `creds.update` 在 auth 删除后写回旧凭据
+- 修复重新扫码流程中 Gateway 遇到 `loggedOut` / `Connection Failure` 后直接停在 `logged_out`、无法生成 QR 的问题：手动重启/登出后的显式启动会进行有限重试，并在状态中暴露 `lastError`
+- 修复 Gateway 健康监控把 `logged_out` / `starting` 当作异常反复重启和刷 WARN 日志的问题
+- 插件管理页在长时间无 QR 时显示连接失败原因和重试按钮，不再无限停留在「正在连接 WhatsApp Web...」
+
 ## [0.2.14] - 2026-06-26
 
 ### Changed
