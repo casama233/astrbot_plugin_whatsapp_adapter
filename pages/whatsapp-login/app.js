@@ -44,6 +44,7 @@ const els = {
 // ─── State ───
 let countdown = 5;
 let countdownTimer = null;
+let loggedOutSince = 0;
 
 // ─── Helpers ───
 function fmtTime() {
@@ -164,8 +165,11 @@ function renderSession(data) {
 }
 
 // ─── Render QR ───
+const LOGGED_OUT_TIMEOUT_MS = 15000;
+
 function renderQr(data) {
   if (data.ready) {
+    loggedOutSince = 0;
     clearChildren(els.qrWrap);
     const placeholder = document.createElement("div");
     placeholder.className = "qr-placeholder connected";
@@ -199,6 +203,7 @@ function renderQr(data) {
   }
 
   if (data.qrDataUrl) {
+    loggedOutSince = 0;
     clearChildren(els.qrWrap);
     const img = document.createElement("img");
     img.src = data.qrDataUrl;
@@ -210,22 +215,59 @@ function renderQr(data) {
     return;
   }
 
-  // No QR yet
+  // No QR yet — check for timeout in logged_out state
+  const isLoggedOut = data._status === "logged_out";
+  const now = Date.now();
+  if (isLoggedOut) {
+    if (loggedOutSince === 0) loggedOutSince = now;
+  } else {
+    loggedOutSince = 0;
+  }
+  const timedOut = isLoggedOut && loggedOutSince > 0 && (now - loggedOutSince) > LOGGED_OUT_TIMEOUT_MS;
+
   clearChildren(els.qrWrap);
   const placeholder = document.createElement("div");
   placeholder.className = "qr-placeholder";
-  const spinner = document.createElement("div");
-  spinner.className = "spinner";
-  const title = document.createElement("p");
-  title.textContent = "正在连接 WhatsApp Web...";
-  const hint = document.createElement("p");
-  hint.style.fontSize = "0.82rem";
-  hint.textContent = "首次启动需要数秒生成二维码";
-  placeholder.append(spinner, title, hint);
+
+  if (timedOut) {
+    const icon = document.createElement("p");
+    icon.style.fontSize = "2rem";
+    icon.textContent = "⚠";
+    const title = document.createElement("p");
+    title.style.fontWeight = "600";
+    title.style.color = "#c0392b";
+    title.textContent = "连接失败";
+    const hint = document.createElement("p");
+    hint.style.fontSize = "0.82rem";
+    hint.textContent = data.lastError || "无法连接到 WhatsApp 服务器，请检查网络后重试";
+    const retryBtn = document.createElement("button");
+    retryBtn.className = "btn btn-sm btn-outline-danger mt-2";
+    retryBtn.textContent = "重试";
+    retryBtn.addEventListener("click", () => {
+      loggedOutSince = 0;
+      bridge.apiPost("restart", {}).then(() => {
+        log("info", "正在重试连接...");
+        setTimeout(() => refresh().catch(() => {}), 1500);
+      }).catch((err) => log("error", `重试失败: ${err}`));
+    });
+    placeholder.append(icon, title, hint, retryBtn);
+    els.qrPhase.textContent = "连接失败";
+    els.qrPhase.className = "phase-badge error";
+    els.qrHint.textContent = "点击重试按钮重新连接。";
+  } else {
+    const spinner = document.createElement("div");
+    spinner.className = "spinner";
+    const title = document.createElement("p");
+    title.textContent = "正在连接 WhatsApp Web...";
+    const hint = document.createElement("p");
+    hint.style.fontSize = "0.82rem";
+    hint.textContent = "首次启动需要数秒生成二维码";
+    placeholder.append(spinner, title, hint);
+    els.qrPhase.textContent = "连接中";
+    els.qrPhase.className = "phase-badge connecting";
+    els.qrHint.textContent = "首次启动需要几秒钟连接 WhatsApp。";
+  }
   els.qrWrap.appendChild(placeholder);
-  els.qrPhase.textContent = "连接中";
-  els.qrPhase.className = "phase-badge connecting";
-  els.qrHint.textContent = "首次启动需要几秒钟连接 WhatsApp。";
 }
 
 // ─── Main refresh ───
@@ -248,6 +290,8 @@ async function refresh() {
 
   try {
     qr = await bridge.apiGet("qr");
+    qr.lastError = status.lastError;
+    qr._status = status.status;
     renderQr(qr);
   } catch (err) {
     log("error", `二维码请求失败: ${err}`);
