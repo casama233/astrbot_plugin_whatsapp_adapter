@@ -1485,10 +1485,27 @@ class WhatsAppPlatformAdapter(Platform):
     def _message_mentions_self(self, data: dict[str, Any]) -> bool:
         self_id = str(data.get("selfJid") or "")
         self_lid = str(data.get("selfLid") or "")
-        return any(
+        if any(
             self._is_self_mention(str(mentioned or ""), self_id, self_lid)
             for mentioned in data.get("mentionedJids") or []
-        )
+        ):
+            return True
+        text = str(data.get("text") or "")
+        if "@" not in text:
+            return False
+        self_tokens = {
+            self._numeric_whatsapp_id(value)
+            for value in (self_id, self_lid)
+            if value
+        }
+        if not self_tokens:
+            return False
+        for token in re.findall(r"@([^\s@,，。:：;；)）(（]+)", text):
+            token_digits = "".join(ch for ch in token if ch.isdigit())
+            if token_digits and token_digits in self_tokens:
+                logger.info("WhatsApp @提及文本兜底命中: token=%s self_id=%s self_lid=%s", token, self_id, self_lid)
+                return True
+        return False
 
     def _reply_targets_self(self, data: dict[str, Any]) -> bool:
         quoted = data.get("quoted")
