@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.16] - 2026-07-13
+
+### Fixed
+- 修复部分 WhatsApp 客户端或图片 caption 中 `@` 机器人时 Baileys 未提供 `mentionedJid`，导致 adapter 误判 `self_mentioned=False`、群聊唤醒不触发的问题
+- 新增保守文本兜底：当消息文本中出现 `@机器人 PN/LID 数字` 时，也判定为提及机器人自身，仅影响自身 @ 唤醒判断，不会把 @ 其他人误判为唤醒
+
 ## [0.2.15] - 2026-07-13
 
 ### Fixed
