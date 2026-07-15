@@ -390,5 +390,49 @@ async def process_message_chain(
                 client, target, pending_caption, pending_mentions, **_flush_kw,
             )
             await send_whatsapp_component(client, target, component, **_send_kw)
+        else:
+            nested = _iter_nested_components(component)
+            if nested:
+                pending_caption, pending_mentions = await flush_pending_text(
+                    client, target, pending_caption, pending_mentions, **_flush_kw,
+                )
+                pending_caption, pending_mentions = await process_message_chain(
+                    client, target, nested,
+                    link_preview_single_url=link_preview_single_url,
+                    text_chunk_limit=text_chunk_limit,
+                    use_caption=use_caption,
+                    quoted_message_id=quoted_message_id,
+                    quoted_participant=quoted_participant,
+                    resolve_media_func=resolve_media_func,
+                )
+            else:
+                logger.debug(
+                    "WhatsApp 消息链跳过不支持组件: %s",
+                    component.__class__.__name__,
+                )
 
     return pending_caption, pending_mentions
+
+
+def _iter_nested_components(component: Any) -> list[Any]:
+    """Best-effort flattening for Node/Nodes style components on non-WhatsApp platforms."""
+    nested: list[Any] = []
+    chain = getattr(component, "chain", None)
+    if chain:
+        nested.extend(list(chain))
+    for attr in ("nodes", "node", "messages"):
+        value = getattr(component, attr, None)
+        if not value:
+            continue
+        items = value if isinstance(value, (list, tuple)) else [value]
+        for item in items:
+            item_chain = getattr(item, "chain", None)
+            if item_chain:
+                nested.extend(list(item_chain))
+                continue
+            item_message = getattr(item, "message", None) or getattr(item, "content", None)
+            if isinstance(item_message, list):
+                nested.extend(item_message)
+            elif item_message:
+                nested.append(item_message)
+    return nested

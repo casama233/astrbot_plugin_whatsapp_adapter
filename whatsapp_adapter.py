@@ -1146,8 +1146,13 @@ class WhatsAppPlatformAdapter(Platform):
             text = str(data.get("text") or "")
             if text and bool(self.config.get("parse_inbound_formatting", True)):
                 text = format_markdown_from_whatsapp(text)
+        media_items = data.get("media") or []
+        if media_items and re.fullmatch(r"<media:[a-z]+>(?: x\d+)?", text.strip()):
+            text = ""
         is_group = chat_jid.endswith("@g.us")
         group_id = chat_jid.split("@", 1)[0] if is_group else None
+        if is_group and sender_phone and group_id and self._numeric_whatsapp_id(sender_phone) == group_id:
+            sender_phone = ""
 
         user_id = ""
         if sender_pn and sender_pn.endswith("@s.whatsapp.net"):
@@ -1339,9 +1344,9 @@ class WhatsAppPlatformAdapter(Platform):
             if not path:
                 continue
             if media_type == "image":
-                chain.append(Image(file=path))
+                chain.append(Image(file=path, path=path))
             elif media_type == "sticker":
-                chain.append(Image(file=path))
+                chain.append(Image(file=path, path=path))
                 chain.append(Plain(text="[Sticker]"))
             elif media_type == "audio":
                 chain.append(Record(file=path))
@@ -1374,9 +1379,9 @@ class WhatsAppPlatformAdapter(Platform):
             if not path:
                 continue
             if media_type == "image":
-                chain.append(Image(file=path))
+                chain.append(Image(file=path, path=path))
             elif media_type == "sticker":
-                chain.append(Image(file=path))
+                chain.append(Image(file=path, path=path))
                 chain.append(Plain(text="[Sticker]"))
             elif media_type == "audio":
                 chain.append(Record(file=path))
