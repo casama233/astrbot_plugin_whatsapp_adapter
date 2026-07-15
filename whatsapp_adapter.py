@@ -1346,7 +1346,6 @@ class WhatsAppPlatformAdapter(Platform):
             if media_type == "image":
                 chain.append(Image(file=path, path=path))
             elif media_type == "sticker":
-                chain.append(Image(file=path, path=path))
                 chain.append(Plain(text="[Sticker]"))
             elif media_type == "audio":
                 chain.append(Record(file=path))
@@ -1381,7 +1380,6 @@ class WhatsAppPlatformAdapter(Platform):
             if media_type == "image":
                 chain.append(Image(file=path, path=path))
             elif media_type == "sticker":
-                chain.append(Image(file=path, path=path))
                 chain.append(Plain(text="[Sticker]"))
             elif media_type == "audio":
                 chain.append(Record(file=path))
