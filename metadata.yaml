@@ -2,7 +2,7 @@ name: astrbot_plugin_whatsapp_adapter
 display_name: WhatsApp Adapter
 short_desc: WhatsApp Web Gateway 平台适配器，支持扫码登录。
 desc: 基于本地 Gateway 和 WhatsApp Web/Baileys 的 AstrBot 消息平台适配器，支持插件管理页扫码登录、私聊、群聊、媒体收发和访问控制。
-version: 0.2.16
+version: 0.2.17
 author: casama233
 repo: https://github.com/casama233/astrbot_plugin_whatsapp_adapter
 astrbot_version: ">=4.13.0"

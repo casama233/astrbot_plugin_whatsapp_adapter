@@ -255,7 +255,7 @@ function messageCandidates(item, chatJid, senderJid) {
     }
   };
 
-  add(chatJid);
+  if (!String(chatJid || "").endsWith("@g.us")) add(chatJid);
   add(senderJid);
   if (item?.key?.participant) add(item.key.participant);
 
