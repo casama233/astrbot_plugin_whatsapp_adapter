@@ -39,7 +39,7 @@ pip install -r requirements.txt
 
 - **固定行为**：大小限制由 WhatsApp/Gateway 与内部常量决定；命令匹配与唤醒前缀由 AstrBot Core 处理。
 - **插件全局默认**：Gateway 默认连接，以及链接预览、输入/已读/在线状态、入站格式、相簿去抖和流式节流。
-- **平台实例配置**：账号连接覆盖、访问控制、caption、忽略自身消息、reaction 和消失消息。
+- **平台实例配置**：账号访问控制、caption、忽略自身消息、reaction 和消失消息。
 
 优先级：**内置默认 < 插件全局默认 < 平台实例显式配置**。
 

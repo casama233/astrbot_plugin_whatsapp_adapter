@@ -89,7 +89,7 @@ pip install -r requirements.txt
 
 1. **固定行为**：WhatsApp/Gateway 的文字与媒体大小限制由代码和协议决定；指令唤醒完全使用 AstrBot 的 `wake_prefix` 与 `CommandFilter`，本插件不再重复配置。
 2. **插件全局默认**：Gateway 默认连接参数，以及所有 WhatsApp 实例共用的 `default_*` 消息行为。
-3. **平台实例配置**：某个 WhatsApp 账号独有的连接覆盖、访问控制、媒体 caption、忽略自身消息、reaction 与消失消息行为。
+3. **平台实例配置**：某个 WhatsApp 账号独有的访问控制、媒体 caption、忽略自身消息、reaction 与消失消息行为。
 
 运行时优先级为：**内置默认 < 插件全局默认 < 平台实例显式配置**。
 
@@ -186,11 +186,9 @@ WhatsAppEdit(message_id="xxx", text="新的内容")
 
 ## 推荐配置
 
-专用号码，仅私聊：
+专用号码，仅私聊（Gateway 地址和端口在插件配置页设置）：
 ```json
 {
-  "gateway_host": "127.0.0.1",
-  "gateway_port": 18789,
   "allow_from": ["+15551234567"],
   "dm_policy": "allowlist",
   "group_policy": "disabled"
