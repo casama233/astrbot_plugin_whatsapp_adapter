@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.2.19] - 2026-07-25
+
+### Changed
+- WhatsApp 原生 Markdown 转换：`**bold**` → `*bold*`、`*italic*` → `_italic_`、`~~strike~~` → `~strike~`，标题/表格/链接/水平线降级为可读文本
+- 流式输出改为累积原始 Markdown，每次 publish 只渲染一次完整缓冲区，不再逐 token 重扫全文
+- 格式感知切片器跨消息边界自动关闭/重开 `*`、`_`、`~`、code 标记，grapheme 单位切片避免拆散 ZWJ emoji 与组合字符
+- mention 绑定可见 `@文字`，每个 chunk 只附带实际出现在该段的 JID
+
+### Fixed
+- 流式回复中 `**...**` 被拆分到不同 chunk 时不再残留未闭合的双星号
+- edit 不可用或 Gateway 未回传 message id 时，停止中途更新，结束只补发一次完整结果
+- realtime fallback 以 raw offset 记录进度，不再以不稳定的 rendered offset 截取
+- fallback 分句不再把 `~` 当作标点，避免切断删除线
+- 正确 handle generator cancellation、`break`、文字与媒体交错场景
+- 更精确的反引号 run 长度保护 inline code、巢状 backtick、多行及未闭合 code
+- 保护 escaped Markdown，避免 `\\*`、`\\_` 被误转
+- `.pre-commit-config.yaml` 目录替换为有效 YAML 文件，pre-commit.ci 检查已通过
+
 ## [0.2.16] - 2026-07-13
 
 ### Fixed
