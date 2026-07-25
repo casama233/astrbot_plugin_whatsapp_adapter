@@ -109,6 +109,21 @@ class WhatsAppConfigPolicyTests(unittest.TestCase):
         for fixed_key in FIXED_RUNTIME_KEYS:
             self.assertNotIn(fixed_key, schema)
 
+    def test_astrbot_owns_command_wake_handling(self) -> None:
+        adapter_source = (ROOT / "whatsapp_adapter.py").read_text("utf-8")
+        main_source = (ROOT / "main.py").read_text("utf-8")
+        runtime_keys = _top_level_dict_keys(adapter_source, "RUNTIME_DEFAULT_CONFIG")
+        self.assertNotIn("command_prefix", runtime_keys)
+        self.assertNotIn("register_commands", runtime_keys)
+        for token in (
+            "collect_registered_commands",
+            "message_matches_command",
+            "_refresh_registered_commands",
+            "_registered_commands",
+        ):
+            self.assertNotIn(token, adapter_source)
+            self.assertNotIn(token, main_source)
+
     def test_adapter_filters_stale_platform_keys(self) -> None:
         source = (ROOT / "whatsapp_adapter.py").read_text("utf-8")
         self.assertIn("extract_plugin_defaults(loaded_plugin_config)", source)
