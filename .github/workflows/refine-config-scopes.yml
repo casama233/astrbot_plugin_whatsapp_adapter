@@ -1,0 +1,38 @@
+name: Refine WhatsApp config scopes
+
+on:
+  push:
+    branches:
+      - agent/restore-instance-messaging-settings
+    paths:
+      - .github/workflows/refine-config-scopes.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/restore-instance-messaging-settings
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Apply refined config scopes
+        run: python .github/scripts/refine_config_scopes.py
+      - name: Validate plugin schema
+        run: python -m json.tool _conf_schema.json >/dev/null
+      - name: Compile
+        run: python -m compileall -q whatsapp_adapter.py whatsapp_config_policy.py whatsapp_helpers.py _whatsapp_helpers_impl.py whatsapp_chunking.py whatsapp_event.py tests
+      - name: Run regression tests
+        run: python -m unittest discover -v tests
+      - name: Commit clean result
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "refactor: separate global and instance settings"
+          git push origin HEAD:agent/restore-instance-messaging-settings
