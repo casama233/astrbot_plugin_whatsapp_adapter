@@ -217,6 +217,14 @@ class WhatsAppConfigPolicyTests(unittest.TestCase):
         self.assertIn("extract_legacy_behavior_overrides(platform_config)", adapter)
         self.assertIn("_legacy_gateway_", adapter)
         self.assertIn("_message_matches_known_command", adapter)
+        self.assertIn(
+            "await self._restart_health_monitor()\n"
+            "        # Other plugins may finish registering after this adapter is created.\n"
+            "        # Refresh here so legacy-prefix compatibility and command pre-ack see\n"
+            "        # the complete active CommandFilter registry after every reconnect.\n"
+            "        self._refresh_registered_commands()",
+            adapter,
+        )
         self.assertIn("adopt_legacy_gateway_defaults", main)
         self.assertIn("await self._reload_active_adapters()", main)
         self.assertIn("set_runtime_plugin_defaults", main)
