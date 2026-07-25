@@ -33,7 +33,6 @@ from astrbot.core.platform.astr_message_event import MessageSesion
 from astrbot.core.platform.platform import PlatformStatus
 
 from .whatsapp_client import GatewayProcess, WhatsAppGatewayClient, WhatsAppGatewayError
-from .whatsapp_commands import collect_registered_commands, message_matches_command
 from .whatsapp_components import (
     WhatsAppButtons,
     WhatsAppEdit,
@@ -170,8 +169,6 @@ RUNTIME_DEFAULT_CONFIG: dict[str, Any] = {
     # Protocol/Gateway limits and AstrBot-owned command behaviour stay internal.
     "text_chunk_limit": 4000,
     "media_max_mb": 50,
-    "command_prefix": "/",
-    "register_commands": True,
     # Generic behaviour can be supplied through plugin-level default_* fields.
     "link_preview_single_url": True,
     "typing_indicator": True,
@@ -872,12 +869,10 @@ class WhatsAppPlatformAdapter(Platform):
         self._quiet_next_gateway_connect = False
         self._platform_config = platform_config or {}
         self._platform_settings = platform_settings or {}
-        self._registered_commands: list[str] = []
         self._send_text_buffers: dict[str, str] = {}
         self._send_text_sessions: dict[str, MessageSesion] = {}
         self._send_text_tasks: dict[str, asyncio.Task] = {}
         _ACTIVE_ADAPTERS.add(self)
-        self._refresh_registered_commands()
         _load_lid_mappings(self._auth_dir())
         logger.info(
             "WhatsApp platform adapter initialized: gateway=%s auto_start=%s dm_policy=%s allow_from=%s group_policy=%s groups=%s auth_dir=%s",
@@ -1096,7 +1091,6 @@ class WhatsAppPlatformAdapter(Platform):
         await self._stop_health_monitor()
         self._force_gateway_restart = True
         _load_lid_mappings(self._auth_dir())
-        self._refresh_registered_commands()
         if self._stopped.is_set():
             return
         self._reconnect_event.set()
@@ -1208,9 +1202,6 @@ class WhatsAppPlatformAdapter(Platform):
         is_self_mentioned = self._message_mentions_self(raw)
         is_reply_to_self = self._reply_targets_self(raw)
         is_reaction_only = self._is_reaction_only(raw)
-        is_command = self._message_matches_command(message.message_str or "")
-        prefix = str(self.config.get("command_prefix") or "/")
-        has_prefix = (message.message_str or "").strip().startswith(prefix)
         event = WhatsAppMessageEvent(
             message_str=message.message_str,
             message_obj=message,
@@ -1247,17 +1238,14 @@ class WhatsAppPlatformAdapter(Platform):
             else:
                 group_mode = self._group_pre_ack_mode()
                 should_ack = group_mode == "always" or (
-                    group_mode == "mentions" and (is_self_mentioned or is_reply_to_self or is_command)
+                    group_mode == "mentions" and (is_self_mentioned or is_reply_to_self)
                 )
             if should_ack:
-                if not is_command:
-                    event.is_at_or_wake_command = True
-                    event.is_wake = True
+                event.is_at_or_wake_command = True
+                event.is_wake = True
                 await self._pre_ack(event)
-        if is_command:
-            event.is_at_or_wake_command = True
         logger.info(
-            "Committing WhatsApp event: session=%s sender=%s raw_sender=%s message_id=%s text_len=%s self_mentioned=%s reply_to_self=%s is_private=%s is_command=%s",
+            "Committing WhatsApp event: session=%s sender=%s raw_sender=%s message_id=%s text_len=%s self_mentioned=%s reply_to_self=%s is_private=%s",
             message.session_id,
             getattr(message.sender, "user_id", None),
             raw.get("senderJid"),
@@ -1266,7 +1254,6 @@ class WhatsAppPlatformAdapter(Platform):
             is_self_mentioned,
             is_reply_to_self,
             is_private,
-            is_command,
         )
         self.commit_event(event)
 
@@ -1825,7 +1812,6 @@ class WhatsAppPlatformAdapter(Platform):
         log("WhatsApp 适配器已连接: %s", self._base_url)
         self._mark_running()
         await self._restart_health_monitor()
-        self._refresh_registered_commands()
 
     def _create_gateway_process(self) -> GatewayProcess:
         return GatewayProcess(
@@ -2011,24 +1997,6 @@ class WhatsAppPlatformAdapter(Platform):
         if isinstance(value, list):
             return f"<{len(value)} entries>"
         return "<0 entries>" if value in (None, "") else "<1 entry>"
-
-    def _refresh_registered_commands(self) -> None:
-        if not bool(self.config.get("register_commands", True)):
-            self._registered_commands = []
-            return
-        self._registered_commands = collect_registered_commands()
-        if self._registered_commands:
-            logger.info(
-                "WhatsApp registered slash commands: count=%s prefix=%s",
-                len(self._registered_commands),
-                self.config.get("command_prefix", "/"),
-            )
-
-    def _message_matches_command(self, text: str) -> bool:
-        if not bool(self.config.get("register_commands", True)):
-            return False
-        prefix = str(self.config.get("command_prefix") or "/")
-        return message_matches_command(text, self._registered_commands, prefix=prefix)
 
 def get_active_whatsapp_adapters() -> list["WhatsAppPlatformAdapter"]:
     return list(_ACTIVE_ADAPTERS)

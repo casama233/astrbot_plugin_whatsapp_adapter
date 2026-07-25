@@ -199,10 +199,6 @@ WhatsAppEdit(message_id="xxx", text="新的内容")
 4. 如果编辑失败（WhatsApp 限制消息编辑有时效），自动降级为发送新消息
 5. 支持 `type="break"` 的 MessageChain 分段
 
-## 斜线指令
-
-启用 `register_commands=true` 后，插件自动扫描 AstrBot 的 `star_handlers_registry`，收集所有已注册的 `CommandFilter` 指令名和别名。入站消息以 `command_prefix` 开头且匹配收集到的指令时，消息标记为 `is_at_or_wake_command = True`，触发 AstrBot 指令处理流程。
-
 ## 推荐配置
 
 专用号码，仅私聊：
