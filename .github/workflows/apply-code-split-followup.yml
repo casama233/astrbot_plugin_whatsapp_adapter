@@ -1,0 +1,38 @@
+name: Apply WhatsApp code split follow-up
+
+on:
+  push:
+    branches:
+      - agent/fix-streaming-markdown-conversion
+    paths:
+      - .github/workflows/apply-code-split-followup.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/fix-streaming-markdown-conversion
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Apply code split follow-up
+        run: python .github/scripts/apply_code_split_followup.py
+      - name: Compile
+        run: python -m py_compile whatsapp_helpers.py whatsapp_event.py tests/test_whatsapp_markdown.py
+      - name: Run regression tests
+        run: python -m unittest -v tests/test_whatsapp_markdown.py
+      - name: Verify pre-commit config
+        run: test -f .pre-commit-config.yaml
+      - name: Commit clean result
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix: avoid marker-only code chunks"
+          git push origin HEAD:agent/fix-streaming-markdown-conversion
