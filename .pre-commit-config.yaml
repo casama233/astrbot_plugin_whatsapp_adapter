@@ -2,14 +2,9 @@ minimum_pre_commit_version: '3.5.0'
 repos:
   - repo: local
     hooks:
-      - id: apply-config-scope-refinement
-        name: Apply config scope refinement
-        entry: python .github/scripts/run_refine_config_scopes.py
-        language: system
-        pass_filenames: false
       - id: python-compile
         name: Python syntax check
-        entry: python -m compileall -q whatsapp_helpers.py _whatsapp_helpers_impl.py whatsapp_chunking.py whatsapp_event.py tests
+        entry: python -m compileall -q whatsapp_adapter.py whatsapp_config_policy.py whatsapp_helpers.py _whatsapp_helpers_impl.py whatsapp_chunking.py whatsapp_event.py tests
         language: system
         pass_filenames: false
       - id: whatsapp-markdown-tests

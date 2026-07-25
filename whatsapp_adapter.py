@@ -41,7 +41,11 @@ from .whatsapp_components import (
     WhatsAppPoll,
 )
 from .whatsapp_event import WhatsAppMessageEvent
-from .whatsapp_config_policy import merge_runtime_config, normalize_media_caption_mode
+from .whatsapp_config_policy import (
+    extract_plugin_defaults,
+    merge_runtime_config,
+    normalize_media_caption_mode,
+)
 from .whatsapp_helpers import (
     flush_pending_text,
     format_markdown_from_whatsapp,
@@ -162,54 +166,17 @@ RUNTIME_DEFAULT_CONFIG: dict[str, Any] = {
     "group_policy": "disabled",
     "groups": [],
     "group_allow_from": [],
+    # Only options that can reasonably differ between WhatsApp accounts live
+    # on the platform instance. Generic behaviour is configured globally in
+    # the plugin page, while protocol limits stay internal constants.
     "media_caption_mode": "separate",
-    "text_chunk_limit": 4000,
-    "link_preview_single_url": True,
-    "typing_indicator": True,
-    "send_read_receipts": True,
-    "mark_online": False,
-    "gateway_health_check_interval": 60,
-    "pre_ack_done_emoji": "✅",
-    "parse_inbound_formatting": True,
-    "media_album_debounce_seconds": 2.5,
     "ignore_self_messages": False,
-    "command_prefix": "/",
-    "register_commands": True,
-    "pre_ack_private": True,
-    "pre_ack_public": "mentions",
-    "pre_ack_emojis": "👀",
-    "pre_ack_emoji": True,
-    "media_max_mb": 50,
-    "apply_ephemeral": False,
-    "streaming_edit_throttle": 1.0,
-}
-
-DEFAULT_CONFIG: dict[str, Any] = {
-    **BASE_GATEWAY_CONFIG,
-    "dm_policy": "allowlist",
-    "allow_from": [],
-    "group_policy": "disabled",
-    "groups": [],
-    "group_allow_from": [],
-    "command_prefix": "/",
-    "register_commands": True,
-    "media_caption_mode": "separate",
-    "text_chunk_limit": 4000,
-    "link_preview_single_url": True,
-    "typing_indicator": True,
-    "send_read_receipts": True,
-    "mark_online": False,
-    "ignore_self_messages": False,
-    "parse_inbound_formatting": True,
-    "media_album_debounce_seconds": 2.5,
-    "media_max_mb": 50,
     "pre_ack_emoji": True,
     "pre_ack_emojis": "👀",
     "pre_ack_private": True,
     "pre_ack_public": "mentions",
     "pre_ack_done_emoji": "✅",
     "apply_ephemeral": False,
-    "streaming_edit_throttle": 1.0,
 }
 
 UI_CONFIG_KEYS = tuple(DEFAULT_CONFIG)
@@ -1643,8 +1610,16 @@ class WhatsAppPlatformAdapter(Platform):
             logger.warning("迁移旧插件数据失败: %s → %s: %s", old_root, new_root, exc)
 
     def _merged_config(self, platform_config: dict[str, Any]) -> dict[str, Any]:
-        plugin_config = self._normalize_config(self._load_plugin_config())
-        platform_config = self._normalize_config(platform_config)
+        loaded_plugin_config = self._normalize_config(self._load_plugin_config())
+        plugin_config = extract_plugin_defaults(loaded_plugin_config)
+        # Ignore stale keys left by older platform UI versions. This prevents
+        # removed generic/fixed settings from silently overriding global or
+        # protocol defaults after an upgrade.
+        platform_config = {
+            key: value
+            for key, value in self._normalize_config(platform_config).items()
+            if key in PERSISTED_PLATFORM_KEYS
+        }
         merged = merge_runtime_config(
             RUNTIME_DEFAULT_CONFIG,
             plugin_config,
