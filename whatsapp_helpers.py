@@ -75,7 +75,7 @@ def _protect_backtick_code(value: str) -> tuple[str, list[str]]:
             segment = value[index:closing_end]
             index = closing_end
 
-        placeholder = f"\x00WA_CODE_{len(protected)}\x00"
+        placeholder = f"\x00WACODE{len(protected)}\x00"
         protected.append(segment)
         output.append(placeholder)
 
@@ -84,7 +84,7 @@ def _protect_backtick_code(value: str) -> tuple[str, list[str]]:
 
 def _restore_backtick_code(value: str, protected: list[str]) -> str:
     for index, segment in enumerate(protected):
-        value = value.replace(f"\x00WA_CODE_{index}\x00", segment)
+        value = value.replace(f"\x00WACODE{index}\x00", segment)
     return value
 
 
@@ -102,29 +102,24 @@ def format_whatsapp_markdown(text: str, *, streaming: bool = False) -> str:
 
     value, protected = _protect_backtick_code(value)
 
-    # Markdown 水平線在 WhatsApp 沒有語義，轉成穩定、可讀的分隔線。
     value = re.sub(
         r"(?m)^[ \t]*(?:\*{3,}|_{3,}|-{3,})[ \t]*$",
         "──────────",
         value,
     )
 
-    # 標準 Markdown 單星號斜體。先處理，避免稍後產生的 WhatsApp
-    # ``*粗體*`` 被二次轉換。行首 ``* `` 清單不會匹配。
     value = re.sub(
         r"(?<!\*)\*(?![\s*])([^*\n]*?\S)\*(?!\*)",
         r"_\1_",
         value,
     )
 
-    # 複合粗斜體，再處理普通粗體與刪除線。
     value = re.sub(r"\*\*\*(?=\S)([\s\S]*?\S)\*\*\*", r"*_\1_*", value)
     value = re.sub(r"___(?=\S)([\s\S]*?\S)___", r"*_\1_*", value)
     value = re.sub(r"\*\*(?=\S)([\s\S]*?\S)\*\*", r"*\1*", value)
     value = re.sub(r"__(?=\S)([\s\S]*?\S)__", r"*\1*", value)
     value = re.sub(r"~~(?=\S)([\s\S]*?\S)~~", r"~\1~", value)
 
-    # 最終訊息若仍有未閉合標記，同樣降級；但保留 foo__bar、foo~~bar。
     value = re.sub(r"(?<!\*)\*{2,}(?!\*)", "*", value)
     value = re.sub(
         r"(?<![\w_])_{2,}(?!_)|(?<!_)_{2,}(?![\w_])",
@@ -166,14 +161,16 @@ def format_markdown_from_whatsapp(text: str) -> str:
 
 
 def chunk_text(text: str, limit: int) -> Iterator[str]:
-    """按 limit 切片，優先在換行或空白邊界分割。"""
+    """按 limit 切片，優先在換行、半形或全形空白邊界分割。"""
     limit = max(1, int(limit))
     remaining = str(text or "")
     while len(remaining) > limit:
-        window = remaining[: limit + 1]
-        cut = window.rfind("\n", 0, limit + 1)
-        if cut <= 0:
-            cut = window.rfind(" ", 0, limit + 1)
+        window = remaining[:limit]
+        cut = max(
+            window.rfind("\n"),
+            window.rfind(" "),
+            window.rfind("　"),
+        )
         if cut <= 0 or cut < limit // 2:
             cut = limit
         else:
