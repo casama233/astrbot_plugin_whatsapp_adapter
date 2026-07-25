@@ -41,6 +41,22 @@ from .whatsapp_components import (
     WhatsAppPoll,
 )
 from .whatsapp_event import WhatsAppMessageEvent
+from .whatsapp_config_policy import (
+    DM_POLICIES,
+    GROUP_POLICIES,
+    LEGACY_GATEWAY_DEFAULTS,
+    LOG_LEVELS,
+    MEDIA_CAPTION_MODES,
+    PRE_ACK_PUBLIC_MODES,
+    extract_legacy_behavior_overrides,
+    extract_legacy_command_prefix,
+    extract_plugin_defaults,
+    get_runtime_plugin_defaults,
+    get_runtime_wake_prefixes,
+    merge_runtime_config,
+    normalize_config_enum,
+    normalize_pre_ack_public,
+)
 from .whatsapp_helpers import (
     flush_pending_text,
     format_markdown_from_whatsapp,
@@ -162,41 +178,42 @@ RUNTIME_DEFAULT_CONFIG: dict[str, Any] = {
     "groups": [],
     "group_allow_from": [],
     "media_caption_mode": "separate",
+    # Protocol/Gateway limits and AstrBot-owned command behaviour stay internal.
     "text_chunk_limit": 4000,
+    "media_max_mb": 50,
+    # Generic behaviour can be supplied through plugin-level default_* fields.
     "link_preview_single_url": True,
     "typing_indicator": True,
     "send_read_receipts": True,
     "mark_online": False,
     "gateway_health_check_interval": 60,
-    "pre_ack_done_emoji": "✅",
     "parse_inbound_formatting": True,
     "media_album_debounce_seconds": 2.5,
+    "streaming_edit_throttle": 1.0,
+    # These options may reasonably differ between WhatsApp account instances.
     "ignore_self_messages": False,
-    "command_prefix": "/",
-    "register_commands": True,
     "pre_ack_private": True,
     "pre_ack_public": "mentions",
     "pre_ack_emojis": "👀",
     "pre_ack_emoji": True,
-    "media_max_mb": 50,
+    "pre_ack_done_emoji": "✅",
     "apply_ephemeral": False,
-    "streaming_edit_throttle": 1.0,
 }
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    **BASE_GATEWAY_CONFIG,
     "dm_policy": "allowlist",
     "allow_from": [],
     "group_policy": "disabled",
     "groups": [],
     "group_allow_from": [],
+    "media_caption_mode": "separate",
+    "ignore_self_messages": False,
     "pre_ack_emoji": True,
     "pre_ack_emojis": "👀",
     "pre_ack_private": True,
     "pre_ack_public": "mentions",
     "pre_ack_done_emoji": "✅",
     "apply_ephemeral": False,
-    "streaming_edit_throttle": 1.0,
 }
 
 UI_CONFIG_KEYS = tuple(DEFAULT_CONFIG)
@@ -282,12 +299,14 @@ CONFIG_METADATA: dict[str, Any] = {
         "description": "Gateway 日志级别",
         "type": "string",
         "group": "connection",
+        "options": list(LOG_LEVELS),
         "hint": "可选：silent、fatal、error、warn、info、debug、trace。",
     },
     "dm_policy": {
         "description": "私聊接收策略",
         "type": "string",
         "group": "permissions",
+        "options": list(DM_POLICIES),
         "hint": "allowlist=仅允许名单中号码；open=开放所有人私聊；disabled=关闭私聊功能。",
     },
     "allow_from": {
@@ -300,6 +319,7 @@ CONFIG_METADATA: dict[str, Any] = {
         "description": "群聊接收策略",
         "type": "string",
         "group": "permissions",
+        "options": list(GROUP_POLICIES),
         "hint": "allowlist=仅允许在群名单中的群；open=允许所有已加入群；disabled=关闭群聊功能。",
     },
     "groups": {
@@ -348,7 +368,8 @@ CONFIG_METADATA: dict[str, Any] = {
         "description": "媒体附加文字模式",
         "type": "string",
         "group": "messaging",
-        "hint": "separate=文字与媒体分开发送（两条消息）；caption=紧邻媒体前的文字作为该媒体的描述。",
+        "options": list(MEDIA_CAPTION_MODES),
+        "hint": "separate=文字与媒体分开发送；caption=紧邻媒体前的文字作为该媒体描述。仅影响普通富媒体消息链，流式回复中的媒体仍分开发送。",
     },
     "text_chunk_limit": {
         "description": "文字切片长度",
@@ -396,6 +417,7 @@ CONFIG_METADATA: dict[str, Any] = {
         "description": "群聊预回应模式",
         "type": "string",
         "group": "ack",
+        "options": list(PRE_ACK_PUBLIC_MODES),
         "hint": "always=始终触发预回应；mentions=仅被 @ 或回复时触发；never=不触发预回应。",
     },
     "pre_ack_emojis": {
@@ -504,7 +526,7 @@ WHATSAPP_I18N_RESOURCES: dict[str, dict] = {
         },
         "media_caption_mode": {
             "description": "媒体附加文字模式",
-            "hint": "separate=文字与媒体分开发送（两条消息）；caption=紧邻媒体前的文字作为该媒体的描述。",
+            "hint": "separate=文字与媒体分开发送；caption=紧邻媒体前的文字作为该媒体描述。仅影响普通富媒体消息链，流式回复中的媒体仍分开发送。",
         },
         "text_chunk_limit": {
             "description": "文字切片长度",
@@ -630,7 +652,7 @@ WHATSAPP_I18N_RESOURCES: dict[str, dict] = {
         },
         "media_caption_mode": {
             "description": "Media caption mode",
-            "hint": "separate=text and media sent as separate messages; caption=text immediately before media becomes its caption.",
+            "hint": "separate sends text and media separately; caption attaches immediately preceding text to ordinary rich-media messages. Streaming media remains separate.",
         },
         "text_chunk_limit": {
             "description": "Text chunk length",
@@ -756,7 +778,7 @@ WHATSAPP_I18N_RESOURCES: dict[str, dict] = {
         },
         "media_caption_mode": {
             "description": "媒體附加文字模式",
-            "hint": "separate=文字與媒體分開傳送（兩條訊息）；caption=緊鄰媒體前的文字作為該媒體的描述。",
+            "hint": "separate=文字與媒體分開傳送；caption=緊鄰媒體前的文字作為該媒體描述。僅影響普通富媒體訊息鏈，流式回覆中的媒體仍分開傳送。",
         },
         "text_chunk_limit": {
             "description": "文字切片長度",
@@ -844,13 +866,13 @@ class WhatsAppPlatformAdapter(Platform):
         platform_settings: dict[str, Any],
         event_queue: asyncio.Queue,
     ) -> None:
+        raw_platform_config = dict(platform_config or {})
+        sanitized_config = sanitize_whatsapp_platform_config(raw_platform_config)
         if isinstance(platform_config, dict):
-            sanitized_inplace = sanitize_whatsapp_platform_config(platform_config)
-            if platform_config is not sanitized_inplace:
-                platform_config.clear()
-                platform_config.update(sanitized_inplace)
-        super().__init__(platform_config or {}, event_queue)
-        self.config = self._merged_config(platform_config or {})
+            platform_config.clear()
+            platform_config.update(sanitized_config)
+        super().__init__(sanitized_config, event_queue)
+        self.config = self._merged_config(sanitized_config)
         self.client = WhatsAppGatewayClient(self._base_url)
         self.gateway_process: GatewayProcess | None = None
         self._stopped = asyncio.Event()
@@ -860,9 +882,10 @@ class WhatsAppPlatformAdapter(Platform):
         self._restarting = False
         self._last_gateway_status_log: tuple[Any, Any, Any] | None = None
         self._quiet_next_gateway_connect = False
-        self._platform_config = platform_config or {}
+        self._platform_config = sanitized_config
         self._platform_settings = platform_settings or {}
         self._registered_commands: list[str] = []
+        self._legacy_command_prefix = extract_legacy_command_prefix(sanitized_config)
         self._send_text_buffers: dict[str, str] = {}
         self._send_text_sessions: dict[str, MessageSesion] = {}
         self._send_text_tasks: dict[str, asyncio.Task] = {}
@@ -1080,13 +1103,14 @@ class WhatsAppPlatformAdapter(Platform):
 
     async def reload(self, platform_config: dict[str, Any]) -> None:
         """熱重載平台配置：僅供插件配置重載時同步運行中實例。"""
-        self._platform_config = platform_config or {}
+        self._platform_config = sanitize_whatsapp_platform_config(platform_config or {})
         self.config = self._merged_config(self._platform_config)
+        self._legacy_command_prefix = extract_legacy_command_prefix(self._platform_config)
+        self._refresh_registered_commands()
         self.client.update_base_url(self._base_url)
         await self._stop_health_monitor()
         self._force_gateway_restart = True
         _load_lid_mappings(self._auth_dir())
-        self._refresh_registered_commands()
         if self._stopped.is_set():
             return
         self._reconnect_event.set()
@@ -1198,11 +1222,22 @@ class WhatsAppPlatformAdapter(Platform):
         is_self_mentioned = self._message_mentions_self(raw)
         is_reply_to_self = self._reply_targets_self(raw)
         is_reaction_only = self._is_reaction_only(raw)
-        is_command = self._message_matches_command(message.message_str or "")
-        prefix = str(self.config.get("command_prefix") or "/")
-        has_prefix = (message.message_str or "").strip().startswith(prefix)
+        original_text = message.message_str or ""
+        is_command = self._message_matches_known_command(original_text)
+        is_legacy_command = bool(
+            self._legacy_command_prefix
+            and message_matches_command(
+                original_text,
+                self._registered_commands,
+                prefix=self._legacy_command_prefix,
+            )
+        )
+        event_text = original_text
+        if is_legacy_command:
+            stripped = original_text.strip()
+            event_text = stripped[len(self._legacy_command_prefix):].strip()
         event = WhatsAppMessageEvent(
-            message_str=message.message_str,
+            message_str=event_text,
             message_obj=message,
             platform_meta=self.meta(),
             session_id=message.session_id,
@@ -1244,10 +1279,11 @@ class WhatsAppPlatformAdapter(Platform):
                     event.is_at_or_wake_command = True
                     event.is_wake = True
                 await self._pre_ack(event)
-        if is_command:
+        if is_legacy_command:
             event.is_at_or_wake_command = True
+            event.is_wake = True
         logger.info(
-            "Committing WhatsApp event: session=%s sender=%s raw_sender=%s message_id=%s text_len=%s self_mentioned=%s reply_to_self=%s is_private=%s is_command=%s",
+            "Committing WhatsApp event: session=%s sender=%s raw_sender=%s message_id=%s text_len=%s self_mentioned=%s reply_to_self=%s is_private=%s is_command=%s legacy_command=%s",
             message.session_id,
             getattr(message.sender, "user_id", None),
             raw.get("senderJid"),
@@ -1257,6 +1293,7 @@ class WhatsAppPlatformAdapter(Platform):
             is_reply_to_self,
             is_private,
             is_command,
+            is_legacy_command,
         )
         self.commit_event(event)
 
@@ -1629,9 +1666,22 @@ class WhatsAppPlatformAdapter(Platform):
             logger.warning("迁移旧插件数据失败: %s → %s: %s", old_root, new_root, exc)
 
     def _merged_config(self, platform_config: dict[str, Any]) -> dict[str, Any]:
-        plugin_config = self._normalize_config(self._load_plugin_config())
-        platform_config = self._normalize_config(platform_config)
-        merged = {**RUNTIME_DEFAULT_CONFIG, **platform_config, **plugin_config}
+        loaded_plugin_config = self._normalize_config(self._load_plugin_config())
+        plugin_config = {
+            **extract_plugin_defaults(loaded_plugin_config),
+            **get_runtime_plugin_defaults(),
+        }
+        legacy_behavior = extract_legacy_behavior_overrides(platform_config)
+        instance_config = {
+            key: value
+            for key, value in self._normalize_config(platform_config).items()
+            if key in PERSISTED_PLATFORM_KEYS
+        }
+        merged = merge_runtime_config(
+            RUNTIME_DEFAULT_CONFIG,
+            plugin_config,
+            {**legacy_behavior, **instance_config},
+        )
         logger.debug(
             "WhatsApp config merged: platform_keys=%s plugin_overrides=%s effective=%s",
             sorted(platform_config.keys()),
@@ -1655,16 +1705,10 @@ class WhatsAppPlatformAdapter(Platform):
     def _normalize_config_value(self, key: str, value: Any) -> Any:
         if key in {"allow_from", "group_allow_from", "groups"}:
             return self._coerce_str_list(value)
+        if key in {"log_level", "dm_policy", "group_policy", "media_caption_mode"}:
+            return normalize_config_enum(key, value)
         if key == "pre_ack_public":
-            if isinstance(value, str):
-                normalized = value.strip().lower()
-                if normalized in {"mentions", "always", "never"}:
-                    return normalized
-                if normalized in {"true", "1", "yes", "on"}:
-                    return "always"
-                if normalized in {"false", "0", "no", "off", "none"}:
-                    return "never"
-            return value
+            return normalize_pre_ack_public(value)
         return value
 
     def _coerce_str_list(self, value: Any) -> list[str]:
@@ -1801,6 +1845,9 @@ class WhatsAppPlatformAdapter(Platform):
         log("WhatsApp 适配器已连接: %s", self._base_url)
         self._mark_running()
         await self._restart_health_monitor()
+        # Other plugins may finish registering after this adapter is created.
+        # Refresh here so legacy-prefix compatibility and command pre-ack see
+        # the complete active CommandFilter registry after every reconnect.
         self._refresh_registered_commands()
 
     def _create_gateway_process(self) -> GatewayProcess:
@@ -1989,22 +2036,17 @@ class WhatsAppPlatformAdapter(Platform):
         return "<0 entries>" if value in (None, "") else "<1 entry>"
 
     def _refresh_registered_commands(self) -> None:
-        if not bool(self.config.get("register_commands", True)):
-            self._registered_commands = []
-            return
         self._registered_commands = collect_registered_commands()
-        if self._registered_commands:
-            logger.info(
-                "WhatsApp registered slash commands: count=%s prefix=%s",
-                len(self._registered_commands),
-                self.config.get("command_prefix", "/"),
-            )
 
-    def _message_matches_command(self, text: str) -> bool:
-        if not bool(self.config.get("register_commands", True)):
-            return False
-        prefix = str(self.config.get("command_prefix") or "/")
-        return message_matches_command(text, self._registered_commands, prefix=prefix)
+    def _message_matches_known_command(self, text: str) -> bool:
+        prefixes = list(get_runtime_wake_prefixes())
+        if self._legacy_command_prefix:
+            prefixes.append(self._legacy_command_prefix)
+        return any(
+            message_matches_command(text, self._registered_commands, prefix=prefix)
+            for prefix in dict.fromkeys(prefixes)
+            if prefix
+        )
 
 def get_active_whatsapp_adapters() -> list["WhatsAppPlatformAdapter"]:
     return list(_ACTIVE_ADAPTERS)
@@ -2019,6 +2061,24 @@ def sanitize_whatsapp_platform_config(config: dict[str, Any]) -> dict[str, Any]:
         if key == "pre_ack_public":
             value = _coerce_pre_ack_public(value)
         sanitized[key] = value
+
+    # Preserve explicit legacy Gateway choices long enough for the plugin page
+    # to adopt them, even if an adapter is constructed before plugin.initialize.
+    for key, default in LEGACY_GATEWAY_DEFAULTS.items():
+        hidden_key = f"_legacy_gateway_{key}"
+        if hidden_key in config:
+            sanitized[hidden_key] = config[hidden_key]
+        elif key in config and config[key] != default:
+            sanitized[hidden_key] = config[key]
+
+    # Preserve only explicit old per-instance behaviour choices. Historical
+    # template defaults are ignored so plugin-wide default_* settings can work.
+    for key, value in extract_legacy_behavior_overrides(config).items():
+        sanitized[f"_legacy_{key}"] = value
+    legacy_prefix = extract_legacy_command_prefix(config)
+    if legacy_prefix:
+        sanitized["_legacy_command_prefix"] = legacy_prefix
+
     for key in ("type", "enable", "id"):
         if key in config:
             sanitized[key] = config[key]
@@ -2026,11 +2086,7 @@ def sanitize_whatsapp_platform_config(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def _coerce_pre_ack_public(value: Any) -> str:
-    if isinstance(value, str) and value in {"always", "mentions", "never"}:
-        return value
-    if isinstance(value, bool):
-        return "mentions" if value else "never"
-    return "mentions"
+    return normalize_pre_ack_public(value)
 
 
 def patch_platform_manager_hot_reload() -> None:

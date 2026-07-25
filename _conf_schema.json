@@ -39,6 +39,64 @@
     "type": "string",
     "default": "info",
     "group": "connection",
-    "hint": "可选：silent、fatal、error、warn、info、debug、trace。"
+    "hint": "可选：silent、fatal、error、warn、info、debug、trace。",
+    "options": [
+      "silent",
+      "fatal",
+      "error",
+      "warn",
+      "info",
+      "debug",
+      "trace"
+    ]
+  },
+  "default_link_preview_single_url": {
+    "description": "默认启用单链接预览",
+    "type": "bool",
+    "default": true,
+    "group": "messaging_defaults",
+    "hint": "所有 WhatsApp 平台实例的全局默认值；仅当纯文字消息只包含一个 URL 时生成预览。"
+  },
+  "default_typing_indicator": {
+    "description": "默认发送输入状态",
+    "type": "bool",
+    "default": true,
+    "group": "messaging_defaults",
+    "hint": "所有 WhatsApp 平台实例的全局默认值。"
+  },
+  "default_send_read_receipts": {
+    "description": "默认发送已读回执",
+    "type": "bool",
+    "default": true,
+    "group": "messaging_defaults",
+    "hint": "所有 WhatsApp 平台实例的全局默认值。"
+  },
+  "default_mark_online": {
+    "description": "默认标记在线状态",
+    "type": "bool",
+    "default": false,
+    "group": "messaging_defaults",
+    "hint": "所有 WhatsApp 平台实例的全局默认值。"
+  },
+  "default_parse_inbound_formatting": {
+    "description": "默认解析入站格式",
+    "type": "bool",
+    "default": true,
+    "group": "messaging_defaults",
+    "hint": "将 WhatsApp 原生粗体、斜体、删除线和代码转换为 Markdown 供 AstrBot 阅读。"
+  },
+  "default_media_album_debounce_seconds": {
+    "description": "默认相簿去抖时间（秒）",
+    "type": "float",
+    "default": 2.5,
+    "group": "messaging_defaults",
+    "hint": "连续无文字图片合并为相簿的全局等待时间；设为 0 关闭。"
+  },
+  "default_streaming_edit_throttle": {
+    "description": "默认流式编辑间隔（秒）",
+    "type": "float",
+    "default": 1.0,
+    "group": "messaging_defaults",
+    "hint": "所有 WhatsApp 平台实例编辑流式文字的全局最小间隔。"
   }
 }
