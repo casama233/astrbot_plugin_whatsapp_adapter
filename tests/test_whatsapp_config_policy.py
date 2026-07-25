@@ -57,7 +57,7 @@ class WhatsAppConfigPolicyTests(unittest.TestCase):
                     for key in node.value.keys
                     if isinstance(key, ast.Constant) and isinstance(key.value, str)
                 }
-            if target.id == "CONFIG_METADATA":
+            if target.id == "CONFIG_METADATA" and isinstance(node.value, ast.Dict):
                 metadata = ast.literal_eval(node.value)
 
         expected = {
