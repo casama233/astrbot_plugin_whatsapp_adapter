@@ -2,11 +2,6 @@ minimum_pre_commit_version: '3.5.0'
 repos:
   - repo: local
     hooks:
-      - id: update-config-docs
-        name: Update config docs
-        entry: python .github/scripts/update_config_docs.py
-        language: system
-        pass_filenames: false
       - id: python-compile
         name: Python syntax check
         entry: python -m compileall -q whatsapp_adapter.py whatsapp_config_policy.py whatsapp_helpers.py _whatsapp_helpers_impl.py whatsapp_chunking.py whatsapp_event.py tests

@@ -2,7 +2,7 @@
 
 基于 WhatsApp Web/Baileys 的 AstrBot 消息平台适配器。采用本地 Gateway 架构：Python 插件负责平台适配、事件转换和 WebUI 管理页，Node.js Gateway 负责 WhatsApp Web 连接、二维码登录、重连、媒体下载和消息投递。
 
-支持**流式输出**（streaming）、**交互式按钮/列表/投票**、**斜线指令**、**预回应表情**、**打字指示**、**Markdown 格式互转**和**相册去抖**。
+支持**流式输出**（streaming）、**交互式按钮/列表/投票**、**预回应表情**、**打字指示**、**Markdown 格式互转**和**相册去抖**；指令与唤醒前缀直接沿用 AstrBot Core。
 
 ## 功能特性
 
@@ -14,7 +14,6 @@
 - 出站文本（自动 Markdown ➜ WhatsApp 格式转换，长文本分片）、图片、音频、视频、文档、贴纸
 - 出站交互组件：`WhatsAppButtons`、`WhatsAppList`、`WhatsAppPoll`、`WhatsAppEdit`（消息编辑）
 - **流式输出**（streaming）：首次回复作为新消息发送，后续更新通过编辑同一消息逐步追加（带节流）
-- **斜线指令系统**：识别 AstrBot 已注册的 CommandFilter，匹配 `/command` 格式的唤醒消息
 - **预回应表情**（pre-ack）：被 @ 或回复时先发一个 emoji 反应，降低 LLM 响应延迟感知
 - **打字指示**：发送前显示 "composing"，发送完恢复 "available"
 - **媒体说明文字模式**：`separate`（分开发送）或 `caption`（作为媒体描述）
@@ -36,7 +35,6 @@ astrbot_plugin_whatsapp_adapter/
 ├── whatsapp_adapter.py          # 平台适配器（Platform 子类），核心消息收发逻辑
 ├── whatsapp_client.py           # Gateway HTTP 客户端 + 子进程管理
 ├── whatsapp_event.py            # 消息事件（AstrMessageEvent 子类），流式输出
-├── whatsapp_commands.py         # 斜线指令收集与匹配
 ├── whatsapp_components.py       # 自定义 WhatsApp 消息组件
 ├── whatsapp_helpers.py          # 共享工具函数
 ├── metadata.yaml                # 插件元数据
@@ -80,16 +78,24 @@ pip install -r requirements.txt
 1. 在 AstrBot WebUI 启用插件
 2. 添加 `whatsapp` 平台适配器
 3. 保持 `auto_start_gateway=true`
-4. 在插件配置中填写 `allow_from`、`dm_policy` 等访问控制项（插件配置页优先级最高）
+4. 在 WhatsApp 平台实例中填写 `allow_from`、`dm_policy` 等账号访问控制项
 5. 打开 `WhatsApp 登录` / `whatsapp-login` Page
 6. 使用 WhatsApp 手机端「已连接的设备」扫描二维码
 7. 连接成功后启用平台实例
 
 ## 配置说明
 
-配置合并顺序：**内置默认值 < 平台实例配置 < 插件配置页**，最终以插件配置页为准。
+配置按职责分为三层：
 
-### 连接
+1. **固定行为**：WhatsApp/Gateway 的文字与媒体大小限制由代码和协议决定；指令唤醒完全使用 AstrBot 的 `wake_prefix` 与 `CommandFilter`，本插件不再重复配置。
+2. **插件全局默认**：Gateway 默认连接参数，以及所有 WhatsApp 实例共用的 `default_*` 消息行为。
+3. **平台实例配置**：某个 WhatsApp 账号独有的连接覆盖、访问控制、媒体 caption、忽略自身消息、reaction 与消失消息行为。
+
+运行时优先级为：**内置默认 < 插件全局默认 < 平台实例显式配置**。
+
+### Gateway 连接
+
+这些字段可在插件页提供全局默认，也可由某个平台实例覆盖：
 
 | 键 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
@@ -97,67 +103,46 @@ pip install -r requirements.txt
 | `gateway_port` | int | `18789` | Gateway HTTP/SSE 端口 |
 | `auto_start_gateway` | bool | `true` | 自动启动内置 Node.js Gateway |
 | `node_executable` | string | `node` | Node.js 可执行文件路径 |
-| `auth_dir` | string | `""` | WhatsApp 登录态目录，留空自动使用 `data/plugin_data/astrbot_plugin_whatsapp_adapter/whatsapp-auth` |
-| `log_level` | string | `info` | Gateway 日志级别：`silent`、`fatal`、`error`、`warn`、`info`、`debug`、`trace` |
+| `auth_dir` | string | `""` | WhatsApp 登录态目录，留空自动选择插件数据目录 |
+| `log_level` | string | `info` | Gateway 日志级别 |
 
-### 权限
+### 插件全局消息默认
 
-| 键 | 类型 | 默认值 | 说明 |
-|---|---|---|---|
-| `dm_policy` | string | `allowlist` | 私聊策略：`allowlist`（仅允许名单）、`open`（开放所有）、`disabled`（关闭） |
-| `allow_from` | list | `[]` | 私聊 allowlist，E.164 格式 `+15551234567`；`["*"]` 开放所有 |
-| `group_policy` | string | `disabled` | 群聊策略：`allowlist`、`open`、`disabled` |
-| `groups` | list | `[]` | 允许的群 JID（如 `120363xxx@g.us`）；`["*"]` 允许所有群 |
-| `group_allow_from` | list | `[]` | 群内允许的发送者，留空回退到 `allow_from` |
+| 键 | 默认值 | 说明 |
+|---|---|---|
+| `default_link_preview_single_url` | `true` | 纯文字仅包含一个 URL 时生成链接预览 |
+| `default_typing_indicator` | `true` | 回复期间发送 composing 状态 |
+| `default_send_read_receipts` | `true` | 对已接受消息发送已读回执 |
+| `default_mark_online` | `false` | 定期发送 available 在线状态 |
+| `default_parse_inbound_formatting` | `true` | 将 WhatsApp 原生格式转为 Markdown |
+| `default_media_album_debounce_seconds` | `2.5` | 连续图片合并为相簿的等待时间；`0` 关闭 |
+| `default_streaming_edit_throttle` | `1.0` | 流式消息编辑的最小间隔（秒） |
 
-### 指令
+### 平台实例配置
 
-| 键 | 类型 | 默认值 | 说明 |
-|---|---|---|---|
-| `command_prefix` | string | `/` | 斜线指令前缀，如 `/help` |
-| `register_commands` | bool | `true` | 启用斜线指令识别 |
+| 键 | 默认值 | 说明 |
+|---|---|---|
+| `dm_policy` | `allowlist` | 私聊策略：`allowlist` / `open` / `disabled` |
+| `allow_from` | `[]` | 私聊允许名单；`["*"]` 表示全部允许 |
+| `group_policy` | `disabled` | 群聊策略：`allowlist` / `open` / `disabled` |
+| `groups` | `[]` | 允许的群 JID；`["*"]` 表示全部允许 |
+| `group_allow_from` | `[]` | 群内允许的发送者，留空回退到 `allow_from` |
+| `media_caption_mode` | `separate` | `separate` 分开发送；`caption` 将紧邻媒体前的文字作为描述 |
+| `ignore_self_messages` | `false` | 忽略机器人账号自身发送的消息 |
+| `pre_ack_emoji` | `true` | 启用预回应 reaction |
+| `pre_ack_emojis` | `👀` | 预回应表情 |
+| `pre_ack_private` | `true` | 私聊触发预回应 |
+| `pre_ack_public` | `mentions` | 群聊：`always` / `mentions` / `never` |
+| `pre_ack_done_emoji` | `✅` | 回复完成时使用的 reaction |
+| `apply_ephemeral` | `false` | 外寄消息是否套用聊天室消失消息计时器 |
 
-### 消息
+`caption` 只影响普通富媒体 MessageChain；流式回复中途出现媒体时仍会先完成文字，再独立发送媒体。
 
-| 键 | 类型 | 默认值 | 说明 |
-|---|---|---|---|
-| `media_caption_mode` | string | `separate` | `separate`=文字与媒体分开发送；`caption`=紧邻媒体前的文字作为描述 |
-| `text_chunk_limit` | int | `4000` | 出站文字切片长度 |
-| `link_preview_single_url` | bool | `true` | 仅单 URL 消息启用链接预览 |
-| `parse_inbound_formatting` | bool | `true` | 入站 `*bold*` `_italic_` `~strike~` `` `code` `` 转 Markdown |
-| `media_album_debounce_seconds` | float | `2.5` | 相册去抖窗口（秒）；`0` 关闭 |
+### 固定限制与 AstrBot 通用行为
 
-### 在线状态
-
-| 键 | 类型 | 默认值 | 说明 |
-|---|---|---|---|
-| `typing_indicator` | bool | `true` | 发送回复前显示 composing 状态 |
-| `send_read_receipts` | bool | `true` | 发送已读蓝勾 |
-| `mark_online` | bool | `false` | 标记在线 available 状态 |
-
-### 预回应
-
-| 键 | 类型 | 默认值 | 说明 |
-|---|---|---|---|
-| `ack_reaction_emoji` | str | `"👀"` | 单聊预回应表情 |
-| `ack_reaction_direct` | bool | `true` | 私聊触发预回应 |
-| `ack_reaction_group` | str | `"mentions"` | 群组模式：`always` 全触发, `mentions` 仅 @/回复, `never` 不触发 |
-
-### 高级
-
-| 键 | 类型 | 默认值 | 说明 |
-|---|---|---|---|
-| `gateway_health_check_interval` | int | `60` | 健康检查间隔（秒）；`0` 关闭 |
-| `pre_ack_done_emoji` | string | `"✅"` | 回复完成表情 |
-
-### Gateway 媒体大小限制（硬编码）
-
-| 限制 | 值 |
-|---|---|
-| 通用媒体 | 50 MB |
-| 消息内媒体（含 caption） | 100 MB |
-| 文档 | 2048 MB |
-| 音频 | 16 MB |
+- 出站文字切片、图片/视频/音频/文档大小限制为内部常量，不接受插件或平台配置覆盖。
+- 指令前缀、指令启用状态和命令匹配由 AstrBot Core 的 `wake_prefix`、CommandFilter 和插件启用状态统一处理。
+- Gateway 健康检查间隔保持内部安全默认值。
 
 ## 自定义消息组件
 
