@@ -4,11 +4,11 @@ repos:
     hooks:
       - id: python-compile
         name: Python syntax check
-        entry: python -m py_compile whatsapp_helpers.py whatsapp_event.py tests/test_whatsapp_markdown.py
+        entry: python -m compileall -q whatsapp_helpers.py _whatsapp_helpers_impl.py whatsapp_chunking.py whatsapp_event.py tests
         language: system
         pass_filenames: false
       - id: whatsapp-markdown-tests
         name: WhatsApp Markdown regression tests
-        entry: python -m unittest -v tests/test_whatsapp_markdown.py
+        entry: python -m unittest discover -v tests
         language: system
         pass_filenames: false
