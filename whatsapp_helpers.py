@@ -31,68 +31,157 @@ __all__ = [
 ]
 
 
+def _protect_backtick_code(value: str) -> tuple[str, list[str]]:
+    """以惰性 placeholder 保護 code span/fence。
+
+    反引號以「連續長度完全相同」配對，因此 `` `nested` ``、多行 fence，
+    以及 fence 內較短的反引號都不會被誤配。若尚未閉合，保守地保護至
+    字串結尾，這對流式回覆尤其重要。
+    """
+    protected: list[str] = []
+    output: list[str] = []
+    index = 0
+
+    while index < len(value):
+        if value[index] != "`":
+            output.append(value[index])
+            index += 1
+            continue
+
+        run_end = index + 1
+        while run_end < len(value) and value[run_end] == "`":
+            run_end += 1
+        delimiter = value[index:run_end]
+        delimiter_length = len(delimiter)
+
+        search_from = run_end
+        closing_end: int | None = None
+        while search_from < len(value):
+            candidate = value.find("`", search_from)
+            if candidate < 0:
+                break
+            candidate_end = candidate + 1
+            while candidate_end < len(value) and value[candidate_end] == "`":
+                candidate_end += 1
+            if candidate_end - candidate == delimiter_length:
+                closing_end = candidate_end
+                break
+            search_from = candidate_end
+
+        if closing_end is None:
+            segment = value[index:]
+            index = len(value)
+        else:
+            segment = value[index:closing_end]
+            index = closing_end
+
+        placeholder = f"\x00WA_CODE_{len(protected)}\x00"
+        protected.append(segment)
+        output.append(placeholder)
+
+    return "".join(output), protected
+
+
+def _restore_backtick_code(value: str, protected: list[str]) -> str:
+    for index, segment in enumerate(protected):
+        value = value.replace(f"\x00WA_CODE_{index}\x00", segment)
+    return value
+
+
 def format_whatsapp_markdown(text: str, *, streaming: bool = False) -> str:
     """將標準 Markdown 轉為 WhatsApp 原生文字格式。
 
     WhatsApp 原生支援 ``*粗體*``、``_斜體_``、``~刪除線~``、
-    行內反引號與三反引號程式碼。流式模式會先把尚未閉合的雙重
-    Markdown 標記折疊成單一 WhatsApp 標記，避免分片後殘留 ``**``。
+    行內反引號與多反引號程式碼。轉換會保守避開程式碼及識別字；任何
+    未配對的 ``**``、``__``、``~~`` 在中途與最終輸出都會降級，避免
+    不支援的雙重標記流入 WhatsApp。``streaming`` 參數保留作 API 相容。
     """
     value = str(text or "")
     if not value:
         return ""
 
-    # 程式碼內容不應參與強調標記轉換；完整 code span/fence 先暫存。
-    protected: list[str] = []
+    value, protected = _protect_backtick_code(value)
 
-    def protect_code(match: re.Match[str]) -> str:
-        protected.append(match.group(0))
-        return f"\x00WA_CODE_{len(protected) - 1}\x00"
+    # Markdown 水平線在 WhatsApp 沒有語義，轉成穩定、可讀的分隔線。
+    value = re.sub(
+        r"(?m)^[ \t]*(?:\*{3,}|_{3,}|-{3,})[ \t]*$",
+        "──────────",
+        value,
+    )
 
-    value = re.sub(r"```[\s\S]*?```|(?<!`)`[^`\n]+`(?!`)", protect_code, value)
-
-    # 標準 Markdown 單星號是斜體；先處理，避免稍後產生的 WhatsApp
-    # 粗體 ``*...*`` 被再次當成斜體。行首 ``* `` 清單不會匹配。
+    # 標準 Markdown 單星號斜體。先處理，避免稍後產生的 WhatsApp
+    # ``*粗體*`` 被二次轉換。行首 ``* `` 清單不會匹配。
     value = re.sub(
         r"(?<!\*)\*(?![\s*])([^*\n]*?\S)\*(?!\*)",
         r"_\1_",
         value,
     )
-    # Markdown 的 ** / __ 都代表粗體，WhatsApp 使用單星號。
+
+    # 複合粗斜體，再處理普通粗體與刪除線。
+    value = re.sub(r"\*\*\*(?=\S)([\s\S]*?\S)\*\*\*", r"*_\1_*", value)
+    value = re.sub(r"___(?=\S)([\s\S]*?\S)___", r"*_\1_*", value)
     value = re.sub(r"\*\*(?=\S)([\s\S]*?\S)\*\*", r"*\1*", value)
     value = re.sub(r"__(?=\S)([\s\S]*?\S)__", r"*\1*", value)
     value = re.sub(r"~~(?=\S)([\s\S]*?\S)~~", r"~\1~", value)
 
-    if streaming:
-        # LLM 可能把開頭和結尾標記拆到不同 chunk。完整緩衝區尚未
-        # 收到閉合標記時，先顯示 WhatsApp 的單標記，而不是裸 ``**``。
-        value = re.sub(r"(?<!\*)\*\*(?!\*)", "*", value)
-        value = re.sub(r"(?<!_)__(?!_)", "*", value)
-        value = re.sub(r"(?<!~)~~(?!~)", "~", value)
+    # 最終訊息若仍有未閉合標記，同樣降級；但保留 foo__bar、foo~~bar。
+    value = re.sub(r"(?<!\*)\*{2,}(?!\*)", "*", value)
+    value = re.sub(
+        r"(?<![\w_])_{2,}(?!_)|(?<!_)_{2,}(?![\w_])",
+        "*",
+        value,
+    )
+    value = re.sub(
+        r"(?<![\w~])~{2,}(?!~)|(?<!~)~{2,}(?![\w~])",
+        "~",
+        value,
+    )
 
-    for index, code in enumerate(protected):
-        value = value.replace(f"\x00WA_CODE_{index}\x00", code)
-    return value
+    return _restore_backtick_code(value, protected)
 
 
 def format_markdown_from_whatsapp(text: str) -> str:
-    """入站 WhatsApp 格式 → Markdown。"""
-    text = re.sub(r"```([^`\n]+)```", r"`\1`", text)
-    text = re.sub(r"(?<!\*)\*([^*\n][\s\S]*?[^*\n]?)\*(?!\*)", r"**\1**", text)
-    text = re.sub(r"(?<!_)_([^_\n][\s\S]*?[^_\n]?)_(?!_)", r"*\1*", text)
-    text = re.sub(r"(?<!~)~([^~\n][\s\S]*?[^~\n]?)~(?!~)", r"~~\1~~", text)
-    return text
+    """將 WhatsApp 格式轉為 Markdown，且不改寫程式碼內容。"""
+    value = str(text or "")
+    if not value:
+        return ""
+
+    value, protected = _protect_backtick_code(value)
+    value = re.sub(
+        r"(?<!\*)\*(?![\s*])([^*\n]*?\S)\*(?!\*)",
+        r"**\1**",
+        value,
+    )
+    value = re.sub(
+        r"(?<!_)_(?![\s_])([^_\n]*?\S)_(?!_)",
+        r"*\1*",
+        value,
+    )
+    value = re.sub(
+        r"(?<!~)~(?![\s~])([^~\n]*?\S)~(?!~)",
+        r"~~\1~~",
+        value,
+    )
+    return _restore_backtick_code(value, protected)
 
 
 def chunk_text(text: str, limit: int) -> Iterator[str]:
-    """將文字按 limit 大小切片，返回 lazy generator。"""
-    if len(text) <= limit:
-        yield text
-    else:
-        remaining = text
-        while remaining:
-            yield remaining[:limit]
-            remaining = remaining[limit:]
+    """按 limit 切片，優先在換行或空白邊界分割。"""
+    limit = max(1, int(limit))
+    remaining = str(text or "")
+    while len(remaining) > limit:
+        window = remaining[: limit + 1]
+        cut = window.rfind("\n", 0, limit + 1)
+        if cut <= 0:
+            cut = window.rfind(" ", 0, limit + 1)
+        if cut <= 0 or cut < limit // 2:
+            cut = limit
+        else:
+            cut += 1
+        yield remaining[:cut]
+        remaining = remaining[cut:]
+    if remaining:
+        yield remaining
 
 
 def is_single_url(text: str) -> bool:
