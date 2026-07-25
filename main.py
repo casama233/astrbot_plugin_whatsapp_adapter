@@ -15,6 +15,11 @@ except ImportError:
     _get_astrbot_data_path = None
 
 from .whatsapp_adapter import BASE_GATEWAY_CONFIG
+from .whatsapp_config_policy import (
+    adopt_legacy_gateway_defaults,
+    set_runtime_plugin_defaults,
+    set_runtime_wake_prefixes,
+)
 from .whatsapp_client import GatewayProcess, WhatsAppGatewayClient
 
 
@@ -26,12 +31,13 @@ PLUGIN_DIR = Path(__file__).resolve().parent
     PLUGIN_NAME,
     "OpenCode",
     "WhatsApp Web platform adapter backed by a local Gateway process.",
-    "0.2.8",
+    "0.2.20",
 )
 class WhatsAppAdapterPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None):
         super().__init__(context)
         self.config = {**BASE_GATEWAY_CONFIG, **(dict(config or {}))}
+        self._sync_runtime_policy()
         self.page_client = WhatsAppGatewayClient(self._base_url)
         self.page_gateway_process: GatewayProcess | None = None
         logger.info(
@@ -212,6 +218,34 @@ class WhatsAppAdapterPlugin(Star):
         except Exception as exc:
             logger.warning("迁移管理页数据失败: %s → %s: %s", old_root, new_root, exc)
 
+    def _root_config(self) -> dict[str, Any]:
+        try:
+            config = self.context.get_config()
+            return dict(config or {})
+        except Exception:
+            return {}
+
+    def _platform_configs(self) -> list[dict[str, Any]]:
+        manager = getattr(self.context, "platform_manager", None)
+        configs = getattr(manager, "platforms_config", None)
+        return list(configs or [])
+
+    def _adopt_legacy_platform_gateway_defaults(self) -> None:
+        effective, migrated = adopt_legacy_gateway_defaults(
+            self.config,
+            self._platform_configs(),
+        )
+        self.config = effective
+        if migrated:
+            logger.warning(
+                "已从旧 WhatsApp 平台实例迁移 Gateway 配置到本次运行的插件全局配置: keys=%s。请在插件配置页确认后保存。",
+                sorted(migrated),
+            )
+
+    def _sync_runtime_policy(self) -> None:
+        set_runtime_plugin_defaults(self.config)
+        set_runtime_wake_prefixes(self._root_config().get("wake_prefix", ["/"]))
+
     def _safe_status(self, status: dict[str, Any]) -> dict[str, Any]:
         safe = dict(status)
         if "config" in safe and isinstance(safe["config"], dict):
@@ -232,13 +266,17 @@ class WhatsAppAdapterPlugin(Star):
     async def reload_config(self, new_config: dict | None = None) -> None:
         if new_config:
             self.config = {**BASE_GATEWAY_CONFIG, **dict(new_config)}
+        self._adopt_legacy_platform_gateway_defaults()
+        self._sync_runtime_policy()
         logger.info("WhatsApp 插件配置已重载: gateway=%s", self._base_url)
         self.page_client.update_base_url(self._base_url)
+        await self._reload_active_adapters()
+
+    async def _reload_active_adapters(self) -> None:
         from .whatsapp_adapter import get_active_whatsapp_adapters
 
         for adapter in get_active_whatsapp_adapters():
             try:
-                adapter._refresh_registered_commands()
                 await adapter.reload(adapter._platform_config)
             except Exception as exc:
                 logger.warning(
@@ -249,7 +287,11 @@ class WhatsAppAdapterPlugin(Star):
 
     async def initialize(self) -> None:
         await super().initialize()
+        self._adopt_legacy_platform_gateway_defaults()
+        self._sync_runtime_policy()
+        self.page_client.update_base_url(self._base_url)
         await self._restore_platform_adapters()
+        await self._reload_active_adapters()
 
     async def _restore_platform_adapters(self) -> None:
         """After plugin reload, hot-swap adapter classes to use freshly imported code
@@ -262,6 +304,7 @@ class WhatsAppAdapterPlugin(Star):
                 return
             from .whatsapp_adapter import _ACTIVE_ADAPTERS, WhatsAppPlatformAdapter as NewAdapter
             from .whatsapp_adapter import sanitize_whatsapp_platform_config
+            from .whatsapp_config_policy import extract_legacy_command_prefix
             platform_configs = getattr(pm, 'platforms_config', [])
             for idx, config in enumerate(platform_configs):
                 if config.get('type') != 'whatsapp' or not config.get('enable', False):
@@ -288,14 +331,19 @@ class WhatsAppAdapterPlugin(Star):
                     logger.warning("终止旧 WhatsApp 适配器失败: id=%s error=%s", pid, exc)
                 inst.__class__ = NewAdapter
                 _ACTIVE_ADAPTERS.add(inst)
+                inst._platform_config = sanitized_config
                 inst._platform_settings = self.context.get_config().get("platform_settings", {})
+                inst.config = inst._merged_config(sanitized_config)
+                inst.client.update_base_url(inst._base_url)
+                inst._legacy_command_prefix = extract_legacy_command_prefix(sanitized_config)
+                inst._registered_commands = []
+                inst._refresh_registered_commands()
                 inst._ensure_send_buffer_state()
                 inst.clear_errors()
                 inst._stopped.clear()
                 inst._reconnect_event.clear()
                 inst._force_gateway_restart = True
                 inst._restarting = False
-                inst._refresh_registered_commands()
                 inst._run_task = asyncio.create_task(inst.run())
                 logger.info("WhatsApp 适配器运行循环已重启: id=%s", pid)
         except Exception as e:
