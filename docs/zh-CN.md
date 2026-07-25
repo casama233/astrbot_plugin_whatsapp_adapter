@@ -55,7 +55,7 @@ pip install -r requirements.txt
 | `default_media_album_debounce_seconds` | `2.5` | 相簿去抖秒数；`0` 关闭 |
 | `default_streaming_edit_throttle` | `1.0` | 流式编辑最小间隔 |
 
-Gateway 的 `gateway_host`、`gateway_port`、`auto_start_gateway`、`node_executable`、`auth_dir`、`log_level` 也可在插件页作为全局默认，并由平台实例覆盖。
+Gateway 的 `gateway_host`、`gateway_port`、`auto_start_gateway`、`node_executable`、`auth_dir`、`log_level` 只在插件页设置，避免登录页与平台实例连接到不同 Gateway。
 
 ### 平台实例配置
 

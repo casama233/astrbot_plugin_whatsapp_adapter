@@ -95,7 +95,7 @@ pip install -r requirements.txt
 
 ### Gateway 连接
 
-这些字段可在插件页提供全局默认，也可由某个平台实例覆盖：
+这些字段只在插件配置页设置，登录管理页与所有 WhatsApp 平台实例共用同一组 Gateway 连接：
 
 | 键 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
@@ -141,7 +141,7 @@ pip install -r requirements.txt
 ### 固定限制与 AstrBot 通用行为
 
 - 出站文字切片、图片/视频/音频/文档大小限制为内部常量，不接受插件或平台配置覆盖。
-- 指令前缀、指令启用状态和命令匹配由 AstrBot Core 的 `wake_prefix`、CommandFilter 和插件启用状态统一处理。
+- 指令前缀、指令启用状态和命令匹配由 AstrBot Core 的 `wake_prefix`、CommandFilter 和插件启用状态统一处理。旧版非 `/` 的 WhatsApp 专用前缀会兼容一个版本并输出迁移提示。
 - Gateway 健康检查间隔保持内部安全默认值。
 
 ## 自定义消息组件
