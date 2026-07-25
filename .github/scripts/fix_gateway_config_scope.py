@@ -1,23 +1,36 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 adapter_path = ROOT / "whatsapp_adapter.py"
 source = adapter_path.read_text("utf-8")
-source = source.replace(
-    "RUNTIME_DEFAULT_CONFIG: dict[str, Any] = {\n    \"dm_policy\": \"allowlist\",\n",
-    "RUNTIME_DEFAULT_CONFIG: dict[str, Any] = {\n    **BASE_GATEWAY_CONFIG,\n    \"dm_policy\": \"allowlist\",\n",
-    1,
+source, runtime_count = re.subn(
+    r'(?m)^RUNTIME_DEFAULT_CONFIG: dict\[str, Any\] = \{\n(?:    \*\*BASE_GATEWAY_CONFIG,\n)?',
+    'RUNTIME_DEFAULT_CONFIG: dict[str, Any] = {\n    **BASE_GATEWAY_CONFIG,\n',
+    source,
+    count=1,
 )
-source = source.replace(
-    "DEFAULT_CONFIG: dict[str, Any] = {\n    **BASE_GATEWAY_CONFIG,\n    \"dm_policy\": \"allowlist\",\n",
-    "DEFAULT_CONFIG: dict[str, Any] = {\n    \"dm_policy\": \"allowlist\",\n",
-    1,
+source, platform_count = re.subn(
+    r'(?m)^DEFAULT_CONFIG: dict\[str, Any\] = \{\n(?:    \*\*BASE_GATEWAY_CONFIG,\n)?',
+    'DEFAULT_CONFIG: dict[str, Any] = {\n',
+    source,
+    count=1,
 )
-if "RUNTIME_DEFAULT_CONFIG: dict[str, Any] = {\n    **BASE_GATEWAY_CONFIG," not in source:
+if runtime_count != 1 or platform_count != 1:
+    raise RuntimeError(
+        f"Gateway config blocks not found: runtime={runtime_count} platform={platform_count}"
+    )
+if not re.search(
+    r'(?m)^RUNTIME_DEFAULT_CONFIG: dict\[str, Any\] = \{\n    \*\*BASE_GATEWAY_CONFIG,',
+    source,
+):
     raise RuntimeError("runtime Gateway defaults were not restored")
-if "DEFAULT_CONFIG: dict[str, Any] = {\n    **BASE_GATEWAY_CONFIG," in source:
+if re.search(
+    r'(?m)^DEFAULT_CONFIG: dict\[str, Any\] = \{\n    \*\*BASE_GATEWAY_CONFIG,',
+    source,
+):
     raise RuntimeError("platform template still exposes Gateway defaults")
 adapter_path.write_text(source, "utf-8")
 
