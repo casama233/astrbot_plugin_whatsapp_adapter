@@ -195,7 +195,16 @@ class WhatsAppMessageEvent(AstrMessageEvent):
                         text_buffer = text_buffer[max_edit_length:]
                         continue
                     return
-                if chunk == last_sent and not has_remainder:
+                if chunk == last_sent:
+                    if has_remainder:
+                        # 這個前綴已經送出，直接前進到未送出的剩餘內容，
+                        # 避免重複 edit 同一段而增加流量與風控風險。
+                        text_buffer = text_buffer[max_edit_length:]
+                        message_id = None
+                        last_sent = ""
+                        fallback_sent_len = 0
+                        edit_failed = False
+                        continue
                     return
 
                 if edit_failed and not force:
