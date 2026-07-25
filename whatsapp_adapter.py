@@ -170,6 +170,7 @@ BASE_GATEWAY_CONFIG: dict[str, Any] = {
 }
 
 RUNTIME_DEFAULT_CONFIG: dict[str, Any] = {
+    **BASE_GATEWAY_CONFIG,
     "dm_policy": "allowlist",
     "allow_from": [],
     "group_policy": "disabled",
@@ -199,7 +200,6 @@ RUNTIME_DEFAULT_CONFIG: dict[str, Any] = {
 }
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    **BASE_GATEWAY_CONFIG,
     "dm_policy": "allowlist",
     "allow_from": [],
     "group_policy": "disabled",
