@@ -17,14 +17,21 @@ from whatsapp_config_policy import (
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def _top_level_dict(source: str, name: str) -> dict:
+def _top_level_dict_keys(source: str, name: str) -> set[str]:
     tree = ast.parse(source)
     for node in tree.body:
         if not isinstance(node, (ast.Assign, ast.AnnAssign)):
             continue
         target = node.targets[0] if isinstance(node, ast.Assign) else node.target
-        if isinstance(target, ast.Name) and target.id == name:
-            return ast.literal_eval(node.value)
+        if not isinstance(target, ast.Name) or target.id != name:
+            continue
+        if not isinstance(node.value, ast.Dict):
+            raise AssertionError(f"{name} is not a dict literal")
+        return {
+            key.value
+            for key in node.value.keys
+            if isinstance(key, ast.Constant) and isinstance(key.value, str)
+        }
     raise AssertionError(f"{name} not found")
 
 
@@ -65,7 +72,7 @@ class WhatsAppConfigPolicyTests(unittest.TestCase):
             "unknown": "ignored",
         }
         extracted = extract_plugin_defaults(config)
-        self.assertEqual(extracted["typing_indicator"], False)
+        self.assertIs(extracted["typing_indicator"], False)
         self.assertEqual(extracted["streaming_edit_throttle"], 0.5)
         self.assertEqual(extracted["gateway_port"], 18888)
         for key in FIXED_RUNTIME_KEYS:
@@ -74,7 +81,7 @@ class WhatsAppConfigPolicyTests(unittest.TestCase):
 
     def test_platform_ui_contains_only_instance_specific_message_options(self) -> None:
         source = (ROOT / "whatsapp_adapter.py").read_text("utf-8")
-        defaults = _top_level_dict(source, "DEFAULT_CONFIG")
+        defaults = _top_level_dict_keys(source, "DEFAULT_CONFIG")
         self.assertIn("media_caption_mode", defaults)
         self.assertIn("ignore_self_messages", defaults)
         self.assertIn("apply_ephemeral", defaults)
@@ -107,12 +114,11 @@ class WhatsAppConfigPolicyTests(unittest.TestCase):
         self.assertIn("extract_plugin_defaults(loaded_plugin_config)", source)
         self.assertIn("if key in PERSISTED_PLATFORM_KEYS", source)
         self.assertIn(
-            "merge_runtime_config(
-            RUNTIME_DEFAULT_CONFIG,
-"
-            "            plugin_config,
-            platform_config,
-        )",
+            "merge_runtime_config(\n"
+            "            RUNTIME_DEFAULT_CONFIG,\n"
+            "            plugin_config,\n"
+            "            platform_config,\n"
+            "        )",
             source,
         )
 
