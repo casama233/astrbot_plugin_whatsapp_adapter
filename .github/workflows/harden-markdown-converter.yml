@@ -1,0 +1,36 @@
+name: Harden WhatsApp Markdown converter
+
+on:
+  push:
+    branches:
+      - agent/fix-streaming-markdown-conversion
+    paths:
+      - .github/workflows/harden-markdown-converter.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/fix-streaming-markdown-conversion
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Apply robustness fixes
+        run: python .github/scripts/harden_markdown_converter.py
+      - name: Compile
+        run: python -m py_compile whatsapp_helpers.py whatsapp_event.py tests/test_whatsapp_markdown.py
+      - name: Run regression tests
+        run: python -m unittest -v tests/test_whatsapp_markdown.py
+      - name: Commit clean result
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix: harden WhatsApp markdown conversion"
+          git push origin HEAD:agent/fix-streaming-markdown-conversion
