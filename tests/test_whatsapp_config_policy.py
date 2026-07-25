@@ -6,12 +6,26 @@ import unittest
 from pathlib import Path
 
 from whatsapp_config_policy import (
+    FIXED_RUNTIME_KEYS,
     MEDIA_CAPTION_MODES,
+    PLUGIN_DEFAULT_ALIASES,
+    extract_plugin_defaults,
     merge_runtime_config,
     normalize_media_caption_mode,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _top_level_dict(source: str, name: str) -> dict:
+    tree = ast.parse(source)
+    for node in tree.body:
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        target = node.targets[0] if isinstance(node, ast.Assign) else node.target
+        if isinstance(target, ast.Name) and target.id == name:
+            return ast.literal_eval(node.value)
+    raise AssertionError(f"{name} not found")
 
 
 class WhatsAppConfigPolicyTests(unittest.TestCase):
@@ -26,82 +40,79 @@ class WhatsAppConfigPolicyTests(unittest.TestCase):
 
     def test_plugin_config_is_only_a_default(self) -> None:
         merged = merge_runtime_config(
-            {"media_caption_mode": "separate"},
-            {"media_caption_mode": "caption"},
+            {"typing_indicator": True},
+            {"typing_indicator": False},
             {},
         )
-        self.assertEqual(merged["media_caption_mode"], "caption")
+        self.assertFalse(merged["typing_indicator"])
 
     def test_media_caption_mode_validation(self) -> None:
         self.assertEqual(MEDIA_CAPTION_MODES, ("separate", "caption"))
         self.assertEqual(normalize_media_caption_mode(" CAPTION "), "caption")
-        self.assertEqual(normalize_media_caption_mode("separate"), "separate")
         for invalid in (None, "", "before", "after", 123):
             with self.subTest(invalid=invalid):
                 self.assertEqual(normalize_media_caption_mode(invalid), "separate")
 
-    def test_instance_message_settings_are_visible_on_platform_ui(self) -> None:
-        source = (ROOT / "whatsapp_adapter.py").read_text("utf-8")
-        tree = ast.parse(source)
-        default_keys: set[str] = set()
-        metadata: dict = {}
-        for node in tree.body:
-            if not isinstance(node, (ast.Assign, ast.AnnAssign)):
-                continue
-            target = node.targets[0] if isinstance(node, ast.Assign) else node.target
-            if not isinstance(target, ast.Name):
-                continue
-            if target.id == "DEFAULT_CONFIG" and isinstance(node.value, ast.Dict):
-                default_keys = {
-                    key.value
-                    for key in node.value.keys
-                    if isinstance(key, ast.Constant) and isinstance(key.value, str)
-                }
-            if target.id == "CONFIG_METADATA" and isinstance(node.value, ast.Dict):
-                metadata = ast.literal_eval(node.value)
+    def test_plugin_default_aliases_and_fixed_keys(self) -> None:
+        config = {
+            "default_typing_indicator": False,
+            "default_streaming_edit_throttle": 0.5,
+            "gateway_port": 18888,
+            "text_chunk_limit": 100,
+            "media_max_mb": 1,
+            "command_prefix": "!",
+            "register_commands": False,
+            "unknown": "ignored",
+        }
+        extracted = extract_plugin_defaults(config)
+        self.assertEqual(extracted["typing_indicator"], False)
+        self.assertEqual(extracted["streaming_edit_throttle"], 0.5)
+        self.assertEqual(extracted["gateway_port"], 18888)
+        for key in FIXED_RUNTIME_KEYS:
+            self.assertNotIn(key, extracted)
+        self.assertNotIn("unknown", extracted)
 
-        expected = {
+    def test_platform_ui_contains_only_instance_specific_message_options(self) -> None:
+        source = (ROOT / "whatsapp_adapter.py").read_text("utf-8")
+        defaults = _top_level_dict(source, "DEFAULT_CONFIG")
+        self.assertIn("media_caption_mode", defaults)
+        self.assertIn("ignore_self_messages", defaults)
+        self.assertIn("apply_ephemeral", defaults)
+
+        hidden = {
             "command_prefix",
             "register_commands",
-            "media_caption_mode",
             "text_chunk_limit",
+            "media_max_mb",
             "link_preview_single_url",
             "typing_indicator",
             "send_read_receipts",
             "mark_online",
-            "ignore_self_messages",
             "parse_inbound_formatting",
             "media_album_debounce_seconds",
-            "media_max_mb",
-            "apply_ephemeral",
             "streaming_edit_throttle",
         }
-        self.assertTrue(expected <= default_keys)
-        self.assertEqual(
-            metadata["media_caption_mode"]["options"],
-            ["separate", "caption"],
-        )
+        self.assertTrue(hidden.isdisjoint(defaults))
 
-    def test_instance_settings_are_not_moved_to_plugin_schema(self) -> None:
+    def test_plugin_schema_exposes_only_prefixed_global_defaults(self) -> None:
         schema = json.loads((ROOT / "_conf_schema.json").read_text("utf-8"))
-        for key in (
-            "media_caption_mode",
-            "text_chunk_limit",
-            "typing_indicator",
-            "streaming_edit_throttle",
-        ):
-            self.assertNotIn(key, schema)
+        self.assertTrue(set(PLUGIN_DEFAULT_ALIASES) <= set(schema))
+        for runtime_key in PLUGIN_DEFAULT_ALIASES.values():
+            self.assertNotIn(runtime_key, schema)
+        for fixed_key in FIXED_RUNTIME_KEYS:
+            self.assertNotIn(fixed_key, schema)
 
-    def test_adapter_uses_specificity_order_helper(self) -> None:
+    def test_adapter_filters_stale_platform_keys(self) -> None:
         source = (ROOT / "whatsapp_adapter.py").read_text("utf-8")
+        self.assertIn("extract_plugin_defaults(loaded_plugin_config)", source)
+        self.assertIn("if key in PERSISTED_PLATFORM_KEYS", source)
         self.assertIn(
-            "merge_runtime_config(\n            RUNTIME_DEFAULT_CONFIG,\n"
-            "            plugin_config,\n            platform_config,\n        )",
-            source,
-        )
-        self.assertIn(
-            'if key == "media_caption_mode":\n'
-            "            return normalize_media_caption_mode(value)",
+            "merge_runtime_config(
+            RUNTIME_DEFAULT_CONFIG,
+"
+            "            plugin_config,
+            platform_config,
+        )",
             source,
         )
 
