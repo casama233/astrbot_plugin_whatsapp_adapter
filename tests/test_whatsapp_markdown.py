@@ -116,6 +116,7 @@ WhatsAppMessageEvent = importlib.import_module(f"{PACKAGE_NAME}.whatsapp_event")
 helpers = importlib.import_module(f"{PACKAGE_NAME}.whatsapp_helpers")
 format_whatsapp_markdown = helpers.format_whatsapp_markdown
 format_markdown_from_whatsapp = helpers.format_markdown_from_whatsapp
+chunk_text = helpers.chunk_text
 
 
 class MarkdownFormattingTests(unittest.TestCase):
@@ -181,6 +182,13 @@ class MarkdownFormattingTests(unittest.TestCase):
             with self.subTest(source=source):
                 self.assertEqual(format_whatsapp_markdown(source), expected)
 
+    def test_chunk_text_preserves_content_and_limits(self) -> None:
+        source = "alpha beta　gamma delta epsilon"
+        chunks = list(chunk_text(source, 12))
+        self.assertEqual("".join(chunks), source)
+        self.assertTrue(all(0 < len(chunk) <= 12 for chunk in chunks))
+        self.assertTrue(any(chunk.endswith((" ", "　", "\n")) for chunk in chunks[:-1]))
+
     def test_inbound_code_is_not_rewritten(self) -> None:
         source = "```python\n*bold* _italic_ ~strike~\n```"
         self.assertEqual(format_markdown_from_whatsapp(source), source)
@@ -219,13 +227,16 @@ class StreamingMessageTests(unittest.IsolatedAsyncioTestCase):
         def __init__(self) -> None:
             self.sent: list[str] = []
             self.edited: list[str] = []
+            self.operations: list[tuple[str, str]] = []
 
         async def send_text(self, _target, text, **_kwargs):
             self.sent.append(text)
+            self.operations.append(("send", text))
             return {"id": f"message-{len(self.sent)}"}
 
         async def edit_text(self, _target, _message_id, text, **_kwargs):
             self.edited.append(text)
+            self.operations.append(("edit", text))
             return {"id": _message_id}
 
     async def test_streaming_reformats_the_complete_raw_buffer(self) -> None:
@@ -276,8 +287,8 @@ class StreamingMessageTests(unittest.IsolatedAsyncioTestCase):
         )
         await event._send_streaming_edit(chunks())
 
-        operations = client.sent + client.edited
-        for previous, current in zip(operations, operations[1:]):
+        texts = [text for _operation, text in client.operations]
+        for previous, current in zip(texts, texts[1:]):
             self.assertNotEqual(previous, current)
 
 
