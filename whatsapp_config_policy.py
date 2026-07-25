@@ -141,9 +141,13 @@ def adopt_legacy_gateway_defaults(
     candidates.sort(key=lambda cfg: not bool(cfg.get("enable", False)))
     for config in candidates[:1]:
         for key, historical_default in LEGACY_GATEWAY_DEFAULTS.items():
-            if key not in config:
+            hidden_key = f"_legacy_gateway_{key}"
+            if hidden_key in config:
+                value = config[hidden_key]
+            elif key in config:
+                value = config[key]
+            else:
                 continue
-            value = config[key]
             if key == "log_level":
                 value = normalize_config_enum(key, value)
             if value == historical_default:
