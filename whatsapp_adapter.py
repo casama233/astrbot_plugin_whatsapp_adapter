@@ -166,9 +166,38 @@ RUNTIME_DEFAULT_CONFIG: dict[str, Any] = {
     "group_policy": "disabled",
     "groups": [],
     "group_allow_from": [],
-    # Only options that can reasonably differ between WhatsApp accounts live
-    # on the platform instance. Generic behaviour is configured globally in
-    # the plugin page, while protocol limits stay internal constants.
+    "media_caption_mode": "separate",
+    # Protocol/Gateway limits and AstrBot-owned command behaviour stay internal.
+    "text_chunk_limit": 4000,
+    "media_max_mb": 50,
+    "command_prefix": "/",
+    "register_commands": True,
+    # Generic behaviour can be supplied through plugin-level default_* fields.
+    "link_preview_single_url": True,
+    "typing_indicator": True,
+    "send_read_receipts": True,
+    "mark_online": False,
+    "gateway_health_check_interval": 60,
+    "parse_inbound_formatting": True,
+    "media_album_debounce_seconds": 2.5,
+    "streaming_edit_throttle": 1.0,
+    # These options may reasonably differ between WhatsApp account instances.
+    "ignore_self_messages": False,
+    "pre_ack_private": True,
+    "pre_ack_public": "mentions",
+    "pre_ack_emojis": "👀",
+    "pre_ack_emoji": True,
+    "pre_ack_done_emoji": "✅",
+    "apply_ephemeral": False,
+}
+
+DEFAULT_CONFIG: dict[str, Any] = {
+    **BASE_GATEWAY_CONFIG,
+    "dm_policy": "allowlist",
+    "allow_from": [],
+    "group_policy": "disabled",
+    "groups": [],
+    "group_allow_from": [],
     "media_caption_mode": "separate",
     "ignore_self_messages": False,
     "pre_ack_emoji": True,
