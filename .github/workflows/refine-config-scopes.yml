@@ -4,8 +4,6 @@ on:
   push:
     branches:
       - agent/restore-instance-messaging-settings
-    paths:
-      - .github/workflows/refine-config-scopes.yml
 
 permissions:
   contents: write
