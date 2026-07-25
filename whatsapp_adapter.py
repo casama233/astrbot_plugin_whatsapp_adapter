@@ -1845,6 +1845,10 @@ class WhatsAppPlatformAdapter(Platform):
         log("WhatsApp 适配器已连接: %s", self._base_url)
         self._mark_running()
         await self._restart_health_monitor()
+        # Other plugins may finish registering after this adapter is created.
+        # Refresh here so legacy-prefix compatibility and command pre-ack see
+        # the complete active CommandFilter registry after every reconnect.
+        self._refresh_registered_commands()
 
     def _create_gateway_process(self) -> GatewayProcess:
         return GatewayProcess(
