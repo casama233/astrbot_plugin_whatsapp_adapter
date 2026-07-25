@@ -44,6 +44,7 @@ from .whatsapp_event import WhatsAppMessageEvent
 from .whatsapp_config_policy import (
     DM_POLICIES,
     GROUP_POLICIES,
+    LEGACY_GATEWAY_DEFAULTS,
     LOG_LEVELS,
     MEDIA_CAPTION_MODES,
     PRE_ACK_PUBLIC_MODES,
@@ -2056,6 +2057,15 @@ def sanitize_whatsapp_platform_config(config: dict[str, Any]) -> dict[str, Any]:
         if key == "pre_ack_public":
             value = _coerce_pre_ack_public(value)
         sanitized[key] = value
+
+    # Preserve explicit legacy Gateway choices long enough for the plugin page
+    # to adopt them, even if an adapter is constructed before plugin.initialize.
+    for key, default in LEGACY_GATEWAY_DEFAULTS.items():
+        hidden_key = f"_legacy_gateway_{key}"
+        if hidden_key in config:
+            sanitized[hidden_key] = config[hidden_key]
+        elif key in config and config[key] != default:
+            sanitized[hidden_key] = config[key]
 
     # Preserve only explicit old per-instance behaviour choices. Historical
     # template defaults are ignored so plugin-wide default_* settings can work.

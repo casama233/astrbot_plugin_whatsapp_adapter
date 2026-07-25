@@ -127,6 +127,13 @@ class WhatsAppConfigPolicyTests(unittest.TestCase):
         self.assertEqual(effective["auth_dir"], "/tmp/legacy-auth")
         self.assertEqual(set(migrated), {"gateway_port", "auth_dir"})
 
+        hidden_effective, hidden_migrated = adopt_legacy_gateway_defaults(plugin, [{
+            "type": "whatsapp",
+            "_legacy_gateway_gateway_port": 17777,
+        }])
+        self.assertEqual(hidden_effective["gateway_port"], 17777)
+        self.assertEqual(hidden_migrated["gateway_port"], 17777)
+
         explicit_plugin = dict(plugin, gateway_port=19999)
         effective, migrated = adopt_legacy_gateway_defaults(explicit_plugin, [{
             "type": "whatsapp", "gateway_port": 18888,
@@ -193,8 +200,10 @@ class WhatsAppConfigPolicyTests(unittest.TestCase):
         metadata = (ROOT / "metadata.yaml").read_text("utf-8")
         self.assertIn("get_runtime_plugin_defaults()", adapter)
         self.assertIn("extract_legacy_behavior_overrides(platform_config)", adapter)
+        self.assertIn("_legacy_gateway_", adapter)
         self.assertIn("_message_matches_known_command", adapter)
         self.assertIn("adopt_legacy_gateway_defaults", main)
+        self.assertIn("await self._reload_active_adapters()", main)
         self.assertIn("set_runtime_plugin_defaults", main)
         self.assertIn('"0.2.20"', main)
         self.assertIn("version: 0.2.20", metadata)

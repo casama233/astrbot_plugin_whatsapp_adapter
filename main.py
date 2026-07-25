@@ -270,6 +270,9 @@ class WhatsAppAdapterPlugin(Star):
         self._sync_runtime_policy()
         logger.info("WhatsApp 插件配置已重载: gateway=%s", self._base_url)
         self.page_client.update_base_url(self._base_url)
+        await self._reload_active_adapters()
+
+    async def _reload_active_adapters(self) -> None:
         from .whatsapp_adapter import get_active_whatsapp_adapters
 
         for adapter in get_active_whatsapp_adapters():
@@ -288,6 +291,7 @@ class WhatsAppAdapterPlugin(Star):
         self._sync_runtime_policy()
         self.page_client.update_base_url(self._base_url)
         await self._restore_platform_adapters()
+        await self._reload_active_adapters()
 
     async def _restore_platform_adapters(self) -> None:
         """After plugin reload, hot-swap adapter classes to use freshly imported code
