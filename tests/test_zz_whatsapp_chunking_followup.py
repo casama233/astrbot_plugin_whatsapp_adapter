@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import unittest
 
-# Importing the main suite installs the lightweight AstrBot stubs before the
-# plugin modules are loaded.
-from tests.test_whatsapp_markdown import helpers
+# unittest discovery adds the tests directory to sys.path. This name reuses the
+# already-loaded main suite instead of importing a second copy under tests.*.
+from test_whatsapp_markdown import helpers
 
 
 class WhatsAppChunkingFollowUpTests(unittest.TestCase):
