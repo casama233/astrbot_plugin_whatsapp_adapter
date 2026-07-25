@@ -2,6 +2,11 @@ minimum_pre_commit_version: '3.5.0'
 repos:
   - repo: local
     hooks:
+      - id: finalize-pr-safety
+        name: Finalize PR safety fixes
+        entry: python .github/scripts/finalize_pr_safety.py
+        language: system
+        pass_filenames: false
       - id: python-compile
         name: Python syntax check
         entry: python -m compileall -q main.py whatsapp_adapter.py whatsapp_config_policy.py whatsapp_helpers.py _whatsapp_helpers_impl.py whatsapp_chunking.py whatsapp_event.py tests
