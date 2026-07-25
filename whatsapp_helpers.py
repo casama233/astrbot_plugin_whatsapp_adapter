@@ -1,23 +1,27 @@
-"""WhatsApp 平台共享輔助函數，減少 whatsapp_adapter.py 與 whatsapp_event.py 之間的重複代碼。"""
+"""WhatsApp 平台共享輔助函數。"""
 
 from __future__ import annotations
 
 import re
-from typing import Any, Callable, Coroutine, Iterator
+import unicodedata
+from dataclasses import dataclass
+from typing import Any, Callable, Coroutine, Iterator, Literal, Sequence
 from urllib.parse import unquote
 
 from astrbot import logger
-from astrbot.api.platform import At
 from astrbot.api.message_components import File, Image, Plain, Record, Video
+from astrbot.api.platform import At
 
 from .whatsapp_client import WhatsAppGatewayClient
 from .whatsapp_components import WhatsAppButtons, WhatsAppEdit, WhatsAppList, WhatsAppPoll
 
 __all__ = [
+    "MentionRef",
     "chunk_text",
     "flush_pending_text",
     "format_markdown_from_whatsapp",
     "format_whatsapp_markdown",
+    "has_visible_whatsapp_content",
     "is_single_url",
     "media_kind_from_component",
     "mention_jid_for_token",
@@ -28,18 +32,95 @@ __all__ = [
     "process_message_chain",
     "send_whatsapp_component",
     "should_link_preview",
+    "split_whatsapp_text",
 ]
 
+SourceFormat = Literal["markdown", "whatsapp", "plain"]
 
-def _protect_backtick_code(value: str) -> tuple[str, list[str]]:
-    """以惰性 placeholder 保護 code span/fence。
 
-    反引號以「連續長度完全相同」配對，因此 `` `nested` ``、多行 fence，
-    以及 fence 內較短的反引號都不會被誤配。若尚未閉合，保守地保護至
-    字串結尾，這對流式回覆尤其重要。
-    """
+@dataclass(frozen=True, slots=True)
+class MentionRef:
+    """將 WhatsApp JID 與訊息中的可見 @文字綁定。"""
+
+    jid: str
+    text: str
+
+
+def _placeholder(index: int, kind: str = "PROTECTED") -> str:
+    return f"\x00WA{kind}{index}\x00"
+
+
+def _protect_escaped_markdown(value: str) -> tuple[str, list[str]]:
     protected: list[str] = []
+
+    def replace(match: re.Match[str]) -> str:
+        protected.append(match.group(1))
+        return _placeholder(len(protected) - 1, "ESC")
+
+    return re.sub(r"\\([\\`*_{}\[\]()#+\-.!|>~])", replace, value), protected
+
+
+def _restore_escaped_markdown(value: str, protected: Sequence[str]) -> str:
+    for index, text in enumerate(protected):
+        value = value.replace(_placeholder(index, "ESC"), text)
+    return value
+
+
+def _extract_fenced_code(value: str, *, streaming: bool) -> tuple[str, list[str]]:
+    """將 Markdown fenced code 轉成 WhatsApp 官方三反引號格式並保護。"""
+    lines = value.splitlines(keepends=True)
     output: list[str] = []
+    protected: list[str] = []
+    index = 0
+
+    while index < len(lines):
+        raw_line = lines[index]
+        line = raw_line.rstrip("\r\n")
+        opening = re.match(r"^[ \t]*(`{3,}|~{3,})(.*)$", line)
+        if not opening:
+            output.append(raw_line)
+            index += 1
+            continue
+
+        delimiter = opening.group(1)
+        fence_char = delimiter[0]
+        minimum = len(delimiter)
+        tail = opening.group(2)
+        same_line_close = re.search(
+            rf"{re.escape(fence_char)}{{{minimum},}}[ \t]*$",
+            tail,
+        )
+        if same_line_close:
+            code = tail[: same_line_close.start()]
+            protected.append(f"```{code}```")
+            output.append(_placeholder(len(protected) - 1, "FENCE"))
+            index += 1
+            continue
+
+        body: list[str] = []
+        index += 1
+        while index < len(lines):
+            closing = re.match(
+                rf"^[ \t]*{re.escape(fence_char)}{{{minimum},}}[ \t]*(?:\r?\n|$)",
+                lines[index],
+            )
+            if closing:
+                index += 1
+                break
+            body.append(lines[index])
+            index += 1
+
+        # opening line上的語言標籤不屬於 WhatsApp monospace 語法。
+        code = "".join(body)
+        protected.append(f"```{code}```")
+        output.append(_placeholder(len(protected) - 1, "FENCE"))
+
+    return "".join(output), protected
+
+def _protect_inline_code(value: str, *, streaming: bool) -> tuple[str, list[str]]:
+    """保護 Markdown code spans；反引號 run 以完全相同長度配對。"""
+    output: list[str] = []
+    protected: list[str] = []
     index = 0
 
     while index < len(value):
@@ -51,11 +132,11 @@ def _protect_backtick_code(value: str) -> tuple[str, list[str]]:
         run_end = index + 1
         while run_end < len(value) and value[run_end] == "`":
             run_end += 1
-        delimiter = value[index:run_end]
-        delimiter_length = len(delimiter)
-
+        delimiter_length = run_end - index
         search_from = run_end
-        closing_end: int | None = None
+        closing_start = -1
+        closing_end = -1
+
         while search_from < len(value):
             candidate = value.find("`", search_from)
             if candidate < 0:
@@ -64,136 +145,376 @@ def _protect_backtick_code(value: str) -> tuple[str, list[str]]:
             while candidate_end < len(value) and value[candidate_end] == "`":
                 candidate_end += 1
             if candidate_end - candidate == delimiter_length:
+                closing_start = candidate
                 closing_end = candidate_end
                 break
             search_from = candidate_end
 
-        if closing_end is None:
-            segment = value[index:]
+        if closing_start < 0:
+            # 不完整輸入亦保守地保護至結尾並補上閉合符，避免 code 內的
+            # Markdown 標記被誤轉；流式和最終輸出都保持 WhatsApp 可解析。
+            content = value[run_end:]
             index = len(value)
         else:
-            segment = value[index:closing_end]
+            content = value[run_end:closing_start]
             index = closing_end
 
-        placeholder = f"\x00WACODE{len(protected)}\x00"
-        protected.append(segment)
-        output.append(placeholder)
+        if "`" in content or "\n" in content:
+            rendered = f"```{content}```"
+        else:
+            rendered = f"`{content}`"
+        protected.append(rendered)
+        output.append(_placeholder(len(protected) - 1, "INLINE"))
 
     return "".join(output), protected
 
 
-def _restore_backtick_code(value: str, protected: list[str]) -> str:
-    for index, segment in enumerate(protected):
-        value = value.replace(f"\x00WACODE{index}\x00", segment)
+def _restore_code(value: str, protected: Sequence[str], kind: str) -> str:
+    for index, code in enumerate(protected):
+        value = value.replace(_placeholder(index, kind), code)
     return value
 
 
-def format_whatsapp_markdown(text: str, *, streaming: bool = False) -> str:
-    """將標準 Markdown 轉為 WhatsApp 原生文字格式。
+def _split_table_row(line: str) -> list[str]:
+    value = line.strip()
+    if value.startswith("|"):
+        value = value[1:]
+    if value.endswith("|"):
+        value = value[:-1]
 
-    WhatsApp 原生支援 ``*粗體*``、``_斜體_``、``~刪除線~``、
-    行內反引號與多反引號程式碼。轉換會保守避開程式碼及識別字；任何
-    未配對的 ``**``、``__``、``~~`` 在中途與最終輸出都會降級，避免
-    不支援的雙重標記流入 WhatsApp。``streaming`` 參數保留作 API 相容。
-    """
-    value = str(text or "")
-    if not value:
-        return ""
+    cells: list[str] = []
+    current: list[str] = []
+    escaped = False
+    backtick_run = 0
+    index = 0
+    while index < len(value):
+        char = value[index]
+        if escaped:
+            current.append(char)
+            escaped = False
+        elif char == "\\":
+            current.append(char)
+            escaped = True
+        elif char == "`":
+            run_end = index + 1
+            while run_end < len(value) and value[run_end] == "`":
+                run_end += 1
+            run = run_end - index
+            backtick_run = 0 if backtick_run == run else run
+            current.append(value[index:run_end])
+            index = run_end - 1
+        elif char == "|" and backtick_run == 0:
+            cells.append("".join(current).strip())
+            current = []
+        else:
+            current.append(char)
+        index += 1
+    cells.append("".join(current).strip())
+    return cells
 
-    value, protected = _protect_backtick_code(value)
 
-    value = re.sub(
-        r"(?m)^[ \t]*(?:\*{3,}|_{3,}|-{3,})[ \t]*$",
-        "──────────",
-        value,
-    )
+def _is_table_delimiter(line: str) -> bool:
+    cells = _split_table_row(line)
+    return bool(cells) and all(re.fullmatch(r":?-{3,}:?", cell.strip()) for cell in cells)
 
-    value = re.sub(
-        r"(?<!\*)\*(?![\s*])([^*\n]*?\S)\*(?!\*)",
-        r"_\1_",
-        value,
-    )
 
+def _convert_markdown_blocks(value: str, *, streaming: bool) -> str:
+    """把 WhatsApp 不支援的 Markdown block 降級到官方支援格式。"""
+    lines = value.splitlines(keepends=True)
+    output: list[str] = []
+    index = 0
+
+    while index < len(lines):
+        line = lines[index]
+        bare = line.rstrip("\r\n")
+        ending = line[len(bare):]
+
+        if (
+            index + 1 < len(lines)
+            and "|" in bare
+            and _is_table_delimiter(lines[index + 1].rstrip("\r\n"))
+        ):
+            headers = _split_table_row(bare)
+            index += 2
+            rows: list[list[str]] = []
+            while index < len(lines) and "|" in lines[index]:
+                candidate = lines[index].rstrip("\r\n")
+                if not candidate.strip():
+                    break
+                rows.append(_split_table_row(candidate))
+                index += 1
+
+            for row in rows:
+                fields: list[str] = []
+                for column, header in enumerate(headers):
+                    cell = row[column] if column < len(row) else ""
+                    if header or cell:
+                        fields.append(f"**{header or f'欄位 {column + 1}'}:** {cell}")
+                output.append("- " + " | ".join(fields) + "\n")
+            if rows:
+                output.append("\n")
+            continue
+
+        heading = re.match(r"^[ \t]{0,3}#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$", bare)
+        if heading:
+            output.append(f"**{heading.group(1)}**{ending}")
+            index += 1
+            continue
+
+        if re.fullmatch(r"[ \t]*(?:\*{3,}|_{3,}|-{3,})[ \t]*", bare):
+            output.append(f"──────────{ending}")
+            index += 1
+            continue
+
+        unordered = re.match(r"^([ \t]*)[-+*][ \t]+(.+)$", bare)
+        if unordered:
+            output.append(f"{unordered.group(1)}- {unordered.group(2)}{ending}")
+            index += 1
+            continue
+
+        ordered = re.match(r"^([ \t]*)(\d{1,2})[.)][ \t]+(.+)$", bare)
+        if ordered:
+            output.append(f"{ordered.group(1)}{ordered.group(2)}. {ordered.group(3)}{ending}")
+            index += 1
+            continue
+
+        quote = re.match(r"^([ \t]*)>[ \t]?(.*)$", bare)
+        if quote:
+            output.append(f"{quote.group(1)}> {quote.group(2)}{ending}")
+            index += 1
+            continue
+
+        output.append(line)
+        index += 1
+
+    return "".join(output)
+
+
+def _convert_links(value: str) -> str:
+    # WhatsApp 自動識別裸 URL；保留標籤並把 URL 放在括號中。
+    value = re.sub(r"!\[([^\]]*)\]\(([^)\s]+)(?:\s+['\"][^'\"]*['\"])?\)", r"\1 (\2)", value)
+    return re.sub(r"\[([^\]]+)\]\(([^)\s]+)(?:\s+['\"][^'\"]*['\"])?\)", r"\1 (\2)", value)
+
+
+def _convert_emphasis(value: str, *, streaming: bool) -> str:
+    # 單星號 Markdown 斜體必須先處理，以免把稍後生成的 WhatsApp 粗體再轉一次。
+    value = re.sub(r"(?<!\*)\*(?![\s*])([^*\n]*?\S)\*(?!\*)", r"_\1_", value)
     value = re.sub(r"\*\*\*(?=\S)([\s\S]*?\S)\*\*\*", r"*_\1_*", value)
     value = re.sub(r"___(?=\S)([\s\S]*?\S)___", r"*_\1_*", value)
     value = re.sub(r"\*\*(?=\S)([\s\S]*?\S)\*\*", r"*\1*", value)
     value = re.sub(r"__(?=\S)([\s\S]*?\S)__", r"*\1*", value)
     value = re.sub(r"~~(?=\S)([\s\S]*?\S)~~", r"~\1~", value)
 
-    value = re.sub(r"(?<!\*)\*{2,}(?!\*)", "*", value)
-    value = re.sub(
-        r"(?<![\w_])_{2,}(?!_)|(?<!_)_{2,}(?![\w_])",
-        "*",
-        value,
-    )
-    value = re.sub(
-        r"(?<![\w~])~{2,}(?!~)|(?<!~)~{2,}(?![\w~])",
-        "~",
-        value,
-    )
+    if streaming:
+        # 對尚未閉合的增量標記加入暫時閉合，避免使用者看到裸 ** / __ / ~~。
+        value = re.sub(r"(?<!\*)\*\*(?!\*)(?=\S)([^\n]*)$", r"*\1*", value)
+        value = re.sub(r"(?<![\w_])__(?!_)(?=\S)([^\n]*)$", r"*\1*", value)
+        value = re.sub(r"(?<![\w~])~~(?!~)(?=\S)([^\n]*)$", r"~\1~", value)
 
-    return _restore_backtick_code(value, protected)
+    # 最終仍不完整時保守降級，但不誤傷 foo__bar / foo~~bar。
+    value = re.sub(r"(?<!\*)\*{2,}(?!\*)", "*", value)
+    value = re.sub(r"(?<![\w_])_{2,}(?!_)|(?<!_)_{2,}(?![\w_])", "*", value)
+    value = re.sub(r"(?<![\w~])~{2,}(?!~)|(?<!~)~{2,}(?![\w~])", "~", value)
+    return value
+
+
+def format_whatsapp_markdown(
+    text: str,
+    *,
+    streaming: bool = False,
+    source_format: SourceFormat = "markdown",
+) -> str:
+    """轉成 WhatsApp 官方支援的文字格式。
+
+    官方輸出語法：``*粗體*``、``_斜體_``、``~刪除線~``、
+    `````等寬`````、``- 清單``、``1. 清單``、``> 引用``、`` `行內程式碼` ``。
+
+    ``source_format`` 明確解決 Markdown ``*斜體*`` 與 WhatsApp ``*粗體*``
+    的語法衝突；已是 WhatsApp 原生格式的文字必須傳 ``"whatsapp"``，
+    避免重複轉換。
+    """
+    value = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    if not value or source_format in ("whatsapp", "plain"):
+        return value
+    if source_format != "markdown":
+        raise ValueError(f"unsupported source_format: {source_format}")
+
+    value, escaped = _protect_escaped_markdown(value)
+    value, fenced = _extract_fenced_code(value, streaming=streaming)
+    value, inline = _protect_inline_code(value, streaming=streaming)
+    value = _convert_markdown_blocks(value, streaming=streaming)
+    value = _convert_links(value)
+    value = _convert_emphasis(value, streaming=streaming)
+    value = _restore_code(value, fenced, "FENCE")
+    value = _restore_code(value, inline, "INLINE")
+    value = _restore_escaped_markdown(value, escaped)
+    return value
 
 
 def format_markdown_from_whatsapp(text: str) -> str:
-    """將 WhatsApp 格式轉為 Markdown，且不改寫程式碼內容。"""
+    """將 WhatsApp 官方格式轉成通用 Markdown，且不改寫 code。"""
     value = str(text or "")
     if not value:
         return ""
+    value, fenced = _extract_fenced_code(value, streaming=False)
+    value, inline = _protect_inline_code(value, streaming=False)
+    value = re.sub(r"(?<!\*)\*(?![\s*])([^*\n]*?\S)\*(?!\*)", r"**\1**", value)
+    # _italic_ 與 Markdown 相同，不必改寫。
+    value = re.sub(r"(?<!~)~(?![\s~])([^~\n]*?\S)~(?!~)", r"~~\1~~", value)
+    value = _restore_code(value, fenced, "FENCE")
+    return _restore_code(value, inline, "INLINE")
 
-    value, protected = _protect_backtick_code(value)
-    value = re.sub(
-        r"(?<!\*)\*(?![\s*])([^*\n]*?\S)\*(?!\*)",
-        r"**\1**",
-        value,
-    )
-    value = re.sub(
-        r"(?<!_)_(?![\s_])([^_\n]*?\S)_(?!_)",
-        r"*\1*",
-        value,
-    )
-    value = re.sub(
-        r"(?<!~)~(?![\s~])([^~\n]*?\S)~(?!~)",
-        r"~~\1~~",
-        value,
-    )
-    return _restore_backtick_code(value, protected)
+
+def _is_variation_selector(char: str) -> bool:
+    code = ord(char)
+    return 0xFE00 <= code <= 0xFE0F or 0xE0100 <= code <= 0xE01EF
+
+
+def _is_emoji_modifier(char: str) -> bool:
+    return 0x1F3FB <= ord(char) <= 0x1F3FF
+
+
+def _grapheme_units(text: str) -> Iterator[str]:
+    """標準庫近似 grapheme segmentation，避免拆開組合字、ZWJ emoji 與旗幟。"""
+    cluster = ""
+    regional_count = 0
+    join_next = False
+    for char in text:
+        code = ord(char)
+        is_regional = 0x1F1E6 <= code <= 0x1F1FF
+        attach = (
+            bool(cluster)
+            and (
+                join_next
+                or char == "\u200d"
+                or unicodedata.combining(char) != 0
+                or _is_variation_selector(char)
+                or _is_emoji_modifier(char)
+                or (is_regional and regional_count == 1)
+            )
+        )
+        if cluster and not attach:
+            yield cluster
+            cluster = ""
+            regional_count = 0
+        cluster += char
+        join_next = char == "\u200d"
+        if is_regional:
+            regional_count = (regional_count + 1) % 2
+        elif char != "\u200d":
+            regional_count = 0
+    if cluster:
+        yield cluster
 
 
 def chunk_text(text: str, limit: int) -> Iterator[str]:
-    """按 limit 切片，優先在換行、半形或全形空白邊界分割。"""
+    """純文字 grapheme-safe 切片；拼接後內容保持完全一致。"""
     limit = max(1, int(limit))
-    remaining = str(text or "")
-    while len(remaining) > limit:
-        window = remaining[:limit]
-        cut = max(
-            window.rfind("\n"),
-            window.rfind(" "),
-            window.rfind("　"),
-        )
-        if cut <= 0 or cut < limit // 2:
-            cut = limit
-        else:
-            cut += 1
-        yield remaining[:cut]
-        remaining = remaining[cut:]
-    if remaining:
-        yield remaining
+    current: list[str] = []
+    length = 0
+    for unit in _grapheme_units(str(text or "")):
+        if current and length + len(unit) > limit:
+            yield "".join(current)
+            current = []
+            length = 0
+        current.append(unit)
+        length += len(unit)
+    if current:
+        yield "".join(current)
+
+
+def split_whatsapp_text(text: str, limit: int) -> list[str]:
+    """切分 WhatsApp 原生格式並在跨訊息邊界自動關閉／重開格式標記。"""
+    value = str(text or "")
+    if not value:
+        return []
+    limit = max(16, int(limit))
+    units = list(_grapheme_units(value))
+    chunks: list[str] = []
+    current: list[str] = []
+    active: list[str] = []
+    code_delimiter: str | None = None
+    index = 0
+
+    def closing_suffix() -> str:
+        suffix = ""
+        if code_delimiter:
+            suffix += code_delimiter
+        suffix += "".join(reversed(active))
+        return suffix
+
+    def opening_prefix() -> str:
+        prefix = "".join(active)
+        if code_delimiter:
+            prefix += code_delimiter
+        return prefix
+
+    def flush() -> None:
+        nonlocal current
+        body = "".join(current)
+        suffix = closing_suffix()
+        if body and body != opening_prefix():
+            chunks.append(body + suffix)
+        current = list(opening_prefix())
+
+    while index < len(units):
+        unit = units[index]
+        token = unit
+
+        if unit == "`":
+            run = 1
+            while index + run < len(units) and units[index + run] == "`":
+                run += 1
+            token = "`" * run
+            index += run - 1
+
+        reserve = len(closing_suffix())
+        if current and len("".join(current)) + len(token) + reserve > limit:
+            flush()
+
+        current.append(token)
+
+        if token.startswith("`") and set(token) == {"`"}:
+            if code_delimiter == token:
+                code_delimiter = None
+            elif code_delimiter is None and len(token) in (1, 3):
+                code_delimiter = token
+        elif code_delimiter is None and token in ("*", "_", "~"):
+            previous = units[index - 1] if index > 0 else ""
+            following = units[index + 1] if index + 1 < len(units) else ""
+            at_list_prefix = token == "*" and (index == 0 or previous == "\n") and following.isspace()
+            if not at_list_prefix:
+                if active and active[-1] == token and previous and not previous.isspace():
+                    active.pop()
+                elif following and not following.isspace():
+                    active.append(token)
+        index += 1
+
+    if current:
+        body = "".join(current)
+        suffix = closing_suffix()
+        if body and body != opening_prefix():
+            chunks.append(body + suffix)
+
+    return [chunk for chunk in chunks if chunk]
+
+
+def has_visible_whatsapp_content(text: str) -> bool:
+    """拒絕只含格式控制符的暫時訊息，例如單獨的 ``*`` 或 ```。"""
+    value = re.sub(r"[`*_~>\-\s\u200b\u2060]+", "", str(text or ""))
+    return bool(value)
 
 
 def is_single_url(text: str) -> bool:
-    """是否為單一 URL 訊息。"""
     value = str(text or "").strip()
     return (value.startswith("http://") or value.startswith("https://")) and len(value.split()) == 1
 
 
 def should_link_preview(text: str, link_preview_single_url: bool) -> bool:
-    """根據配置判斷是否啟用連結預覽。"""
     return bool(link_preview_single_url) and is_single_url(text)
 
 
 def normalize_media_value(value: str | None) -> str:
-    """正規化媒體路徑，處理 file:// 前綴。"""
     if not value:
         return ""
     if value.startswith("file://"):
@@ -202,40 +523,33 @@ def normalize_media_value(value: str | None) -> str:
 
 
 def mention_text_from_at(component: At) -> str:
-    """從 At 元件產生 @文字。"""
     value = str(getattr(component, "name", "") or getattr(component, "qq", "") or "")
     value = value.split("@", 1)[0].split(":", 1)[0]
     return f"@{value}"
 
 
 def mention_jid_from_at(component: At) -> str | None:
-    """從 At 元件解析完整 JID。優先使用已有 @ 的值，否則 fallback 到數字 + @s.whatsapp.net。"""
     value = str(getattr(component, "qq", "") or getattr(component, "name", "") or "").strip()
     if not value:
         return None
     if "@" in value:
         if value.endswith("@lid"):
             from .whatsapp_adapter import _LID_PN_CACHE
+
             pn = _LID_PN_CACHE.get(value)
             if pn:
                 return pn
             logger.warning("WhatsApp @提及 lid 未缓存，使用原始 JID: %s", value)
         return value
-    digits = "".join(ch for ch in value if ch.isdigit())
+    digits = "".join(char for char in value if char.isdigit())
     if digits:
-        logger.warning(
-            "WhatsApp mention resolved via numeric fallback: value=%s jid=%s@s.whatsapp.net",
-            value,
-            digits,
-        )
         return f"{digits}@s.whatsapp.net"
     logger.warning("WhatsApp @提及 JID 解析失败: value=%s", value)
     return None
 
 
 def mention_jid_for_token(token: str) -> str | None:
-    """純文字 @token → 數字 + @s.whatsapp.net，無法解析時返回 None。"""
-    digits = "".join(ch for ch in token if ch.isdigit())
+    digits = "".join(char for char in token if char.isdigit())
     return f"{digits}@s.whatsapp.net" if digits else None
 
 
@@ -243,16 +557,30 @@ async def mentions_for_text(
     client: WhatsAppGatewayClient,
     target: str,
     text: str,
-    explicit_mentions: list[str],
+    explicit_mentions: Sequence[str | MentionRef],
 ) -> list[str]:
-    """回傳顯式提及（At 元件）清單（client/target/text 參數預留給未來 @token 解析）。"""
-    return list(dict.fromkeys(explicit_mentions))
+    del client, target
+    resolved: list[str] = []
+    for mention in explicit_mentions:
+        if isinstance(mention, MentionRef):
+            if mention.text and mention.text not in text:
+                continue
+            jid = mention.jid
+        else:
+            jid = str(mention)
+        if jid and jid not in resolved:
+            resolved.append(jid)
+    return resolved
 
 
 def media_kind_from_component(component: Any, default: str) -> str:
-    """偵測元件是否為 sticker，否則返回 default。"""
     kind = str(getattr(component, "type", "") or getattr(component, "_type", "") or "").lower()
-    name = str(getattr(component, "name", "") or getattr(component, "filename", "") or getattr(component, "file", "") or "").lower()
+    name = str(
+        getattr(component, "name", "")
+        or getattr(component, "filename", "")
+        or getattr(component, "file", "")
+        or ""
+    ).lower()
     if kind == "sticker" or kind.endswith("sticker") or (name.endswith(".webp") and "sticker" in name):
         return "sticker"
     return default
@@ -262,17 +590,18 @@ async def flush_pending_text(
     client: WhatsAppGatewayClient,
     target: str,
     pending: str | None,
-    mentions: list[str] | None = None,
+    mentions: Sequence[str | MentionRef] | None = None,
     *,
     link_preview_single_url: bool = True,
     text_chunk_limit: int = 4000,
     quoted_message_id: str | None = None,
     quoted_participant: str | None = None,
-) -> tuple[None, list[str]]:
-    """將累積的文字 flush 發送到 WhatsApp。"""
+    source_format: SourceFormat = "markdown",
+) -> tuple[None, list[MentionRef]]:
     if not pending:
-        return None, mentions or []
-    for chunk in chunk_text(pending, text_chunk_limit):
+        return None, list(mentions or [])  # type: ignore[list-item]
+    rendered = format_whatsapp_markdown(pending, source_format=source_format)
+    for chunk in split_whatsapp_text(rendered, text_chunk_limit):
         chunk_mentions = await mentions_for_text(client, target, chunk, mentions or [])
         await client.send_text(
             target,
@@ -292,14 +621,15 @@ async def send_whatsapp_component(
     quoted_message_id: str | None = None,
     quoted_participant: str | None = None,
 ) -> None:
-    """發送 WhatsApp 專用元件：按鈕、清單、投票、編輯。"""
     if isinstance(component, WhatsAppButtons):
         buttons = [
-            {"id": btn.id or f"btn_{i}", "text": btn.text}
-            for i, btn in enumerate(component.buttons or [])
+            {"id": button.id or f"btn_{index}", "text": button.text}
+            for index, button in enumerate(component.buttons or [])
         ]
         await client.send_buttons(
-            target, component.body, buttons,
+            target,
+            component.body,
+            buttons,
             footer=component.footer,
             quoted_message_id=quoted_message_id,
             quoted_participant=quoted_participant,
@@ -313,7 +643,9 @@ async def send_whatsapp_component(
             ]
             sections.append({"title": section.title, "rows": rows})
         await client.send_list(
-            target, component.title, sections,
+            target,
+            component.title,
+            sections,
             description=component.description,
             button_text=component.button_text,
             footer=component.footer,
@@ -322,14 +654,17 @@ async def send_whatsapp_component(
         )
     elif isinstance(component, WhatsAppPoll):
         await client.send_poll(
-            target, component.name, list(component.options or []),
+            target,
+            component.name,
+            list(component.options or []),
             selectable_count=int(component.selectable_count or 0),
             quoted_message_id=quoted_message_id,
             quoted_participant=quoted_participant,
         )
     elif isinstance(component, WhatsAppEdit):
         await client.edit_text(
-            target, component.message_id,
+            target,
+            component.message_id,
             format_whatsapp_markdown(component.text or ""),
             participant=component.participant,
         )
@@ -382,143 +717,166 @@ async def process_message_chain(
     quoted_message_id: str | None = None,
     quoted_participant: str | None = None,
     resolve_media_func: MediaResolver | None = None,
-) -> tuple[str | None, list[str]]:
-    """處理訊息鏈中的每個 component，累積 caption 文字與 mentions。
-
-    兩個地方使用此函數，消除 send() 與 send_by_session() 的重複。
-    返回剩餘的 (pending_caption, pending_mentions)，呼叫方應再呼叫 flush_pending_text。
-    """
-    pending_caption: str | None = None
-    pending_mentions: list[str] = []
-    _flush_kw: dict[str, Any] = dict(
-        link_preview_single_url=link_preview_single_url,
-        text_chunk_limit=text_chunk_limit,
-        quoted_message_id=quoted_message_id,
-        quoted_participant=quoted_participant,
-    )
-    _send_kw: dict[str, Any] = {}
+) -> tuple[str | None, list[MentionRef]]:
+    """累積相鄰 Plain/At 的原始 Markdown，在真正發送前只轉換一次。"""
+    pending_raw: str | None = None
+    pending_mentions: list[MentionRef] = []
+    flush_kwargs: dict[str, Any] = {
+        "link_preview_single_url": link_preview_single_url,
+        "text_chunk_limit": text_chunk_limit,
+        "quoted_message_id": quoted_message_id,
+        "quoted_participant": quoted_participant,
+    }
+    send_kwargs: dict[str, Any] = {}
     if quoted_message_id:
-        _send_kw["quoted_message_id"] = quoted_message_id
+        send_kwargs["quoted_message_id"] = quoted_message_id
     if quoted_participant:
-        _send_kw["quoted_participant"] = quoted_participant
+        send_kwargs["quoted_participant"] = quoted_participant
+
+    async def flush() -> None:
+        nonlocal pending_raw, pending_mentions
+        pending_raw, pending_mentions = await flush_pending_text(
+            client,
+            target,
+            pending_raw,
+            pending_mentions,
+            **flush_kwargs,
+        )
+
+    async def prepare_caption() -> str | None:
+        if not pending_raw:
+            return None
+        chunks = split_whatsapp_text(format_whatsapp_markdown(pending_raw), text_chunk_limit)
+        if not chunks:
+            return None
+        for chunk in chunks[:-1]:
+            chunk_mentions = await mentions_for_text(
+                client, target, chunk, pending_mentions,
+            )
+            await client.send_text(
+                target,
+                chunk,
+                quoted_message_id=quoted_message_id,
+                quoted_participant=quoted_participant,
+                link_preview=should_link_preview(chunk, link_preview_single_url),
+                mentions=chunk_mentions,
+            )
+        return chunks[-1]
 
     for component in chain:
         if isinstance(component, Plain):
-            text = format_whatsapp_markdown(component.text or "")
-            if not text:
-                continue
-            if use_caption:
-                pending_caption = (pending_caption or "") + text
-            else:
-                pending_caption, pending_mentions = await flush_pending_text(
-                    client, target, (pending_caption or "") + text, pending_mentions, **_flush_kw,
-                )
-        elif isinstance(component, At):
+            pending_raw = (pending_raw or "") + (component.text or "")
+            continue
+        if isinstance(component, At):
+            visible = mention_text_from_at(component)
             jid = mention_jid_from_at(component)
+            pending_raw = (pending_raw or "") + visible
             if jid:
-                pending_mentions.append(jid)
-            text = mention_text_from_at(component)
-            if use_caption:
-                pending_caption = (pending_caption or "") + text
-            else:
-                pending_caption, pending_mentions = await flush_pending_text(
-                    client, target, (pending_caption or "") + text, pending_mentions, **_flush_kw,
-                )
-        elif isinstance(component, Image):
+                pending_mentions.append(MentionRef(jid=jid, text=visible))
+            continue
+
+        if isinstance(component, Image):
             if not use_caption:
-                pending_caption, pending_mentions = await flush_pending_text(
-                    client, target, pending_caption, pending_mentions, **_flush_kw,
-                )
+                await flush()
             try:
                 media_path = await _resolve_media_component(
-                    component, "path", "file", "url", resolve_media_func=resolve_media_func,
+                    component,
+                    "path",
+                    "file",
+                    "url",
+                    resolve_media_func=resolve_media_func,
                 )
             except Exception as exc:
                 logger.warning("WhatsApp 消息链跳过图片: %s", exc)
                 continue
             if not media_path:
-                logger.warning("WhatsApp 消息链跳过图片: 文件路径为空")
                 continue
             media_kind = media_kind_from_component(component, "image")
-            if media_kind == "sticker" and use_caption and pending_caption:
-                pending_caption, pending_mentions = await flush_pending_text(
-                    client, target, pending_caption, pending_mentions, **_flush_kw,
-                )
+            if media_kind == "sticker" and use_caption and pending_raw:
+                await flush()
             await client.send_media(
-                target, media_kind, media_path,
-                None if media_kind == "sticker" else pending_caption if use_caption else None,
-                **_send_kw,
+                target,
+                media_kind,
+                media_path,
+                None if media_kind == "sticker" else await prepare_caption() if use_caption else None,
+                **send_kwargs,
             )
-            pending_caption = None
+            pending_raw = None
             pending_mentions = []
         elif isinstance(component, Record):
-            pending_caption, pending_mentions = await flush_pending_text(
-                client, target, pending_caption, pending_mentions, **_flush_kw,
-            )
+            await flush()
             try:
                 media_path = await _resolve_media_component(
-                    component, "path", "file", "url", resolve_media_func=resolve_media_func,
+                    component,
+                    "path",
+                    "file",
+                    "url",
+                    resolve_media_func=resolve_media_func,
                 )
             except Exception as exc:
                 logger.warning("WhatsApp 消息链跳过音频: %s", exc)
                 continue
-            if not media_path:
-                logger.warning("WhatsApp 消息链跳过音频: 文件路径为空")
-                continue
-            await client.send_media(target, "audio", media_path, None, **_send_kw)
+            if media_path:
+                await client.send_media(target, "audio", media_path, None, **send_kwargs)
         elif isinstance(component, Video):
             if not use_caption:
-                pending_caption, pending_mentions = await flush_pending_text(
-                    client, target, pending_caption, pending_mentions, **_flush_kw,
-                )
+                await flush()
             try:
                 media_path = await _resolve_media_component(
-                    component, "path", "file", "url", resolve_media_func=resolve_media_func,
+                    component,
+                    "path",
+                    "file",
+                    "url",
+                    resolve_media_func=resolve_media_func,
                 )
             except Exception as exc:
                 logger.warning("WhatsApp 消息链跳过视频: %s", exc)
                 continue
-            if not media_path:
-                logger.warning("WhatsApp 消息链跳过视频: 文件路径为空")
-                continue
-            await client.send_media(
-                target, "video", media_path, pending_caption if use_caption else None, **_send_kw,
-            )
-            pending_caption = None
+            if media_path:
+                await client.send_media(
+                    target,
+                    "video",
+                    media_path,
+                    await prepare_caption() if use_caption else None,
+                    **send_kwargs,
+                )
+            pending_raw = None
             pending_mentions = []
         elif isinstance(component, File):
             if not use_caption:
-                pending_caption, pending_mentions = await flush_pending_text(
-                    client, target, pending_caption, pending_mentions, **_flush_kw,
-                )
+                await flush()
             try:
                 resolved = await _resolve_media_component(
-                    component, "file_", "file", "url", resolve_media_func=resolve_media_func,
+                    component,
+                    "file_",
+                    "file",
+                    "url",
+                    resolve_media_func=resolve_media_func,
                 )
             except Exception as exc:
                 logger.warning("WhatsApp 消息链跳过文档: %s", exc)
                 continue
-            if not resolved:
-                logger.warning("WhatsApp 消息链跳过文档: 路径为空")
-                continue
-            await client.send_media(
-                target, "document", resolved, pending_caption if use_caption else None, **_send_kw,
-            )
-            pending_caption = None
+            if resolved:
+                await client.send_media(
+                    target,
+                    "document",
+                    resolved,
+                    await prepare_caption() if use_caption else None,
+                    **send_kwargs,
+                )
+            pending_raw = None
             pending_mentions = []
         elif isinstance(component, (WhatsAppButtons, WhatsAppList, WhatsAppPoll, WhatsAppEdit)):
-            pending_caption, pending_mentions = await flush_pending_text(
-                client, target, pending_caption, pending_mentions, **_flush_kw,
-            )
-            await send_whatsapp_component(client, target, component, **_send_kw)
+            await flush()
+            await send_whatsapp_component(client, target, component, **send_kwargs)
         else:
             nested = _iter_nested_components(component)
             if nested:
-                pending_caption, pending_mentions = await flush_pending_text(
-                    client, target, pending_caption, pending_mentions, **_flush_kw,
-                )
-                pending_caption, pending_mentions = await process_message_chain(
-                    client, target, nested,
+                await flush()
+                nested_pending, nested_mentions = await process_message_chain(
+                    client,
+                    target,
+                    nested,
                     link_preview_single_url=link_preview_single_url,
                     text_chunk_limit=text_chunk_limit,
                     use_caption=use_caption,
@@ -526,17 +884,15 @@ async def process_message_chain(
                     quoted_participant=quoted_participant,
                     resolve_media_func=resolve_media_func,
                 )
+                pending_raw = nested_pending
+                pending_mentions = nested_mentions
             else:
-                logger.debug(
-                    "WhatsApp 消息链跳过不支持组件: %s",
-                    component.__class__.__name__,
-                )
+                logger.debug("WhatsApp 消息链跳过不支持组件: %s", component.__class__.__name__)
 
-    return pending_caption, pending_mentions
+    return pending_raw, pending_mentions
 
 
 def _iter_nested_components(component: Any) -> list[Any]:
-    """Best-effort flattening for Node/Nodes style components on non-WhatsApp platforms."""
     nested: list[Any] = []
     chain = getattr(component, "chain", None)
     if chain:

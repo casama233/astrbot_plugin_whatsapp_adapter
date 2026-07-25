@@ -1,0 +1,14 @@
+minimum_pre_commit_version: '3.5.0'
+repos:
+  - repo: local
+    hooks:
+      - id: python-compile
+        name: Python syntax check
+        entry: python -m py_compile whatsapp_helpers.py whatsapp_event.py tests/test_whatsapp_markdown.py
+        language: system
+        pass_filenames: false
+      - id: whatsapp-markdown-tests
+        name: WhatsApp Markdown regression tests
+        entry: python -m unittest -v tests/test_whatsapp_markdown.py
+        language: system
+        pass_filenames: false
