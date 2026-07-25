@@ -31,13 +31,48 @@ __all__ = [
 ]
 
 
-def format_whatsapp_markdown(text: str) -> str:
-    """出站 Markdown → WhatsApp 格式。"""
-    text = re.sub(r"\*\*([^*\n][\s\S]*?[^*\n]?)\*\*", r"*\1*", text)
-    text = re.sub(r"__([^_\n][\s\S]*?[^_\n]?)__", r"_\1_", text)
-    text = re.sub(r"~~([^~\n][\s\S]*?[^~\n]?)~~", r"~\1~", text)
-    text = re.sub(r"(?<!`)`([^`\n]+)`(?!`)", r"```\1```", text)
-    return text
+def format_whatsapp_markdown(text: str, *, streaming: bool = False) -> str:
+    """將標準 Markdown 轉為 WhatsApp 原生文字格式。
+
+    WhatsApp 原生支援 ``*粗體*``、``_斜體_``、``~刪除線~``、
+    行內反引號與三反引號程式碼。流式模式會先把尚未閉合的雙重
+    Markdown 標記折疊成單一 WhatsApp 標記，避免分片後殘留 ``**``。
+    """
+    value = str(text or "")
+    if not value:
+        return ""
+
+    # 程式碼內容不應參與強調標記轉換；完整 code span/fence 先暫存。
+    protected: list[str] = []
+
+    def protect_code(match: re.Match[str]) -> str:
+        protected.append(match.group(0))
+        return f"\x00WA_CODE_{len(protected) - 1}\x00"
+
+    value = re.sub(r"```[\s\S]*?```|(?<!`)`[^`\n]+`(?!`)", protect_code, value)
+
+    # 標準 Markdown 單星號是斜體；先處理，避免稍後產生的 WhatsApp
+    # 粗體 ``*...*`` 被再次當成斜體。行首 ``* `` 清單不會匹配。
+    value = re.sub(
+        r"(?<!\*)\*(?![\s*])([^*\n]*?\S)\*(?!\*)",
+        r"_\1_",
+        value,
+    )
+    # Markdown 的 ** / __ 都代表粗體，WhatsApp 使用單星號。
+    value = re.sub(r"\*\*(?=\S)([\s\S]*?\S)\*\*", r"*\1*", value)
+    value = re.sub(r"__(?=\S)([\s\S]*?\S)__", r"*\1*", value)
+    value = re.sub(r"~~(?=\S)([\s\S]*?\S)~~", r"~\1~", value)
+
+    if streaming:
+        # LLM 可能把開頭和結尾標記拆到不同 chunk。完整緩衝區尚未
+        # 收到閉合標記時，先顯示 WhatsApp 的單標記，而不是裸 ``**``。
+        value = re.sub(r"(?<!\*)\*\*(?!\*)", "*", value)
+        value = re.sub(r"(?<!_)__(?!_)", "*", value)
+        value = re.sub(r"(?<!~)~~(?!~)", "~", value)
+
+    for index, code in enumerate(protected):
+        value = value.replace(f"\x00WA_CODE_{index}\x00", code)
+    return value
 
 
 def format_markdown_from_whatsapp(text: str) -> str:

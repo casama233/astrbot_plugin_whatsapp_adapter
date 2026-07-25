@@ -138,6 +138,8 @@ class WhatsAppMessageEvent(AstrMessageEvent):
 
     async def _send_streaming_edit(self, generator: AsyncGenerator[MessageChain, None]) -> None:
         message_id: str | None = None
+        # 必須保存原始 Markdown。若在每個增量 component 到達時就轉換，
+        # ``**`` 的開頭與結尾被拆到不同 chunk 後便永遠無法配對。
         text_buffer = ""
         last_sent = ""
         last_update = 0.0
@@ -149,10 +151,14 @@ class WhatsAppMessageEvent(AstrMessageEvent):
         max_edit_length = min(self.text_chunk_limit, 3500)
         realtime_fallback = self.unsupported_streaming_strategy == "realtime_segmenting"
 
+        def rendered_buffer(*, final: bool) -> str:
+            return format_whatsapp_markdown(text_buffer, streaming=not final)
+
         def fallback_segments(final: bool = False) -> list[str]:
+            rendered = rendered_buffer(final=final)
             if not realtime_fallback:
-                return [text_buffer] if final and text_buffer else []
-            pending = text_buffer[fallback_sent_len:]
+                return [rendered] if final and rendered else []
+            pending = rendered[fallback_sent_len:]
             if not pending:
                 return []
             parts = re.findall(r".*?[。？！!?~…\n]+|.+$", pending, re.DOTALL)
@@ -164,60 +170,40 @@ class WhatsAppMessageEvent(AstrMessageEvent):
 
         async def publish(force: bool = False) -> None:
             nonlocal message_id, last_sent, last_update, text_buffer, mentions, edit_failed, fallback_sent_len
-            if not text_buffer or text_buffer == last_sent:
+            if not text_buffer:
                 return
+
+            preview = rendered_buffer(final=force)
+            if len(text_buffer) <= max_edit_length and preview == last_sent:
+                return
+
             now = asyncio.get_running_loop().time()
             if not force and now - last_update < throttle_seconds:
                 return
-            chunk = text_buffer[:max_edit_length]
-            if chunk == last_sent:
-                return
-            if edit_failed and not force:
-                segments = fallback_segments(final=False)
-                for segment in segments:
-                    segment_mentions = await mentions_for_text(self.client, self.target_jid, segment, mentions)
-                    await self.client.send_text(
-                        self.target_jid,
-                        segment,
-                        quoted_message_id=self.quoted_message_id,
-                        quoted_participant=self.quoted_participant,
-                        link_preview=False,
-                        mentions=segment_mentions,
-                    )
-                    fallback_sent_len += len(segment)
-                last_update = now
-                return
-            chunk_mentions = await mentions_for_text(self.client, self.target_jid, chunk, mentions)
-            if not message_id:
-                result = await self.client.send_text(
-                    self.target_jid,
-                    chunk,
-                    quoted_message_id=self.quoted_message_id,
-                    quoted_participant=self.quoted_participant,
-                    link_preview=False,
-                    mentions=chunk_mentions,
+
+            while text_buffer:
+                raw_chunk = text_buffer[:max_edit_length]
+                has_remainder = len(text_buffer) > max_edit_length
+                # 被切出的前段之後不會再被編輯，因此按流式模式折疊尚未閉合
+                # 的雙重標記；最後一段在 force=True 時按完整 Markdown 處理。
+                chunk = format_whatsapp_markdown(
+                    raw_chunk,
+                    streaming=has_remainder or not force,
                 )
-                message_id = str(result.get("id") or "") or None
-                if not message_id:
-                    raise RuntimeError("Gateway did not return message id for streaming text")
-            else:
-                try:
-                    await self.client.edit_text(self.target_jid, message_id, chunk, mentions=chunk_mentions)
-                except Exception as exc:
-                    if not edit_failed:
-                        logger.warning(
-                            "WhatsApp 流式编辑失败，停止中途更新以避免刷屏，将在结束时补发最终文本: target=%s message_id=%s error=%s",
-                            self.target_jid,
-                            message_id,
-                            exc,
-                        )
-                    edit_failed = True
-                    if not force:
-                        last_update = now
-                        return
-                    segments = fallback_segments(final=True)
+                if not chunk:
+                    if has_remainder:
+                        text_buffer = text_buffer[max_edit_length:]
+                        continue
+                    return
+                if chunk == last_sent and not has_remainder:
+                    return
+
+                if edit_failed and not force:
+                    segments = fallback_segments(final=False)
                     for segment in segments:
-                        segment_mentions = await mentions_for_text(self.client, self.target_jid, segment, mentions)
+                        segment_mentions = await mentions_for_text(
+                            self.client, self.target_jid, segment, mentions,
+                        )
                         await self.client.send_text(
                             self.target_jid,
                             segment,
@@ -227,30 +213,70 @@ class WhatsAppMessageEvent(AstrMessageEvent):
                             mentions=segment_mentions,
                         )
                         fallback_sent_len += len(segment)
-                    message_id = None
-                    edit_failed = False
-            last_sent = chunk
-            last_update = now
-            # 如果緩衝區超過單次編輯上限，循環推送剩餘內容
-            while len(text_buffer) > max_edit_length:
+                    last_update = now
+                    return
+
+                chunk_mentions = await mentions_for_text(
+                    self.client, self.target_jid, chunk, mentions,
+                )
+                if not message_id:
+                    result = await self.client.send_text(
+                        self.target_jid,
+                        chunk,
+                        quoted_message_id=self.quoted_message_id,
+                        quoted_participant=self.quoted_participant,
+                        link_preview=False,
+                        mentions=chunk_mentions,
+                    )
+                    message_id = str(result.get("id") or "") or None
+                    if not message_id:
+                        raise RuntimeError("Gateway did not return message id for streaming text")
+                else:
+                    try:
+                        await self.client.edit_text(
+                            self.target_jid, message_id, chunk, mentions=chunk_mentions,
+                        )
+                    except Exception as exc:
+                        if not edit_failed:
+                            logger.warning(
+                                "WhatsApp 流式编辑失败，停止中途更新以避免刷屏，将在结束时补发最终文本: target=%s message_id=%s error=%s",
+                                self.target_jid,
+                                message_id,
+                                exc,
+                            )
+                        edit_failed = True
+                        if not force:
+                            last_update = now
+                            return
+                        segments = fallback_segments(final=True)
+                        for segment in segments:
+                            segment_mentions = await mentions_for_text(
+                                self.client, self.target_jid, segment, mentions,
+                            )
+                            await self.client.send_text(
+                                self.target_jid,
+                                segment,
+                                quoted_message_id=self.quoted_message_id,
+                                quoted_participant=self.quoted_participant,
+                                link_preview=False,
+                                mentions=segment_mentions,
+                            )
+                            fallback_sent_len += len(segment)
+                        message_id = None
+                        edit_failed = False
+
+                last_sent = chunk
+                last_update = asyncio.get_running_loop().time()
+
+                if not has_remainder:
+                    return
+
+                # 舊訊息已達編輯上限，封存這一段並以新訊息繼續。
                 text_buffer = text_buffer[max_edit_length:]
                 message_id = None
                 last_sent = ""
-                chunk = text_buffer[:max_edit_length]
-                if not chunk or chunk == last_sent:
-                    break
-                new_mentions = await mentions_for_text(self.client, self.target_jid, chunk, mentions)
-                result = await self.client.send_text(
-                    self.target_jid,
-                    chunk,
-                    quoted_message_id=self.quoted_message_id,
-                    quoted_participant=self.quoted_participant,
-                    link_preview=False,
-                    mentions=new_mentions,
-                )
-                message_id = str(result.get("id") or "") or None
-                last_sent = chunk
-                last_update = asyncio.get_running_loop().time()
+                fallback_sent_len = 0
+                edit_failed = False
 
         async for chain in generator:
             if not isinstance(chain, MessageChain):
@@ -261,11 +287,14 @@ class WhatsAppMessageEvent(AstrMessageEvent):
                 text_buffer = ""
                 last_sent = ""
                 mentions = []
+                edit_failed = False
+                fallback_sent_len = 0
                 continue
             media_chain = MessageChain()
             for component in chain.chain:
                 if isinstance(component, Plain):
-                    text_buffer += format_whatsapp_markdown(component.text or "")
+                    # 只累積原始增量；轉換必須針對完整累積緩衝區執行。
+                    text_buffer += component.text or ""
                 elif isinstance(component, At):
                     jid = mention_jid_from_at(component)
                     if jid:
@@ -285,6 +314,8 @@ class WhatsAppMessageEvent(AstrMessageEvent):
                 text_buffer = ""
                 last_sent = ""
                 mentions = []
+                edit_failed = False
+                fallback_sent_len = 0
 
         await publish(force=True)
 
