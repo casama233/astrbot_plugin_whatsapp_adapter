@@ -198,6 +198,8 @@ class WhatsAppConfigPolicyTests(unittest.TestCase):
         adapter = (ROOT / "whatsapp_adapter.py").read_text("utf-8")
         main = (ROOT / "main.py").read_text("utf-8")
         metadata = (ROOT / "metadata.yaml").read_text("utf-8")
+        self.assertIn("RUNTIME_DEFAULT_CONFIG: dict[str, Any] = {\n    **BASE_GATEWAY_CONFIG,", adapter)
+        self.assertNotIn("DEFAULT_CONFIG: dict[str, Any] = {\n    **BASE_GATEWAY_CONFIG,", adapter)
         self.assertIn("get_runtime_plugin_defaults()", adapter)
         self.assertIn("extract_legacy_behavior_overrides(platform_config)", adapter)
         self.assertIn("_legacy_gateway_", adapter)
