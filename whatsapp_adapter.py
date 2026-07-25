@@ -41,6 +41,7 @@ from .whatsapp_components import (
     WhatsAppPoll,
 )
 from .whatsapp_event import WhatsAppMessageEvent
+from .whatsapp_config_policy import merge_runtime_config, normalize_media_caption_mode
 from .whatsapp_helpers import (
     flush_pending_text,
     format_markdown_from_whatsapp,
@@ -190,6 +191,18 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "group_policy": "disabled",
     "groups": [],
     "group_allow_from": [],
+    "command_prefix": "/",
+    "register_commands": True,
+    "media_caption_mode": "separate",
+    "text_chunk_limit": 4000,
+    "link_preview_single_url": True,
+    "typing_indicator": True,
+    "send_read_receipts": True,
+    "mark_online": False,
+    "ignore_self_messages": False,
+    "parse_inbound_formatting": True,
+    "media_album_debounce_seconds": 2.5,
+    "media_max_mb": 50,
     "pre_ack_emoji": True,
     "pre_ack_emojis": "👀",
     "pre_ack_private": True,
@@ -348,7 +361,8 @@ CONFIG_METADATA: dict[str, Any] = {
         "description": "媒体附加文字模式",
         "type": "string",
         "group": "messaging",
-        "hint": "separate=文字与媒体分开发送（两条消息）；caption=紧邻媒体前的文字作为该媒体的描述。",
+        "options": ["separate", "caption"],
+        "hint": "separate=文字与媒体分开发送；caption=紧邻媒体前的文字作为该媒体描述。仅影响普通富媒体消息链，流式回复中的媒体仍分开发送。",
     },
     "text_chunk_limit": {
         "description": "文字切片长度",
@@ -504,7 +518,7 @@ WHATSAPP_I18N_RESOURCES: dict[str, dict] = {
         },
         "media_caption_mode": {
             "description": "媒体附加文字模式",
-            "hint": "separate=文字与媒体分开发送（两条消息）；caption=紧邻媒体前的文字作为该媒体的描述。",
+            "hint": "separate=文字与媒体分开发送；caption=紧邻媒体前的文字作为该媒体描述。仅影响普通富媒体消息链，流式回复中的媒体仍分开发送。",
         },
         "text_chunk_limit": {
             "description": "文字切片长度",
@@ -630,7 +644,7 @@ WHATSAPP_I18N_RESOURCES: dict[str, dict] = {
         },
         "media_caption_mode": {
             "description": "Media caption mode",
-            "hint": "separate=text and media sent as separate messages; caption=text immediately before media becomes its caption.",
+            "hint": "separate sends text and media separately; caption attaches immediately preceding text to ordinary rich-media messages. Streaming media remains separate.",
         },
         "text_chunk_limit": {
             "description": "Text chunk length",
@@ -756,7 +770,7 @@ WHATSAPP_I18N_RESOURCES: dict[str, dict] = {
         },
         "media_caption_mode": {
             "description": "媒體附加文字模式",
-            "hint": "separate=文字與媒體分開傳送（兩條訊息）；caption=緊鄰媒體前的文字作為該媒體的描述。",
+            "hint": "separate=文字與媒體分開傳送；caption=緊鄰媒體前的文字作為該媒體描述。僅影響普通富媒體訊息鏈，流式回覆中的媒體仍分開傳送。",
         },
         "text_chunk_limit": {
             "description": "文字切片長度",
@@ -1631,7 +1645,11 @@ class WhatsAppPlatformAdapter(Platform):
     def _merged_config(self, platform_config: dict[str, Any]) -> dict[str, Any]:
         plugin_config = self._normalize_config(self._load_plugin_config())
         platform_config = self._normalize_config(platform_config)
-        merged = {**RUNTIME_DEFAULT_CONFIG, **platform_config, **plugin_config}
+        merged = merge_runtime_config(
+            RUNTIME_DEFAULT_CONFIG,
+            plugin_config,
+            platform_config,
+        )
         logger.debug(
             "WhatsApp config merged: platform_keys=%s plugin_overrides=%s effective=%s",
             sorted(platform_config.keys()),
@@ -1655,6 +1673,8 @@ class WhatsAppPlatformAdapter(Platform):
     def _normalize_config_value(self, key: str, value: Any) -> Any:
         if key in {"allow_from", "group_allow_from", "groups"}:
             return self._coerce_str_list(value)
+        if key == "media_caption_mode":
+            return normalize_media_caption_mode(value)
         if key == "pre_ack_public":
             if isinstance(value, str):
                 normalized = value.strip().lower()
