@@ -4,8 +4,6 @@ on:
   push:
     branches:
       - agent/fix-streaming-markdown-conversion
-    paths:
-      - .github/workflows/apply-code-split-followup.yml
 
 permissions:
   contents: write
