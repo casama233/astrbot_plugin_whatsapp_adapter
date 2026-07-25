@@ -39,7 +39,16 @@
     "type": "string",
     "default": "info",
     "group": "connection",
-    "hint": "可选：silent、fatal、error、warn、info、debug、trace。"
+    "hint": "可选：silent、fatal、error、warn、info、debug、trace。",
+    "options": [
+      "silent",
+      "fatal",
+      "error",
+      "warn",
+      "info",
+      "debug",
+      "trace"
+    ]
   },
   "default_link_preview_single_url": {
     "description": "默认启用单链接预览",

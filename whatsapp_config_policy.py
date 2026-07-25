@@ -4,7 +4,26 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+LOG_LEVELS = ("silent", "fatal", "error", "warn", "info", "debug", "trace")
+DM_POLICIES = ("allowlist", "open", "disabled")
+GROUP_POLICIES = ("allowlist", "open", "disabled")
 MEDIA_CAPTION_MODES = ("separate", "caption")
+PRE_ACK_PUBLIC_MODES = ("always", "mentions", "never")
+
+CONFIG_ENUM_OPTIONS: dict[str, tuple[str, ...]] = {
+    "log_level": LOG_LEVELS,
+    "dm_policy": DM_POLICIES,
+    "group_policy": GROUP_POLICIES,
+    "media_caption_mode": MEDIA_CAPTION_MODES,
+    "pre_ack_public": PRE_ACK_PUBLIC_MODES,
+}
+CONFIG_ENUM_DEFAULTS = {
+    "log_level": "info",
+    "dm_policy": "allowlist",
+    "group_policy": "disabled",
+    "media_caption_mode": "separate",
+    "pre_ack_public": "mentions",
+}
 
 # These keys configure the shared Gateway/plugin runtime and remain accepted
 # without a prefix for backwards compatibility with the original plugin page.
@@ -43,10 +62,31 @@ FIXED_RUNTIME_KEYS = frozenset(
 )
 
 
-def normalize_media_caption_mode(value: Any) -> str:
-    """Return a supported media/caption mode, falling back safely."""
+def normalize_config_enum(key: str, value: Any) -> str:
+    """Normalize a finite-choice config field and apply its safe default."""
+    if key not in CONFIG_ENUM_OPTIONS:
+        raise ValueError(f"Unsupported enum config key: {key}")
     normalized = str(value or "").strip().lower()
-    return normalized if normalized in MEDIA_CAPTION_MODES else "separate"
+    options = CONFIG_ENUM_OPTIONS[key]
+    return normalized if normalized in options else CONFIG_ENUM_DEFAULTS[key]
+
+
+def normalize_media_caption_mode(value: Any) -> str:
+    """Backward-compatible wrapper for media caption mode normalization."""
+    return normalize_config_enum("media_caption_mode", value)
+
+
+def normalize_pre_ack_public(value: Any) -> str:
+    """Normalize current and legacy group pre-ack values."""
+    if isinstance(value, bool):
+        return "mentions" if value else "never"
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "on"}:
+            return "mentions"
+        if normalized in {"false", "0", "no", "off", "none"}:
+            return "never"
+    return normalize_config_enum("pre_ack_public", value)
 
 
 def extract_plugin_defaults(config: Mapping[str, Any]) -> dict[str, Any]:
@@ -59,7 +99,11 @@ def extract_plugin_defaults(config: Mapping[str, Any]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in config.items():
         if key in PLUGIN_RAW_DEFAULT_KEYS:
-            result[key] = value
+            result[key] = (
+                normalize_config_enum(key, value)
+                if key in CONFIG_ENUM_OPTIONS
+                else value
+            )
             continue
         runtime_key = PLUGIN_DEFAULT_ALIASES.get(key)
         if runtime_key:

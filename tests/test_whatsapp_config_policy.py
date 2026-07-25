@@ -6,12 +6,20 @@ import unittest
 from pathlib import Path
 
 from whatsapp_config_policy import (
+    CONFIG_ENUM_DEFAULTS,
+    CONFIG_ENUM_OPTIONS,
+    DM_POLICIES,
     FIXED_RUNTIME_KEYS,
+    GROUP_POLICIES,
+    LOG_LEVELS,
     MEDIA_CAPTION_MODES,
     PLUGIN_DEFAULT_ALIASES,
+    PRE_ACK_PUBLIC_MODES,
     extract_plugin_defaults,
     merge_runtime_config,
+    normalize_config_enum,
     normalize_media_caption_mode,
+    normalize_pre_ack_public,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,6 +43,44 @@ def _top_level_dict_keys(source: str, name: str) -> set[str]:
     raise AssertionError(f"{name} not found")
 
 
+def _metadata_option_bindings(source: str) -> dict[str, str]:
+    tree = ast.parse(source)
+    for node in tree.body:
+        if not isinstance(node, ast.AnnAssign):
+            continue
+        if not isinstance(node.target, ast.Name) or node.target.id != "CONFIG_METADATA":
+            continue
+        if not isinstance(node.value, ast.Dict):
+            raise AssertionError("CONFIG_METADATA is not a dict literal")
+        bindings: dict[str, str] = {}
+        for key_node, value_node in zip(node.value.keys, node.value.values):
+            if not (
+                isinstance(key_node, ast.Constant)
+                and isinstance(key_node.value, str)
+                and isinstance(value_node, ast.Dict)
+            ):
+                continue
+            for inner_key, inner_value in zip(value_node.keys, value_node.values):
+                if not (
+                    isinstance(inner_key, ast.Constant)
+                    and inner_key.value == "options"
+                ):
+                    continue
+                if not (
+                    isinstance(inner_value, ast.Call)
+                    and isinstance(inner_value.func, ast.Name)
+                    and inner_value.func.id == "list"
+                    and len(inner_value.args) == 1
+                    and isinstance(inner_value.args[0], ast.Name)
+                ):
+                    raise AssertionError(
+                        f"{key_node.value} options must use list(CONSTANT)"
+                    )
+                bindings[key_node.value] = inner_value.args[0].id
+        return bindings
+    raise AssertionError("CONFIG_METADATA not found")
+
+
 class WhatsAppConfigPolicyTests(unittest.TestCase):
     def test_platform_instance_overrides_plugin_defaults(self) -> None:
         merged = merge_runtime_config(
@@ -53,18 +99,48 @@ class WhatsAppConfigPolicyTests(unittest.TestCase):
         )
         self.assertFalse(merged["typing_indicator"])
 
-    def test_media_caption_mode_validation(self) -> None:
+    def test_all_finite_choices_have_safe_normalization(self) -> None:
+        self.assertEqual(LOG_LEVELS, ("silent", "fatal", "error", "warn", "info", "debug", "trace"))
+        self.assertEqual(DM_POLICIES, ("allowlist", "open", "disabled"))
+        self.assertEqual(GROUP_POLICIES, ("allowlist", "open", "disabled"))
         self.assertEqual(MEDIA_CAPTION_MODES, ("separate", "caption"))
+        self.assertEqual(PRE_ACK_PUBLIC_MODES, ("always", "mentions", "never"))
+        self.assertEqual(set(CONFIG_ENUM_OPTIONS), set(CONFIG_ENUM_DEFAULTS))
+
+        valid_values = {
+            "log_level": " DEBUG ",
+            "dm_policy": " OPEN ",
+            "group_policy": " ALLOWLIST ",
+            "media_caption_mode": " CAPTION ",
+            "pre_ack_public": " ALWAYS ",
+        }
+        for key, value in valid_values.items():
+            with self.subTest(key=key):
+                self.assertEqual(normalize_config_enum(key, value), value.strip().lower())
+
+        for key, default in CONFIG_ENUM_DEFAULTS.items():
+            with self.subTest(key=key):
+                self.assertEqual(normalize_config_enum(key, "invalid"), default)
+
+        with self.assertRaises(ValueError):
+            normalize_config_enum("unknown", "value")
+
+    def test_media_caption_and_pre_ack_legacy_values(self) -> None:
         self.assertEqual(normalize_media_caption_mode(" CAPTION "), "caption")
-        for invalid in (None, "", "before", "after", 123):
-            with self.subTest(invalid=invalid):
-                self.assertEqual(normalize_media_caption_mode(invalid), "separate")
+        self.assertEqual(normalize_media_caption_mode("before"), "separate")
+        self.assertEqual(normalize_pre_ack_public(True), "mentions")
+        self.assertEqual(normalize_pre_ack_public(False), "never")
+        self.assertEqual(normalize_pre_ack_public("yes"), "mentions")
+        self.assertEqual(normalize_pre_ack_public("off"), "never")
+        self.assertEqual(normalize_pre_ack_public("always"), "always")
+        self.assertEqual(normalize_pre_ack_public("invalid"), "mentions")
 
     def test_plugin_default_aliases_and_fixed_keys(self) -> None:
         config = {
             "default_typing_indicator": False,
             "default_streaming_edit_throttle": 0.5,
             "gateway_port": 18888,
+            "log_level": " DEBUG ",
             "text_chunk_limit": 100,
             "media_max_mb": 1,
             "command_prefix": "!",
@@ -75,6 +151,7 @@ class WhatsAppConfigPolicyTests(unittest.TestCase):
         self.assertIs(extracted["typing_indicator"], False)
         self.assertEqual(extracted["streaming_edit_throttle"], 0.5)
         self.assertEqual(extracted["gateway_port"], 18888)
+        self.assertEqual(extracted["log_level"], "debug")
         for key in FIXED_RUNTIME_KEYS:
             self.assertNotIn(key, extracted)
         self.assertNotIn("unknown", extracted)
@@ -101,6 +178,24 @@ class WhatsAppConfigPolicyTests(unittest.TestCase):
         }
         self.assertTrue(hidden.isdisjoint(defaults))
 
+    def test_all_finite_platform_fields_are_dropdowns(self) -> None:
+        source = (ROOT / "whatsapp_adapter.py").read_text("utf-8")
+        self.assertEqual(
+            _metadata_option_bindings(source),
+            {
+                "log_level": "LOG_LEVELS",
+                "dm_policy": "DM_POLICIES",
+                "group_policy": "GROUP_POLICIES",
+                "media_caption_mode": "MEDIA_CAPTION_MODES",
+                "pre_ack_public": "PRE_ACK_PUBLIC_MODES",
+            },
+        )
+        self.assertIn(
+            'if key in {"log_level", "dm_policy", "group_policy", "media_caption_mode"}:',
+            source,
+        )
+        self.assertIn("return normalize_pre_ack_public(value)", source)
+
     def test_plugin_schema_exposes_only_prefixed_global_defaults(self) -> None:
         schema = json.loads((ROOT / "_conf_schema.json").read_text("utf-8"))
         self.assertTrue(set(PLUGIN_DEFAULT_ALIASES) <= set(schema))
@@ -108,6 +203,7 @@ class WhatsAppConfigPolicyTests(unittest.TestCase):
             self.assertNotIn(runtime_key, schema)
         for fixed_key in FIXED_RUNTIME_KEYS:
             self.assertNotIn(fixed_key, schema)
+        self.assertEqual(schema["log_level"]["options"], list(LOG_LEVELS))
 
     def test_astrbot_owns_command_wake_handling(self) -> None:
         adapter_source = (ROOT / "whatsapp_adapter.py").read_text("utf-8")
@@ -129,10 +225,14 @@ class WhatsAppConfigPolicyTests(unittest.TestCase):
         self.assertIn("extract_plugin_defaults(loaded_plugin_config)", source)
         self.assertIn("if key in PERSISTED_PLATFORM_KEYS", source)
         self.assertIn(
-            "merge_runtime_config(\n"
-            "            RUNTIME_DEFAULT_CONFIG,\n"
-            "            plugin_config,\n"
-            "            platform_config,\n"
+            "merge_runtime_config(
+"
+            "            RUNTIME_DEFAULT_CONFIG,
+"
+            "            plugin_config,
+"
+            "            platform_config,
+"
             "        )",
             source,
         )

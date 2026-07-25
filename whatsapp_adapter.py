@@ -41,9 +41,15 @@ from .whatsapp_components import (
 )
 from .whatsapp_event import WhatsAppMessageEvent
 from .whatsapp_config_policy import (
+    DM_POLICIES,
+    GROUP_POLICIES,
+    LOG_LEVELS,
+    MEDIA_CAPTION_MODES,
+    PRE_ACK_PUBLIC_MODES,
     extract_plugin_defaults,
     merge_runtime_config,
-    normalize_media_caption_mode,
+    normalize_config_enum,
+    normalize_pre_ack_public,
 )
 from .whatsapp_helpers import (
     flush_pending_text,
@@ -288,12 +294,14 @@ CONFIG_METADATA: dict[str, Any] = {
         "description": "Gateway 日志级别",
         "type": "string",
         "group": "connection",
+        "options": list(LOG_LEVELS),
         "hint": "可选：silent、fatal、error、warn、info、debug、trace。",
     },
     "dm_policy": {
         "description": "私聊接收策略",
         "type": "string",
         "group": "permissions",
+        "options": list(DM_POLICIES),
         "hint": "allowlist=仅允许名单中号码；open=开放所有人私聊；disabled=关闭私聊功能。",
     },
     "allow_from": {
@@ -306,6 +314,7 @@ CONFIG_METADATA: dict[str, Any] = {
         "description": "群聊接收策略",
         "type": "string",
         "group": "permissions",
+        "options": list(GROUP_POLICIES),
         "hint": "allowlist=仅允许在群名单中的群；open=允许所有已加入群；disabled=关闭群聊功能。",
     },
     "groups": {
@@ -354,7 +363,7 @@ CONFIG_METADATA: dict[str, Any] = {
         "description": "媒体附加文字模式",
         "type": "string",
         "group": "messaging",
-        "options": ["separate", "caption"],
+        "options": list(MEDIA_CAPTION_MODES),
         "hint": "separate=文字与媒体分开发送；caption=紧邻媒体前的文字作为该媒体描述。仅影响普通富媒体消息链，流式回复中的媒体仍分开发送。",
     },
     "text_chunk_limit": {
@@ -403,6 +412,7 @@ CONFIG_METADATA: dict[str, Any] = {
         "description": "群聊预回应模式",
         "type": "string",
         "group": "ack",
+        "options": list(PRE_ACK_PUBLIC_MODES),
         "hint": "always=始终触发预回应；mentions=仅被 @ 或回复时触发；never=不触发预回应。",
     },
     "pre_ack_emojis": {
@@ -1664,18 +1674,10 @@ class WhatsAppPlatformAdapter(Platform):
     def _normalize_config_value(self, key: str, value: Any) -> Any:
         if key in {"allow_from", "group_allow_from", "groups"}:
             return self._coerce_str_list(value)
-        if key == "media_caption_mode":
-            return normalize_media_caption_mode(value)
+        if key in {"log_level", "dm_policy", "group_policy", "media_caption_mode"}:
+            return normalize_config_enum(key, value)
         if key == "pre_ack_public":
-            if isinstance(value, str):
-                normalized = value.strip().lower()
-                if normalized in {"mentions", "always", "never"}:
-                    return normalized
-                if normalized in {"true", "1", "yes", "on"}:
-                    return "always"
-                if normalized in {"false", "0", "no", "off", "none"}:
-                    return "never"
-            return value
+            return normalize_pre_ack_public(value)
         return value
 
     def _coerce_str_list(self, value: Any) -> list[str]:
@@ -2018,11 +2020,7 @@ def sanitize_whatsapp_platform_config(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def _coerce_pre_ack_public(value: Any) -> str:
-    if isinstance(value, str) and value in {"always", "mentions", "never"}:
-        return value
-    if isinstance(value, bool):
-        return "mentions" if value else "never"
-    return "mentions"
+    return normalize_pre_ack_public(value)
 
 
 def patch_platform_manager_hot_reload() -> None:
