@@ -33,6 +33,7 @@ from astrbot.core.platform.astr_message_event import MessageSesion
 from astrbot.core.platform.platform import PlatformStatus
 
 from .whatsapp_client import GatewayProcess, WhatsAppGatewayClient, WhatsAppGatewayError
+from .whatsapp_commands import collect_registered_commands, message_matches_command
 from .whatsapp_components import (
     WhatsAppButtons,
     WhatsAppEdit,
@@ -46,7 +47,11 @@ from .whatsapp_config_policy import (
     LOG_LEVELS,
     MEDIA_CAPTION_MODES,
     PRE_ACK_PUBLIC_MODES,
+    extract_legacy_behavior_overrides,
+    extract_legacy_command_prefix,
     extract_plugin_defaults,
+    get_runtime_plugin_defaults,
+    get_runtime_wake_prefixes,
     merge_runtime_config,
     normalize_config_enum,
     normalize_pre_ack_public,
@@ -165,7 +170,6 @@ BASE_GATEWAY_CONFIG: dict[str, Any] = {
 }
 
 RUNTIME_DEFAULT_CONFIG: dict[str, Any] = {
-    **BASE_GATEWAY_CONFIG,
     "dm_policy": "allowlist",
     "allow_from": [],
     "group_policy": "disabled",
@@ -861,13 +865,13 @@ class WhatsAppPlatformAdapter(Platform):
         platform_settings: dict[str, Any],
         event_queue: asyncio.Queue,
     ) -> None:
+        raw_platform_config = dict(platform_config or {})
+        sanitized_config = sanitize_whatsapp_platform_config(raw_platform_config)
         if isinstance(platform_config, dict):
-            sanitized_inplace = sanitize_whatsapp_platform_config(platform_config)
-            if platform_config is not sanitized_inplace:
-                platform_config.clear()
-                platform_config.update(sanitized_inplace)
-        super().__init__(platform_config or {}, event_queue)
-        self.config = self._merged_config(platform_config or {})
+            platform_config.clear()
+            platform_config.update(sanitized_config)
+        super().__init__(sanitized_config, event_queue)
+        self.config = self._merged_config(sanitized_config)
         self.client = WhatsAppGatewayClient(self._base_url)
         self.gateway_process: GatewayProcess | None = None
         self._stopped = asyncio.Event()
@@ -877,12 +881,15 @@ class WhatsAppPlatformAdapter(Platform):
         self._restarting = False
         self._last_gateway_status_log: tuple[Any, Any, Any] | None = None
         self._quiet_next_gateway_connect = False
-        self._platform_config = platform_config or {}
+        self._platform_config = sanitized_config
         self._platform_settings = platform_settings or {}
+        self._registered_commands: list[str] = []
+        self._legacy_command_prefix = extract_legacy_command_prefix(sanitized_config)
         self._send_text_buffers: dict[str, str] = {}
         self._send_text_sessions: dict[str, MessageSesion] = {}
         self._send_text_tasks: dict[str, asyncio.Task] = {}
         _ACTIVE_ADAPTERS.add(self)
+        self._refresh_registered_commands()
         _load_lid_mappings(self._auth_dir())
         logger.info(
             "WhatsApp platform adapter initialized: gateway=%s auto_start=%s dm_policy=%s allow_from=%s group_policy=%s groups=%s auth_dir=%s",
@@ -1095,8 +1102,10 @@ class WhatsAppPlatformAdapter(Platform):
 
     async def reload(self, platform_config: dict[str, Any]) -> None:
         """熱重載平台配置：僅供插件配置重載時同步運行中實例。"""
-        self._platform_config = platform_config or {}
+        self._platform_config = sanitize_whatsapp_platform_config(platform_config or {})
         self.config = self._merged_config(self._platform_config)
+        self._legacy_command_prefix = extract_legacy_command_prefix(self._platform_config)
+        self._refresh_registered_commands()
         self.client.update_base_url(self._base_url)
         await self._stop_health_monitor()
         self._force_gateway_restart = True
@@ -1212,8 +1221,22 @@ class WhatsAppPlatformAdapter(Platform):
         is_self_mentioned = self._message_mentions_self(raw)
         is_reply_to_self = self._reply_targets_self(raw)
         is_reaction_only = self._is_reaction_only(raw)
+        original_text = message.message_str or ""
+        is_command = self._message_matches_known_command(original_text)
+        is_legacy_command = bool(
+            self._legacy_command_prefix
+            and message_matches_command(
+                original_text,
+                self._registered_commands,
+                prefix=self._legacy_command_prefix,
+            )
+        )
+        event_text = original_text
+        if is_legacy_command:
+            stripped = original_text.strip()
+            event_text = stripped[len(self._legacy_command_prefix):].strip()
         event = WhatsAppMessageEvent(
-            message_str=message.message_str,
+            message_str=event_text,
             message_obj=message,
             platform_meta=self.meta(),
             session_id=message.session_id,
@@ -1248,14 +1271,18 @@ class WhatsAppPlatformAdapter(Platform):
             else:
                 group_mode = self._group_pre_ack_mode()
                 should_ack = group_mode == "always" or (
-                    group_mode == "mentions" and (is_self_mentioned or is_reply_to_self)
+                    group_mode == "mentions" and (is_self_mentioned or is_reply_to_self or is_command)
                 )
             if should_ack:
-                event.is_at_or_wake_command = True
-                event.is_wake = True
+                if not is_command:
+                    event.is_at_or_wake_command = True
+                    event.is_wake = True
                 await self._pre_ack(event)
+        if is_legacy_command:
+            event.is_at_or_wake_command = True
+            event.is_wake = True
         logger.info(
-            "Committing WhatsApp event: session=%s sender=%s raw_sender=%s message_id=%s text_len=%s self_mentioned=%s reply_to_self=%s is_private=%s",
+            "Committing WhatsApp event: session=%s sender=%s raw_sender=%s message_id=%s text_len=%s self_mentioned=%s reply_to_self=%s is_private=%s is_command=%s legacy_command=%s",
             message.session_id,
             getattr(message.sender, "user_id", None),
             raw.get("senderJid"),
@@ -1264,6 +1291,8 @@ class WhatsAppPlatformAdapter(Platform):
             is_self_mentioned,
             is_reply_to_self,
             is_private,
+            is_command,
+            is_legacy_command,
         )
         self.commit_event(event)
 
@@ -1637,11 +1666,12 @@ class WhatsAppPlatformAdapter(Platform):
 
     def _merged_config(self, platform_config: dict[str, Any]) -> dict[str, Any]:
         loaded_plugin_config = self._normalize_config(self._load_plugin_config())
-        plugin_config = extract_plugin_defaults(loaded_plugin_config)
-        # Ignore stale keys left by older platform UI versions. This prevents
-        # removed generic/fixed settings from silently overriding global or
-        # protocol defaults after an upgrade.
-        platform_config = {
+        plugin_config = {
+            **extract_plugin_defaults(loaded_plugin_config),
+            **get_runtime_plugin_defaults(),
+        }
+        legacy_behavior = extract_legacy_behavior_overrides(platform_config)
+        instance_config = {
             key: value
             for key, value in self._normalize_config(platform_config).items()
             if key in PERSISTED_PLATFORM_KEYS
@@ -1649,7 +1679,7 @@ class WhatsAppPlatformAdapter(Platform):
         merged = merge_runtime_config(
             RUNTIME_DEFAULT_CONFIG,
             plugin_config,
-            platform_config,
+            {**legacy_behavior, **instance_config},
         )
         logger.debug(
             "WhatsApp config merged: platform_keys=%s plugin_overrides=%s effective=%s",
@@ -2000,6 +2030,19 @@ class WhatsAppPlatformAdapter(Platform):
             return f"<{len(value)} entries>"
         return "<0 entries>" if value in (None, "") else "<1 entry>"
 
+    def _refresh_registered_commands(self) -> None:
+        self._registered_commands = collect_registered_commands()
+
+    def _message_matches_known_command(self, text: str) -> bool:
+        prefixes = list(get_runtime_wake_prefixes())
+        if self._legacy_command_prefix:
+            prefixes.append(self._legacy_command_prefix)
+        return any(
+            message_matches_command(text, self._registered_commands, prefix=prefix)
+            for prefix in dict.fromkeys(prefixes)
+            if prefix
+        )
+
 def get_active_whatsapp_adapters() -> list["WhatsAppPlatformAdapter"]:
     return list(_ACTIVE_ADAPTERS)
 
@@ -2013,6 +2056,15 @@ def sanitize_whatsapp_platform_config(config: dict[str, Any]) -> dict[str, Any]:
         if key == "pre_ack_public":
             value = _coerce_pre_ack_public(value)
         sanitized[key] = value
+
+    # Preserve only explicit old per-instance behaviour choices. Historical
+    # template defaults are ignored so plugin-wide default_* settings can work.
+    for key, value in extract_legacy_behavior_overrides(config).items():
+        sanitized[f"_legacy_{key}"] = value
+    legacy_prefix = extract_legacy_command_prefix(config)
+    if legacy_prefix:
+        sanitized["_legacy_command_prefix"] = legacy_prefix
+
     for key in ("type", "enable", "id"):
         if key in config:
             sanitized[key] = config[key]
