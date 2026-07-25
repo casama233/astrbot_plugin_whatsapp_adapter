@@ -100,7 +100,10 @@ class WhatsAppConfigPolicyTests(unittest.TestCase):
         self.assertFalse(merged["typing_indicator"])
 
     def test_all_finite_choices_have_safe_normalization(self) -> None:
-        self.assertEqual(LOG_LEVELS, ("silent", "fatal", "error", "warn", "info", "debug", "trace"))
+        self.assertEqual(
+            LOG_LEVELS,
+            ("silent", "fatal", "error", "warn", "info", "debug", "trace"),
+        )
         self.assertEqual(DM_POLICIES, ("allowlist", "open", "disabled"))
         self.assertEqual(GROUP_POLICIES, ("allowlist", "open", "disabled"))
         self.assertEqual(MEDIA_CAPTION_MODES, ("separate", "caption"))
@@ -116,7 +119,10 @@ class WhatsAppConfigPolicyTests(unittest.TestCase):
         }
         for key, value in valid_values.items():
             with self.subTest(key=key):
-                self.assertEqual(normalize_config_enum(key, value), value.strip().lower())
+                self.assertEqual(
+                    normalize_config_enum(key, value),
+                    value.strip().lower(),
+                )
 
         for key, default in CONFIG_ENUM_DEFAULTS.items():
             with self.subTest(key=key):
@@ -225,14 +231,10 @@ class WhatsAppConfigPolicyTests(unittest.TestCase):
         self.assertIn("extract_plugin_defaults(loaded_plugin_config)", source)
         self.assertIn("if key in PERSISTED_PLATFORM_KEYS", source)
         self.assertIn(
-            "merge_runtime_config(
-"
-            "            RUNTIME_DEFAULT_CONFIG,
-"
-            "            plugin_config,
-"
-            "            platform_config,
-"
+            "merge_runtime_config(\n"
+            "            RUNTIME_DEFAULT_CONFIG,\n"
+            "            plugin_config,\n"
+            "            platform_config,\n"
             "        )",
             source,
         )
