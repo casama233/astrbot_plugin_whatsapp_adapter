@@ -31,7 +31,7 @@ PLUGIN_DIR = Path(__file__).resolve().parent
     PLUGIN_NAME,
     "OpenCode",
     "WhatsApp Web platform adapter backed by a local Gateway process.",
-    "0.2.20",
+    "0.2.21",
 )
 class WhatsAppAdapterPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None):
@@ -72,6 +72,12 @@ class WhatsAppAdapterPlugin(Star):
             ["POST"],
             "Logout WhatsApp Web session",
         )
+        context.register_web_api(
+            f"/{PLUGIN_NAME}/session/reset",
+            self.page_reset_session,
+            ["POST"],
+            "Reset invalid WhatsApp Web session and generate a fresh QR",
+        )
 
         from .whatsapp_adapter import (  # noqa: F401
             WhatsAppPlatformAdapter,
@@ -99,7 +105,8 @@ class WhatsAppAdapterPlugin(Star):
             status = await self.page_client.status()
             status["baseUrl"] = self._base_url
             status["plugin"] = PLUGIN_NAME
-            status["gatewayHealthy"] = bool(status.get("ok", True) and status.get("ready"))
+            # Gateway liveness and WhatsApp login readiness are separate signals.
+            status["gatewayHealthy"] = bool(status.get("ok", True))
             status["configuredAuthDir"] = str(self._auth_dir())
             logger.debug("WhatsApp 管理页状态请求: %s", self._safe_status(status))
             return jsonify(status)
@@ -138,6 +145,15 @@ class WhatsAppAdapterPlugin(Star):
             return jsonify(await self.page_client.logout())
         except Exception as exc:
             logger.warning("WhatsApp Gateway 登出失败（管理页）: %s", exc)
+            return jsonify({"ok": False, "error": str(exc), "baseUrl": self._base_url}), 503
+
+    async def page_reset_session(self):
+        await self._ensure_page_gateway()
+        try:
+            logger.info("WhatsApp 登录 session 重建（来自管理页）")
+            return jsonify(await self.page_client.reset_session())
+        except Exception as exc:
+            logger.warning("WhatsApp 登录 session 重建失败（管理页）: %s", exc)
             return jsonify({"ok": False, "error": str(exc), "baseUrl": self._base_url}), 503
 
     async def _ensure_page_gateway(self) -> None:

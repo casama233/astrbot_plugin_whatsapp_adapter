@@ -45,6 +45,7 @@ const els = {
 let countdown = 5;
 let countdownTimer = null;
 let loggedOutSince = 0;
+let currentConnectionStatus = "unknown";
 
 // ─── Helpers ───
 function fmtTime() {
@@ -111,8 +112,9 @@ function log(level, msg) {
 function renderDashboard(data) {
   // Connection status metric
   const status = data.status || (data.ready ? "connected" : "unknown");
+  currentConnectionStatus = status;
   const isReady = data.ready || status === "connected";
-  const isStarting = status === "starting" || data.hasQr;
+  const isStarting = ["starting", "pairing", "pairing_restart", "resetting", "qr_pending"].includes(status) || data.hasQr;
   const isError = !isReady && !isStarting;
 
   els.metricStatusText.textContent = isReady ? "已连接" : isStarting ? "等待连接" : "断开";
@@ -144,7 +146,7 @@ function renderDashboard(data) {
 function renderSession(data) {
   const status = data.status || (data.ready ? "connected" : "unknown");
   const isReady = data.ready || status === "connected";
-  const isStarting = status === "starting" || data.hasQr;
+  const isStarting = ["starting", "pairing", "pairing_restart", "resetting", "qr_pending"].includes(status) || data.hasQr;
 
   setTag(els.statusText,
     isReady ? "green" : isStarting ? "yellow" : "red",
@@ -216,7 +218,7 @@ function renderQr(data) {
   }
 
   // No QR yet — check for timeout in logged_out state
-  const isLoggedOut = data._status === "logged_out";
+  const isLoggedOut = ["logged_out", "session_invalid", "qr_expired", "error"].includes(data._status);
   const now = Date.now();
   if (isLoggedOut) {
     if (loggedOutSince === 0) loggedOutSince = now;
@@ -245,10 +247,10 @@ function renderQr(data) {
     retryBtn.textContent = "重试";
     retryBtn.addEventListener("click", () => {
       loggedOutSince = 0;
-      bridge.apiPost("restart", {}).then(() => {
-        log("info", "正在重试连接...");
+      bridge.apiPost("session/reset", {}).then(() => {
+        log("info", "已建立全新登录 session，正在等待二维码...");
         setTimeout(() => refresh().catch(() => {}), 1500);
-      }).catch((err) => log("error", `重试失败: ${err}`));
+      }).catch((err) => log("error", `重新建立登录失败: ${err}`));
     });
     placeholder.append(icon, title, hint, retryBtn);
     els.qrPhase.textContent = "连接失败";
@@ -258,14 +260,17 @@ function renderQr(data) {
     const spinner = document.createElement("div");
     spinner.className = "spinner";
     const title = document.createElement("p");
-    title.textContent = "正在连接 WhatsApp Web...";
+    const isPairing = ["pairing", "pairing_restart"].includes(data._status);
+    title.textContent = isPairing ? "手机已扫码，正在完成登录..." : "正在连接 WhatsApp Web...";
     const hint = document.createElement("p");
     hint.style.fontSize = "0.82rem";
-    hint.textContent = "首次启动需要数秒生成二维码";
+    hint.textContent = isPairing ? "请保持手机联网，不要刷新或重复扫码" : "首次启动需要数秒生成二维码";
     placeholder.append(spinner, title, hint);
-    els.qrPhase.textContent = "连接中";
+    els.qrPhase.textContent = isPairing ? "正在登录" : "连接中";
     els.qrPhase.className = "phase-badge connecting";
-    els.qrHint.textContent = "首次启动需要几秒钟连接 WhatsApp。";
+    els.qrHint.textContent = isPairing
+      ? "登录成功后页面会自动切换为已连接。"
+      : "首次启动需要几秒钟连接 WhatsApp。";
   }
   els.qrWrap.appendChild(placeholder);
 }
@@ -329,7 +334,19 @@ function handleRefresh() {
 }
 
 els.refreshBtn.addEventListener("click", handleRefresh);
-els.refreshQrBtn?.addEventListener("click", handleRefresh);
+els.refreshQrBtn?.addEventListener("click", async () => {
+  if (["logged_out", "session_invalid", "qr_expired", "error"].includes(currentConnectionStatus)) {
+    log("warn", "登录状态已失效，正在建立全新登录 session...");
+    try {
+      await bridge.apiPost("session/reset", {});
+    } catch (err) {
+      log("error", `重新建立登录失败: ${err}`);
+    }
+    setTimeout(() => refresh().catch(() => {}), 1000);
+    return;
+  }
+  handleRefresh();
+});
 
 els.restartBtn.addEventListener("click", async () => {
   log("warn", "正在重启连接...");

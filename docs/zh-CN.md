@@ -153,6 +153,7 @@ Gateway 默认监听 `127.0.0.1:18789`：
 | POST | `/config` | 推送配置 |
 | POST | `/restart` | 重启 socket |
 | POST | `/logout` | 登出 |
+| POST | `/session/reset` | 重建登录 session 并生成新二维码 |
 | POST | `/presence` | 设置在线状态 |
 | POST | `/send/text` | 发送文字 |
 | POST | `/edit/text` | 编辑文字 |
@@ -180,7 +181,7 @@ data/plugin_data/astrbot_plugin_whatsapp_adapter/
 
 ### 页面没有二维码
 
-等待 5-10 秒后刷新。如果仍然没有，点「重启连接」。确认已执行 `npm install --omit=dev`。
+等待 5-10 秒后刷新。如果登录已失效，点击「刷新二维码」或错误区域的「重试」，页面会隔离旧凭证并建立全新扫码 session。确认已执行 `npm install --omit=dev`。
 
 ### 扫码后没收到消息
 
