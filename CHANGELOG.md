@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.23] - 2026-07-27
+
+### Fixed
+- 关闭 `default_mark_online` 时，机器人回复期间仍会短暂显示在线并刷新「最后在线」：发送顺序为全局 `available` → 当前会话 `composing` → `paused` → 全局 `unavailable`。
+- 回复结束后仍会立即恢复离线，不会重新引入长期显示在线的问题。
+
 ## [0.2.22] - 2026-07-27
 
 ### Fixed

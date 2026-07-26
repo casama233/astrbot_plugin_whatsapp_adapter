@@ -396,6 +396,28 @@ async function sendUnavailablePresence() {
   lastPresenceAt = null;
 }
 
+async function sendReplyPresence(state, to) {
+  // `available` and `unavailable` are account-wide WhatsApp presence states;
+  // `composing` and `paused` are scoped to a chat.  When persistent online is
+  // disabled, briefly become available for a reply so the contact sees the
+  // real response activity, then explicitly return offline afterwards.
+  if (state === "composing" && !runtimeConfig.markOnline) {
+    await socket.sendPresenceUpdate("available");
+    lastPresenceAt = new Date().toISOString();
+  }
+
+  if (state === "paused") {
+    try {
+      await socket.sendPresenceUpdate("paused", to);
+    } finally {
+      if (!runtimeConfig.markOnline) await sendUnavailablePresence();
+    }
+    return;
+  }
+
+  await socket.sendPresenceUpdate(state, to);
+}
+
 function startPresenceTimer() {
   stopPresenceTimer();
   if (!runtimeConfig.markOnline) return;
@@ -1803,7 +1825,7 @@ const server = createServer(async (req, res) => {
         sendJson(res, 400, { error: "missing target jid" });
         return;
       }
-      await socket.sendPresenceUpdate(state, body.to);
+      await sendReplyPresence(state, body.to);
       sendJson(res, 200, { ok: true });
       return;
     }
