@@ -215,6 +215,9 @@ class WhatsAppGatewayClient:
     async def logout(self) -> dict[str, Any]:
         return await self._request("POST", "/logout", json_data={})
 
+    async def reset_session(self) -> dict[str, Any]:
+        return await self._request("POST", "/session/reset", json_data={})
+
     async def events(self) -> AsyncIterator[dict[str, Any]]:
         await self.start()
         if self._session is None:

@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { createWriteStream, statSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -18,11 +18,17 @@ import makeWASocket, {
 import pino from "pino";
 import QRCode from "qrcode";
 import qrcode from "qrcode-terminal";
+import {
+  disconnectKind,
+  reconnectDelayMs,
+  sessionDirectory,
+} from "./session-lifecycle.mjs";
 
 const host = process.env.WA_GATEWAY_HOST || "127.0.0.1";
 const port = Number.parseInt(process.env.WA_GATEWAY_PORT || "18789", 10);
 const dataDir = process.env.WA_DATA_DIR || path.join(process.cwd(), "data", "plugin_data", "astrbot_plugin_whatsapp_adapter");
 const authDir = process.env.WA_AUTH_DIR || path.join(dataDir, "whatsapp-auth");
+const activeSessionFile = path.join(authDir, ".active-session.json");
 const logLevel = process.env.WA_LOG_LEVEL || "info";
 const tempDir = process.env.WA_TEMP_DIR || path.join(dataDir, "..", "..", "temp");
 
@@ -33,6 +39,12 @@ const maxSeenIncomingMessages = 2000;
 const albumBuffers = new Map();
 
 let socket = null;
+let currentAuthDir = authDir;
+let currentSessionId = "legacy";
+let socketTransition = Promise.resolve();
+let resetSequence = 0;
+let consecutiveFreshAuthFailures = 0;
+let transientReconnectAttempt = 0;
 let ready = false;
 let configured = false;
 let selfJid = null;
@@ -73,8 +85,8 @@ async function persistLidMapping(lidJid, pnJid) {
   const pnNum = normalizeJid(pnJid).replace(/\D/g, "");
   if (!lidNum || !pnNum) return;
   try {
-    await mkdir(authDir, { recursive: true });
-    await writeFile(path.join(authDir, `lid-mapping-${lidNum}_reverse.json`), JSON.stringify(pnNum), "utf-8");
+    await mkdir(currentAuthDir, { recursive: true });
+    await writeFile(path.join(currentAuthDir, `lid-mapping-${lidNum}_reverse.json`), JSON.stringify(pnNum), "utf-8");
   } catch (error) {
     log.debug({ error, lidJid, pnJid }, "failed to persist lid→pn mapping");
   }
@@ -158,13 +170,13 @@ async function resolveLidToPnDeep(lidJid) {
  */
 async function loadLidMappingsFromDisk() {
   try {
-    const files = await readdir(authDir);
+    const files = await readdir(currentAuthDir);
     let loaded = 0;
     for (const name of files) {
       const match = name.match(/^lid-mapping-(\d+)_reverse\.json$/);
       if (!match) continue;
       try {
-        const content = await readFile(path.join(authDir, name), "utf-8");
+        const content = await readFile(path.join(currentAuthDir, name), "utf-8");
         const phone = JSON.parse(content);
         if (phone && typeof phone === "string") {
           const lid = `${match[1]}@lid`;
@@ -1196,11 +1208,119 @@ async function handleIncomingMessage(item, options = {}) {
   });
 }
 
-const MAX_EXPLICIT_RETRIES = 2;
+function enqueueSocketTransition(label, action) {
+  const run = socketTransition.then(action, action);
+  socketTransition = run.catch((error) => {
+    connectionStatus = "error";
+    lastError = String(error?.message || error);
+    broadcast({ type: "status", status: connectionStatus, ready: false, lastError });
+    log.error({ error, label }, "socket transition failed");
+  });
+  return run;
+}
+
+async function initializeAuthSession() {
+  await mkdir(authDir, { recursive: true });
+  try {
+    const pointer = JSON.parse(await readFile(activeSessionFile, "utf-8"));
+    if (pointer?.sessionId) {
+      currentSessionId = String(pointer.sessionId);
+      currentAuthDir = sessionDirectory(authDir, currentSessionId);
+      await mkdir(currentAuthDir, { recursive: true });
+      return;
+    }
+  } catch {
+    // Existing installations keep using the legacy root until the first reset.
+  }
+  currentSessionId = "legacy";
+  currentAuthDir = authDir;
+}
+
+async function activateFreshAuthSession(reason) {
+  const sessionId = `${Date.now()}-${randomUUID()}`;
+  const nextDir = sessionDirectory(authDir, sessionId);
+  await mkdir(nextDir, { recursive: true });
+  const tempPointer = `${activeSessionFile}.${process.pid}.${randomUUID()}.tmp`;
+  await writeFile(tempPointer, JSON.stringify({
+    sessionId,
+    createdAt: new Date().toISOString(),
+    reason,
+  }), "utf-8");
+  await rename(tempPointer, activeSessionFile);
+  currentSessionId = sessionId;
+  currentAuthDir = nextDir;
+  return sessionId;
+}
+
+function invalidateCurrentSocket() {
+  const oldSocket = socket;
+  ++socketGeneration;
+  if (reconnectTimer) clearTimeout(reconnectTimer);
+  reconnectTimer = null;
+  if (oldSocket?.ev?.removeAllListeners) {
+    try {
+      oldSocket.ev.removeAllListeners();
+    } catch (error) {
+      log.debug({ error }, "failed to remove old socket listeners");
+    }
+  }
+  if (oldSocket?.end) {
+    try {
+      oldSocket.end(undefined);
+    } catch (error) {
+      log.debug({ error }, "failed to close old socket");
+    }
+  }
+  socket = null;
+  ready = false;
+  stopPresenceTimer();
+  clearAlbumBuffers();
+}
+
+async function resetSocketSession(reason = "manual_reset") {
+  if (String(reason).startsWith("manual_")) {
+    consecutiveFreshAuthFailures = 0;
+    transientReconnectAttempt = 0;
+  }
+  connectionStatus = "resetting";
+  broadcast({ type: "status", status: connectionStatus, ready: false, reason });
+  invalidateCurrentSocket();
+  selfJid = null;
+  selfLid = null;
+  latestQr = null;
+  latestQrDataUrl = null;
+  lastPresenceAt = null;
+  lastError = null;
+  const sessionId = await activateFreshAuthSession(reason);
+  resetSequence += 1;
+  log.info({ reason, sessionId, resetSequence }, "activated fresh isolated auth session");
+  await startSocket({ fresh: true });
+  return { ok: true, status: connectionStatus, sessionId, resetSequence };
+}
+
+function requestSocketStart(opts = {}) {
+  return enqueueSocketTransition("start", () => startSocket(opts));
+}
+
+function requestSessionReset(reason) {
+  return enqueueSocketTransition("reset", () => resetSocketSession(reason));
+}
+
+function requestLogoutAndReset(reason) {
+  return enqueueSocketTransition("logout_reset", async () => {
+    // Make every event from the retiring socket stale before requesting remote logout.
+    ++socketGeneration;
+    if (ready && socket?.logout) {
+      await Promise.race([
+        socket.logout().catch((error) => log.debug({ error }, "socket logout failed")),
+        new Promise((resolve) => setTimeout(resolve, 3000)),
+      ]);
+    }
+    return resetSocketSession(reason);
+  });
+}
 
 async function startSocket(opts = {}) {
-  const explicit = Boolean(opts.explicit);
-  const retryCount = Number(opts.retryCount) || 0;
   const generation = ++socketGeneration;
   if (reconnectTimer) clearTimeout(reconnectTimer);
   reconnectTimer = null;
@@ -1215,8 +1335,8 @@ async function startSocket(opts = {}) {
   ready = false;
   stopPresenceTimer();
   connectionStatus = "starting";
-  await mkdir(authDir, { recursive: true });
-  const { state, saveCreds } = await useMultiFileAuthState(authDir);
+  await mkdir(currentAuthDir, { recursive: true });
+  const { state, saveCreds } = await useMultiFileAuthState(currentAuthDir);
   const { version } = await fetchLatestBaileysVersion();
   socket = makeWASocket({
     version,
@@ -1228,9 +1348,15 @@ async function startSocket(opts = {}) {
     syncFullHistory: false,
   });
 
-  socket.ev.on("creds.update", (...args) => {
+  let credsSaveQueue = Promise.resolve();
+  socket.ev.on("creds.update", () => {
     if (generation !== socketGeneration) return;
-    saveCreds(...args);
+    credsSaveQueue = credsSaveQueue
+      .then(() => saveCreds())
+      .catch((error) => {
+        lastError = `保存登录凭证失败: ${String(error?.message || error)}`;
+        log.error({ error, generation, sessionId: currentSessionId }, "failed to persist auth credentials");
+      });
   });
   socket.ev.on("contacts.upsert", (contacts) => {
     for (const contact of contacts || []) {
@@ -1277,18 +1403,28 @@ async function startSocket(opts = {}) {
   });
   socket.ev.on("connection.update", (update) => {
     if (generation !== socketGeneration) return;
-    const { connection, lastDisconnect, qr } = update;
+    const { connection, lastDisconnect, qr, isNewLogin } = update;
     if (qr) {
+      connectionStatus = "qr_pending";
       latestQr = qr;
       QRCode.toDataURL(qr, { margin: 1, width: 320 })
         .then((dataUrl) => {
+          if (generation !== socketGeneration) return;
           latestQrDataUrl = dataUrl;
           broadcast({ type: "qr", qr, qrDataUrl: dataUrl });
         })
         .catch((error) => log.warn({ error }, "failed to render qr data url"));
       qrcode.generate(qr, { small: true });
     }
+    if (isNewLogin) {
+      latestQr = null;
+      latestQrDataUrl = null;
+      connectionStatus = "pairing";
+      broadcast({ type: "status", status: connectionStatus, ready: false });
+    }
     if (connection === "open") {
+      consecutiveFreshAuthFailures = 0;
+      transientReconnectAttempt = 0;
       ready = true;
       latestQr = null;
       latestQrDataUrl = null;
@@ -1312,23 +1448,58 @@ async function startSocket(opts = {}) {
       const statusCode = lastDisconnect?.error?.output?.statusCode;
       const errorMsg = lastDisconnect?.error?.message || lastDisconnect?.error?.output?.payload?.message || `statusCode=${statusCode}`;
       lastError = `连接关闭: ${errorMsg}`;
-      connectionStatus = statusCode === DisconnectReason.loggedOut ? "logged_out" : "disconnected";
-      broadcast({ type: "status", status: "disconnected", statusCode, lastError });
-      if (statusCode !== DisconnectReason.loggedOut) {
+      const kind = disconnectKind(statusCode);
+      const qrExpired = !state.creds.registered && /QR refs attempts ended/i.test(errorMsg);
+      if (qrExpired) {
+        connectionStatus = "qr_expired";
+        latestQr = null;
+        latestQrDataUrl = null;
+        broadcast({ type: "status", status: connectionStatus, statusCode, lastError });
+        return;
+      }
+      connectionStatus = kind === "auth_invalid" ? "session_invalid" : "disconnected";
+      if (kind === "auth_invalid") {
+        selfJid = null;
+        selfLid = null;
+        latestQr = null;
+        latestQrDataUrl = null;
+      }
+      broadcast({ type: "status", status: connectionStatus, statusCode, lastError });
+      if (kind === "restart") {
+        connectionStatus = "pairing_restart";
+        broadcast({ type: "status", status: connectionStatus, ready: false, statusCode, lastError });
         if (reconnectTimer) clearTimeout(reconnectTimer);
         reconnectTimer = setTimeout(() => {
-          if (generation === socketGeneration) startSocket().catch((error) => log.error({ error }, "reconnect failed"));
-        }, 3000);
-      } else if (explicit && retryCount < MAX_EXPLICIT_RETRIES) {
-        log.info({ retryCount: retryCount + 1, max: MAX_EXPLICIT_RETRIES }, "explicit start got loggedOut, retrying");
+          if (generation !== socketGeneration) return;
+          credsSaveQueue
+            .then(() => requestSocketStart({ pairingRestart: true }))
+            .catch((error) => log.error({ error }, "pairing restart failed"));
+        }, 250);
+      } else if (kind === "transient") {
+        transientReconnectAttempt += 1;
+        const baseDelay = reconnectDelayMs(transientReconnectAttempt);
+        const jitteredDelay = Math.round(baseDelay * (0.8 + Math.random() * 0.4));
         if (reconnectTimer) clearTimeout(reconnectTimer);
         reconnectTimer = setTimeout(() => {
           if (generation === socketGeneration) {
-            startSocket({ explicit: true, retryCount: retryCount + 1 }).catch((error) =>
-              log.error({ error }, "explicit retry failed"),
-            );
+            requestSocketStart().catch((error) => log.error({ error }, "reconnect failed"));
           }
-        }, 2000);
+        }, jitteredDelay);
+        log.warn(
+          { statusCode, attempt: transientReconnectAttempt, retryInMs: jitteredDelay },
+          "transient disconnect; reconnect scheduled with backoff",
+        );
+      } else {
+        if (opts.fresh) consecutiveFreshAuthFailures += 1;
+        if (!opts.fresh || consecutiveFreshAuthFailures <= 2) {
+          requestSessionReset(`disconnect_${statusCode || "invalid_auth"}`).catch((error) =>
+            log.error({ error }, "automatic auth session reset failed"),
+          );
+        } else {
+          connectionStatus = "error";
+          lastError = `全新登录 session 仍连接失败: ${errorMsg}`;
+          broadcast({ type: "status", status: connectionStatus, ready: false, statusCode, lastError });
+        }
       }
     }
   });
@@ -1367,6 +1538,9 @@ function statusPayload() {
     selfJid,
     selfLid,
     authDir,
+    sessionAuthDir: currentAuthDir,
+    sessionId: currentSessionId,
+    resetSequence,
     hasQr: Boolean(latestQr),
     lastPresenceAt,
     lastError,
@@ -1580,33 +1754,18 @@ const server = createServer(async (req, res) => {
       return;
     }
     if (req.method === "POST" && url.pathname === "/restart") {
-      startSocket({ explicit: true }).catch((error) => log.error({ error }, "manual restart failed"));
-      sendJson(res, 200, { ok: true, status: "restarting" });
+      const result = ["session_invalid", "logged_out", "qr_expired"].includes(connectionStatus)
+        ? await requestSessionReset("manual_restart_invalid_session")
+        : (await requestSocketStart(), { ok: true, status: connectionStatus, sessionId: currentSessionId });
+      sendJson(res, 200, result);
       return;
     }
-    if (req.method === "POST" && url.pathname === "/logout") {
-      const oldSocket = socket;
-      ++socketGeneration;
-      if (reconnectTimer) clearTimeout(reconnectTimer);
-      reconnectTimer = null;
-      if (oldSocket?.logout) {
-        await oldSocket.logout().catch((error) => log.debug({ error }, "socket logout failed"));
-      }
-      if (oldSocket?.end) oldSocket.end(undefined);
-      socket = null;
-      ready = false;
-      selfJid = null;
-      selfLid = null;
-      latestQr = null;
-      latestQrDataUrl = null;
-      lastError = null;
-      stopPresenceTimer();
-      connectionStatus = "logged_out";
-      await rm(authDir, { recursive: true, force: true });
-      broadcast({ type: "status", status: "logged_out", ready: false });
-      await new Promise((r) => setTimeout(r, 500));
-      startSocket({ explicit: true }).catch((error) => log.error({ error }, "restart after logout failed"));
-      sendJson(res, 200, { ok: true, status: "logged_out" });
+    if (req.method === "POST" && (url.pathname === "/logout" || url.pathname === "/session/reset")) {
+      const reason = url.pathname === "/logout" ? "manual_logout" : "manual_session_reset";
+      const result = url.pathname === "/logout"
+        ? await requestLogoutAndReset(reason)
+        : await requestSessionReset(reason);
+      sendJson(res, 200, result);
       return;
     }
     if (!socket || !ready) {
@@ -1784,7 +1943,9 @@ server.listen(port, host, () => {
   log.info({ host, port, authDir }, "WhatsApp Gateway listening");
 });
 
-startSocket().catch((error) => {
+initializeAuthSession().then(() => requestSocketStart()).catch((error) => {
+  connectionStatus = "error";
+  lastError = `Gateway 启动失败: ${String(error?.message || error)}`;
   log.error({ error }, "WhatsApp Gateway startup failed");
   process.exitCode = 1;
 });

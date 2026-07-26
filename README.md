@@ -237,6 +237,7 @@ Python 插件通过 HTTP 与 Gateway（`127.0.0.1:18789`）通信：
 | POST | `/config` | 推送访问控制配置 |
 | POST | `/restart` | 重启 Baileys socket |
 | POST | `/logout` | 登出并清除认证 |
+| POST | `/session/reset` | 隔离失效认证并建立全新扫码 session |
 | POST | `/presence` | 设置在线状态（composing / available） |
 | POST | `/send/text` | 发送文字（含引用回复、提及、链接预览） |
 | POST | `/edit/text` | 编辑已发送文字 |
