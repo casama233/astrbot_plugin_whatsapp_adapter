@@ -390,6 +390,12 @@ async function sendAvailablePresence() {
   lastPresenceAt = new Date().toISOString();
 }
 
+async function sendUnavailablePresence() {
+  if (!socket?.sendPresenceUpdate || !ready) return;
+  await socket.sendPresenceUpdate("unavailable");
+  lastPresenceAt = null;
+}
+
 function startPresenceTimer() {
   stopPresenceTimer();
   if (!runtimeConfig.markOnline) return;
@@ -1433,9 +1439,16 @@ async function startSocket(opts = {}) {
       selfJid = socket.user?.id || null;
       selfLid = normalizeLidJid(socket.authState?.creds?.me?.lid);
       if (selfLid && selfJid) rememberLidPnMapping(selfLid, selfJid);
-      // 連線成功立即標記在線，不受 markOnline 控制（確保機器人基本在線）
-      sendAvailablePresence().catch(() => {});
-      startPresenceTimer();
+      // Presence is a global account state. Keep an account explicitly offline
+      // when the periodic-online option is disabled; chat typing is handled
+      // separately with composing/paused updates.
+      if (runtimeConfig.markOnline) {
+        sendAvailablePresence().catch(() => {});
+        startPresenceTimer();
+      } else {
+        stopPresenceTimer();
+        sendUnavailablePresence().catch(() => {});
+      }
       broadcast({ type: "status", status: "connected", selfJid, selfLid });
       refreshAllowlistLidMappings("connection_open").catch((error) =>
         log.debug({ error }, "allowlist LID mapping refresh failed after connect"),
@@ -1721,9 +1734,20 @@ const server = createServer(async (req, res) => {
         sendJson(res, 400, { ok: false, error: "applyEphemeral must be a boolean" });
         return;
       }
+      if (body.markOnline !== undefined && typeof body.markOnline !== "boolean") {
+        sendJson(res, 400, { ok: false, error: "markOnline must be a boolean" });
+        return;
+      }
       runtimeConfig = { ...runtimeConfig, ...body };
       configured = true;
-      if (ready) startPresenceTimer();
+      if (ready) {
+        if (runtimeConfig.markOnline) {
+          startPresenceTimer();
+        } else {
+          stopPresenceTimer();
+          sendUnavailablePresence().catch((error) => log.debug({ error }, "presence update failed"));
+        }
+      }
       if (ready) refreshAllowlistLidMappings("config_update").catch((error) =>
         log.debug({ error }, "allowlist LID mapping refresh failed after config update"),
       );

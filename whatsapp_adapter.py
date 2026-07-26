@@ -350,7 +350,7 @@ CONFIG_METADATA: dict[str, Any] = {
         "description": "发送打字状态",
         "type": "bool",
         "group": "presence",
-        "hint": "启用后，机器人发送回复前向 WhatsApp 显示 typing 状态，发送完恢复 available。",
+        "hint": "启用后，机器人发送回复前向 WhatsApp 显示 typing 状态，发送完停止输入状态。",
     },
     "send_read_receipts": {
         "description": "发送已读回执",
@@ -514,7 +514,7 @@ WHATSAPP_I18N_RESOURCES: dict[str, dict] = {
         },
         "typing_indicator": {
             "description": "发送打字状态",
-            "hint": "启用后，机器人发送回复前向 WhatsApp 显示 typing 状态，发送完恢复 available。",
+            "hint": "启用后，机器人发送回复前向 WhatsApp 显示 typing 状态，发送完停止输入状态。",
         },
         "send_read_receipts": {
             "description": "发送已读回执",
@@ -640,7 +640,7 @@ WHATSAPP_I18N_RESOURCES: dict[str, dict] = {
         },
         "typing_indicator": {
             "description": "Typing indicator",
-            "hint": "Shows a composing presence before replying and restores 'available' after the reply is sent.",
+            "hint": "Shows a composing presence before replying and stops the typing state after the reply is sent.",
         },
         "send_read_receipts": {
             "description": "Send read receipts",
@@ -766,7 +766,7 @@ WHATSAPP_I18N_RESOURCES: dict[str, dict] = {
         },
         "typing_indicator": {
             "description": "傳送打字狀態",
-            "hint": "啟用後，機器人傳送回覆前向 WhatsApp 顯示 typing 狀態，傳送完恢復 available。",
+            "hint": "啟用後，機器人傳送回覆前向 WhatsApp 顯示 typing 狀態，傳送完停止輸入狀態。",
         },
         "send_read_receipts": {
             "description": "傳送已讀回執",
@@ -955,7 +955,7 @@ class WhatsAppPlatformAdapter(Platform):
             )
             await super().send_by_session(session, message_chain)
         finally:
-            await self._send_presence(target, "available")
+            await self._send_presence(target, "paused")
 
     def _segmented_reply_enabled(self) -> bool:
         self._ensure_send_buffer_state()
@@ -1028,7 +1028,7 @@ class WhatsAppPlatformAdapter(Platform):
             )
             await super().send_by_session(session, message_chain)
         finally:
-            await self._send_presence(target, "available")
+            await self._send_presence(target, "paused")
 
     async def run(self):
         if self._stopped.is_set():
@@ -1579,7 +1579,7 @@ class WhatsAppPlatformAdapter(Platform):
         return digits or self._whatsapp_user_id(jid)
 
     async def _send_presence(self, target: str, state: str) -> None:
-        if state == "composing" and not self.config.get("typing_indicator", True):
+        if state in {"composing", "paused"} and not self.config.get("typing_indicator", True):
             return
         try:
             await self.client.send_presence(target, state)

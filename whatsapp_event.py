@@ -378,7 +378,7 @@ class WhatsAppMessageEvent(AstrMessageEvent):
         if not self.typing_indicator:
             return
         try:
-            await self.client.send_presence(self.target_jid, "available")
+            await self.client.send_presence(self.target_jid, "paused")
         except Exception as exc:
             logger.debug("WhatsApp 停止输入状态更新失败: target=%s error=%s", self.target_jid, exc)
 
