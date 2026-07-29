@@ -23,6 +23,8 @@ npm install --omit=dev
 pip install -r requirements.txt
 ```
 
+AstrBot Cloud 会安装 Python 依赖；Node.js 20+ 与 npm 仍需由宿主环境提供。Gateway 在首次启动时会自动执行 `npm install --omit=dev`，登录管理页也会先显示 Node、npm 与 Baileys 依赖的预检结果。
+
 重启 AstrBot 或重载插件。
 
 ## 登录
@@ -50,7 +52,7 @@ pip install -r requirements.txt
 | `default_link_preview_single_url` | `true` | 单 URL 链接预览 |
 | `default_typing_indicator` | `true` | 回复时显示 composing |
 | `default_send_read_receipts` | `true` | 发送已读回执 |
-| `default_mark_online` | `false` | 标记 available 在线 |
+| `default_mark_online` | `false` | 开启时维持在线；关闭时仅在回复期间短暂在线并刷新最后在线时间 |
 | `default_parse_inbound_formatting` | `true` | 入站 WhatsApp 格式转 Markdown |
 | `default_media_album_debounce_seconds` | `2.5` | 相簿去抖秒数；`0` 关闭 |
 | `default_streaming_edit_throttle` | `1.0` | 流式编辑最小间隔 |

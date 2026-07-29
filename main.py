@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import re
+import shutil
+import time
 from pathlib import Path
 from typing import Any
 
 from astrbot import logger
 from astrbot.api import AstrBotConfig
 from astrbot.api.star import Context, Star, register
-from quart import jsonify
+from astrbot.api.web import json_response
 
 try:
     from astrbot.core.utils.astrbot_path import get_astrbot_data_path as _get_astrbot_data_path
@@ -29,9 +32,9 @@ PLUGIN_DIR = Path(__file__).resolve().parent
 
 @register(
     PLUGIN_NAME,
-    "OpenCode",
+    "casama233",
     "WhatsApp Web platform adapter backed by a local Gateway process.",
-    "0.2.23",
+    "0.2.24",
 )
 class WhatsAppAdapterPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None):
@@ -40,6 +43,9 @@ class WhatsAppAdapterPlugin(Star):
         self._sync_runtime_policy()
         self.page_client = WhatsAppGatewayClient(self._base_url)
         self.page_gateway_process: GatewayProcess | None = None
+        self._runtime_cache: dict[str, Any] | None = None
+        self._runtime_checked_at = 0.0
+        self._runtime_lock = asyncio.Lock()
         logger.info(
             "WhatsApp adapter plugin loaded: gateway=%s auto_start=%s auth_dir=%s log_level=%s",
             self._base_url,
@@ -48,6 +54,12 @@ class WhatsAppAdapterPlugin(Star):
             self.config.get("log_level"),
         )
 
+        context.register_web_api(
+            f"/{PLUGIN_NAME}/runtime",
+            self.page_runtime,
+            ["GET"],
+            "WhatsApp Gateway runtime requirements",
+        )
         context.register_web_api(
             f"/{PLUGIN_NAME}/status",
             self.page_status,
@@ -99,24 +111,45 @@ class WhatsAppAdapterPlugin(Star):
     def _base_url(self) -> str:
         return f"http://{self.config['gateway_host']}:{int(self.config['gateway_port'])}"
 
-    async def page_status(self):
-        await self._ensure_page_gateway()
+    async def page_runtime(self):
         try:
+            return json_response(await self._runtime_requirements())
+        except Exception as exc:
+            logger.warning("WhatsApp 管理页运行环境检测失败: %s", exc)
+            return json_response(
+                {"ok": False, "ready": False, "error": str(exc)},
+                status_code=503,
+            )
+
+    async def page_status(self):
+        runtime: dict[str, Any] = {"ok": False, "ready": False}
+        try:
+            runtime = await self._runtime_requirements()
+            await self._ensure_page_gateway()
             status = await self.page_client.status()
             status["baseUrl"] = self._base_url
             status["plugin"] = PLUGIN_NAME
             # Gateway liveness and WhatsApp login readiness are separate signals.
             status["gatewayHealthy"] = bool(status.get("ok", True))
             status["configuredAuthDir"] = str(self._auth_dir())
+            status["runtimeRequirements"] = runtime
             logger.debug("WhatsApp 管理页状态请求: %s", self._safe_status(status))
-            return jsonify(status)
+            return json_response(status)
         except Exception as exc:
             logger.warning("WhatsApp 管理页状态获取失败: %s", exc)
-            return jsonify({"ok": False, "error": str(exc), "baseUrl": self._base_url}), 503
+            return json_response(
+                {
+                    "ok": False,
+                    "error": str(exc),
+                    "baseUrl": self._base_url,
+                    "runtimeRequirements": runtime,
+                },
+                status_code=503,
+            )
 
     async def page_qr(self):
-        await self._ensure_page_gateway()
         try:
+            await self._ensure_page_gateway()
             qr = await self.page_client.qr()
             logger.debug(
                 "WhatsApp plugin page QR requested: ready=%s status=%s has_qr=%s",
@@ -124,37 +157,135 @@ class WhatsAppAdapterPlugin(Star):
                 qr.get("status"),
                 bool(qr.get("qr") or qr.get("qrDataUrl")),
             )
-            return jsonify(qr)
+            return json_response(qr)
         except Exception as exc:
             logger.warning("WhatsApp 管理页 QR 获取失败: %s", exc)
-            return jsonify({"ok": False, "error": str(exc), "baseUrl": self._base_url}), 503
+            return json_response(
+                {"ok": False, "error": str(exc), "baseUrl": self._base_url},
+                status_code=503,
+            )
 
     async def page_restart(self):
-        await self._ensure_page_gateway()
         try:
+            await self._ensure_page_gateway()
             logger.info("WhatsApp Gateway 重启（来自管理页）")
-            return jsonify(await self.page_client.restart())
+            return json_response(await self.page_client.restart())
         except Exception as exc:
             logger.warning("WhatsApp Gateway 重启失败（管理页）: %s", exc)
-            return jsonify({"ok": False, "error": str(exc), "baseUrl": self._base_url}), 503
+            return json_response(
+                {"ok": False, "error": str(exc), "baseUrl": self._base_url},
+                status_code=503,
+            )
 
     async def page_logout(self):
-        await self._ensure_page_gateway()
         try:
+            await self._ensure_page_gateway()
             logger.info("WhatsApp Gateway 登出（来自管理页）")
-            return jsonify(await self.page_client.logout())
+            return json_response(await self.page_client.logout())
         except Exception as exc:
             logger.warning("WhatsApp Gateway 登出失败（管理页）: %s", exc)
-            return jsonify({"ok": False, "error": str(exc), "baseUrl": self._base_url}), 503
+            return json_response(
+                {"ok": False, "error": str(exc), "baseUrl": self._base_url},
+                status_code=503,
+            )
 
     async def page_reset_session(self):
-        await self._ensure_page_gateway()
         try:
+            await self._ensure_page_gateway()
             logger.info("WhatsApp 登录 session 重建（来自管理页）")
-            return jsonify(await self.page_client.reset_session())
+            return json_response(await self.page_client.reset_session())
         except Exception as exc:
             logger.warning("WhatsApp 登录 session 重建失败（管理页）: %s", exc)
-            return jsonify({"ok": False, "error": str(exc), "baseUrl": self._base_url}), 503
+            return json_response(
+                {"ok": False, "error": str(exc), "baseUrl": self._base_url},
+                status_code=503,
+            )
+
+    async def _runtime_requirements(self) -> dict[str, Any]:
+        """Return a cached, side-effect-free Gateway runtime preflight."""
+        now = time.monotonic()
+        if self._runtime_cache is not None and now - self._runtime_checked_at < 300:
+            return self._runtime_cache
+
+        async with self._runtime_lock:
+            now = time.monotonic()
+            if self._runtime_cache is not None and now - self._runtime_checked_at < 300:
+                return self._runtime_cache
+
+            configured_node = str(self.config.get("node_executable") or "node").strip()
+            node_path = shutil.which(configured_node)
+            node_version: str | None = None
+            node_major: int | None = None
+            node_error: str | None = None
+            if node_path:
+                try:
+                    process = await asyncio.create_subprocess_exec(
+                        node_path,
+                        "--version",
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                    )
+                    stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=3)
+                    output = (stdout or stderr).decode(errors="replace").strip()
+                    if process.returncode == 0:
+                        node_version = output
+                        match = re.match(r"v?(\d+)", output)
+                        if match:
+                            node_major = int(match.group(1))
+                    else:
+                        node_error = output or f"exit code {process.returncode}"
+                except asyncio.TimeoutError:
+                    process.kill()
+                    await process.wait()
+                    node_error = "version check timed out"
+                except OSError as exc:
+                    node_error = str(exc)
+
+            npm_path = shutil.which("npm")
+            dependencies_installed = (
+                PLUGIN_DIR / "node_modules" / "@whiskeysockets" / "baileys"
+            ).is_dir()
+            node_supported = node_major is not None and node_major >= 20
+            ready = bool(
+                node_path
+                and node_supported
+                and (dependencies_installed or npm_path)
+            )
+
+            if not node_path:
+                message = f"找不到 Node.js：{configured_node}"
+            elif node_error:
+                message = f"Node.js 无法执行：{node_error}"
+            elif node_major is None:
+                message = f"无法识别 Node.js 版本：{node_version or '无输出'}"
+            elif not node_supported:
+                message = f"需要 Node.js 20+，当前为 {node_version}"
+            elif not dependencies_installed and not npm_path:
+                message = "尚未安装 Baileys 依赖，且找不到 npm"
+            elif not dependencies_installed:
+                message = "运行环境可用；首次启动会自动执行 npm install --omit=dev"
+            else:
+                message = "Node.js 与 Baileys 依赖均已就绪"
+
+            result = {
+                "ok": True,
+                "ready": ready,
+                "minimumNodeMajor": 20,
+                "node": {
+                    "configured": configured_node,
+                    "path": node_path,
+                    "version": node_version,
+                    "major": node_major,
+                    "supported": node_supported,
+                    "error": node_error,
+                },
+                "npm": {"path": npm_path, "available": bool(npm_path)},
+                "dependenciesInstalled": dependencies_installed,
+                "message": message,
+            }
+            self._runtime_cache = result
+            self._runtime_checked_at = time.monotonic()
+            return result
 
     async def _ensure_page_gateway(self) -> None:
         await self.page_client.start()

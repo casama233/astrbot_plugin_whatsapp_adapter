@@ -228,8 +228,11 @@ class WhatsAppConfigPolicyTests(unittest.TestCase):
         self.assertIn("adopt_legacy_gateway_defaults", main)
         self.assertIn("await self._reload_active_adapters()", main)
         self.assertIn("set_runtime_plugin_defaults", main)
-        self.assertIn('"0.2.20"', main)
-        self.assertIn("version: 0.2.20", metadata)
+        self.assertIn('"0.2.24"', main)
+        self.assertIn("version: 0.2.24", metadata)
+        self.assertIn('astrbot_version: ">=4.24.2,<5"', metadata)
+        self.assertIn("category: 三方集成", metadata)
+        self.assertIn("from astrbot.api.web import json_response", main)
 
 
 if __name__ == "__main__":
