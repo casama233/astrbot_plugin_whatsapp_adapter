@@ -15,7 +15,7 @@
 - 出站交互组件：`WhatsAppButtons`、`WhatsAppList`、`WhatsAppPoll`、`WhatsAppEdit`（消息编辑）
 - **流式输出**（streaming）：首次回复作为新消息发送，后续更新通过编辑同一消息逐步追加（带节流）
 - **预回应表情**（pre-ack）：被 @ 或回复时先发一个 emoji 反应，降低 LLM 响应延迟感知
-- **打字指示**：发送前显示 "composing"，发送完恢复 "available"
+- **打字指示**：回复期间显示 `composing`，发送完成后停止输入，并按在线状态开关恢复在线或离线
 - **媒体说明文字模式**：`separate`（分开发送）或 `caption`（作为媒体描述）
 - **相册去抖**：短时间内的连拍多图合并为一条消息
 - **Markdown 格式互转**：入站 WhatsApp `*粗体*` `_斜体_` `~删除线~` ```代码``` 自动转 Markdown
@@ -56,7 +56,7 @@ astrbot_plugin_whatsapp_adapter/
 
 ## 环境要求
 
-- AstrBot `>=4.13.0`
+- AstrBot `>=4.24.2,<5`（使用新版插件 Pages 与 Cloud 元数据）
 - Python 依赖：`aiohttp>=3.9.0`
 - Node.js 20+，推荐 Node.js 22 LTS
 - 可以访问 WhatsApp Web 的网络环境
@@ -70,6 +70,8 @@ cd astrbot_plugin_whatsapp_adapter
 npm install --omit=dev
 pip install -r requirements.txt
 ```
+
+从 AstrBot Cloud 安装时，Python 依赖由 AstrBot 处理；内置 Gateway 会在首次启动时自动安装 Node 生产依赖。无论采用哪种安装方式，都必须预先安装 Node.js 20+ 与 npm。登录管理页的「运行环境」会在启动 Gateway 前给出明确检查结果。
 
 重启 AstrBot 或在 WebUI 重载插件。
 
@@ -113,7 +115,7 @@ pip install -r requirements.txt
 | `default_link_preview_single_url` | `true` | 纯文字仅包含一个 URL 时生成链接预览 |
 | `default_typing_indicator` | `true` | 回复期间发送 composing 状态 |
 | `default_send_read_receipts` | `true` | 对已接受消息发送已读回执 |
-| `default_mark_online` | `false` | 定期发送 available 在线状态 |
+| `default_mark_online` | `false` | 开启时维持在线；关闭时仅在回复期间短暂在线并刷新最后在线时间 |
 | `default_parse_inbound_formatting` | `true` | 将 WhatsApp 原生格式转为 Markdown |
 | `default_media_album_debounce_seconds` | `2.5` | 连续图片合并为相簿的等待时间；`0` 关闭 |
 | `default_streaming_edit_throttle` | `1.0` | 流式消息编辑的最小间隔（秒） |

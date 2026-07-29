@@ -19,6 +19,7 @@ const els = {
   selfLid: document.getElementById("selfLid"),
   authDir: document.getElementById("authDir"),
   gatewayUrl: document.getElementById("gatewayUrl"),
+  runtimeStatus: document.getElementById("runtimeStatus"),
   configuredStatus: document.getElementById("configuredStatus"),
   // Policy
   policyDm: document.getElementById("policyDm"),
@@ -46,6 +47,7 @@ let countdown = 5;
 let countdownTimer = null;
 let loggedOutSince = 0;
 let currentConnectionStatus = "unknown";
+let runtimeLoaded = false;
 
 // ─── Helpers ───
 function fmtTime() {
@@ -157,6 +159,7 @@ function renderSession(data) {
   els.authDir.textContent = data.authDir || "-";
   els.gatewayUrl.textContent = data.baseUrl || "-";
   els.configuredStatus.textContent = data.config ? "✓ 已配置" : "✗ 未同步";
+  if (data.runtimeRequirements) renderRuntime(data.runtimeRequirements);
 
   // Policy
   const cfg = data.config || {};
@@ -164,6 +167,18 @@ function renderSession(data) {
   els.policyGroup.textContent = cfg.groupPolicy || "-";
   els.policyAllowFrom.textContent = Array.isArray(cfg.allowFrom) ? plural(cfg.allowFrom, "个号码") : "-";
   els.policyGroups.textContent = Array.isArray(cfg.groups) ? plural(cfg.groups, "个群") : "-";
+}
+
+function renderRuntime(runtime) {
+  if (!runtime || !els.runtimeStatus) return;
+  runtimeLoaded = true;
+  els.runtimeStatus.textContent = runtime.message || (runtime.ready ? "✓ 已就绪" : "✗ 不可用");
+  els.runtimeStatus.style.color = runtime.ready ? "var(--green, #25D366)" : "var(--red, #ff5c6c)";
+  els.runtimeStatus.title = [
+    runtime.node?.version ? `Node ${runtime.node.version}` : null,
+    runtime.npm?.path ? `npm ${runtime.npm.path}` : null,
+    runtime.dependenciesInstalled ? "Baileys 已安装" : "Baileys 待安装",
+  ].filter(Boolean).join(" · ");
 }
 
 // ─── Render QR ───
@@ -279,6 +294,18 @@ function renderQr(data) {
 async function refresh() {
   let status = {};
   let qr = {};
+
+  if (!runtimeLoaded) {
+    try {
+      renderRuntime(await bridge.apiGet("runtime"));
+    } catch (err) {
+      if (els.runtimeStatus) {
+        els.runtimeStatus.textContent = "运行环境检测失败";
+        els.runtimeStatus.style.color = "var(--red, #ff5c6c)";
+      }
+      log("error", `运行环境检测失败: ${err}`);
+    }
+  }
 
   try {
     status = await bridge.apiGet("status");

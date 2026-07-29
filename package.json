@@ -1,8 +1,11 @@
 {
   "name": "astrbot-plugin-whatsapp-adapter-gateway",
   "private": true,
-  "version": "0.2.23",
+  "version": "0.2.24",
   "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "gateway": "node gateway/whatsapp-gateway.mjs",
     "test": "node --test gateway/*.test.mjs"

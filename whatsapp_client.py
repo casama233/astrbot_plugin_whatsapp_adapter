@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 from typing import Any, AsyncIterator
@@ -292,6 +293,7 @@ class GatewayProcess:
     async def start(self) -> None:
         if self.process and self.process.returncode is None:
             return
+        await self._ensure_node_runtime()
         await self._ensure_node_dependencies()
         self.auth_dir.mkdir(parents=True, exist_ok=True)
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -323,6 +325,40 @@ class GatewayProcess:
             env=env,
             **extra_kwargs,
         )
+
+    async def _ensure_node_runtime(self) -> None:
+        try:
+            process = await asyncio.create_subprocess_exec(
+                self.node_executable,
+                "--version",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except FileNotFoundError as exc:
+            raise WhatsAppGatewayError(
+                f"Node.js executable not found: {self.node_executable}; install Node.js 20+ "
+                "or update node_executable"
+            ) from exc
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=5)
+        except asyncio.TimeoutError as exc:
+            process.kill()
+            await process.wait()
+            raise WhatsAppGatewayError(
+                f"Node.js version check timed out: {self.node_executable}"
+            ) from exc
+        output = (stdout or stderr).decode(errors="replace").strip()
+        if process.returncode != 0:
+            raise WhatsAppGatewayError(
+                f"Node.js version check failed with code {process.returncode}: {output}"
+            )
+        match = re.match(r"v?(\d+)", output)
+        if not match:
+            raise WhatsAppGatewayError(f"Unrecognized Node.js version: {output or 'no output'}")
+        if int(match.group(1)) < 20:
+            raise WhatsAppGatewayError(
+                f"Node.js 20+ is required; current version is {output}"
+            )
 
     async def _ensure_node_dependencies(self) -> None:
         project_dir = self.script_path.parent.parent
