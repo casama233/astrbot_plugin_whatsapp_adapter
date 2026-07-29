@@ -34,7 +34,7 @@ PLUGIN_DIR = Path(__file__).resolve().parent
     PLUGIN_NAME,
     "casama233",
     "WhatsApp Web platform adapter backed by a local Gateway process.",
-    "0.2.24",
+    "0.2.25",
 )
 class WhatsAppAdapterPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None):
@@ -46,6 +46,7 @@ class WhatsAppAdapterPlugin(Star):
         self._runtime_cache: dict[str, Any] | None = None
         self._runtime_checked_at = 0.0
         self._runtime_lock = asyncio.Lock()
+        self._page_gateway_lock = asyncio.Lock()
         logger.info(
             "WhatsApp adapter plugin loaded: gateway=%s auto_start=%s auth_dir=%s log_level=%s",
             self._base_url,
@@ -288,6 +289,12 @@ class WhatsAppAdapterPlugin(Star):
             return result
 
     async def _ensure_page_gateway(self) -> None:
+        # Status, QR, and action routes may overlap while the Gateway is slow to
+        # start. Keep the health-check/start sequence single-flight.
+        async with self._page_gateway_lock:
+            await self._ensure_page_gateway_unlocked()
+
+    async def _ensure_page_gateway_unlocked(self) -> None:
         await self.page_client.start()
         try:
             health = await self.page_client.health()
