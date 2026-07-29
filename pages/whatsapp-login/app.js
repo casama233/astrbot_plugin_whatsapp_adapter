@@ -48,6 +48,7 @@ let countdownTimer = null;
 let loggedOutSince = 0;
 let currentConnectionStatus = "unknown";
 let runtimeLoaded = false;
+let refreshPromise = null;
 
 // ─── Helpers ───
 function fmtTime() {
@@ -291,7 +292,7 @@ function renderQr(data) {
 }
 
 // ─── Main refresh ───
-async function refresh() {
+async function refreshOnce() {
   let status = {};
   let qr = {};
 
@@ -338,6 +339,15 @@ async function refresh() {
     els.liveDot.style.animation = "none";
     els.liveDot.style.opacity = "0.3";
   }
+}
+
+function refresh() {
+  if (!refreshPromise) {
+    refreshPromise = refreshOnce().finally(() => {
+      refreshPromise = null;
+    });
+  }
+  return refreshPromise;
 }
 
 // ─── Countdown ───

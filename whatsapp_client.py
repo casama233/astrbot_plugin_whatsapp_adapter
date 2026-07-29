@@ -15,6 +15,9 @@ class WhatsAppGatewayError(RuntimeError):
     pass
 
 
+_NODE_DEPENDENCY_INSTALL_LOCK = asyncio.Lock()
+
+
 class WhatsAppGatewayClient:
     def __init__(self, base_url: str, timeout: float = 30.0) -> None:
         self.base_url = base_url.rstrip("/")
@@ -364,25 +367,36 @@ class GatewayProcess:
         project_dir = self.script_path.parent.parent
         if (project_dir / "node_modules" / "@whiskeysockets" / "baileys").exists():
             return
-        if not (project_dir / "package.json").exists():
-            raise WhatsAppGatewayError(f"Gateway package.json not found: {project_dir / 'package.json'}")
-        try:
-            installer = await asyncio.create_subprocess_exec(
-                "npm",
-                "install",
-                "--omit=dev",
-                cwd=str(project_dir),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-        except FileNotFoundError as exc:
-            raise WhatsAppGatewayError("npm not found; please install Node.js/npm or run npm install manually") from exc
-        stdout, stderr = await installer.communicate()
-        if installer.returncode != 0:
-            out = stdout.decode(errors="replace").strip()
-            err = stderr.decode(errors="replace").strip()
-            detail = "\n".join(part for part in [out, err] if part)
-            raise WhatsAppGatewayError(f"npm install --omit=dev failed with code {installer.returncode}: {detail}")
+        async with _NODE_DEPENDENCY_INSTALL_LOCK:
+            # Another page/platform startup may have completed installation
+            # while this caller waited for the lock.
+            if (project_dir / "node_modules" / "@whiskeysockets" / "baileys").exists():
+                return
+            if not (project_dir / "package.json").exists():
+                raise WhatsAppGatewayError(
+                    f"Gateway package.json not found: {project_dir / 'package.json'}"
+                )
+            try:
+                installer = await asyncio.create_subprocess_exec(
+                    "npm",
+                    "install",
+                    "--omit=dev",
+                    cwd=str(project_dir),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+            except FileNotFoundError as exc:
+                raise WhatsAppGatewayError(
+                    "npm not found; please install Node.js/npm or run npm install manually"
+                ) from exc
+            stdout, stderr = await installer.communicate()
+            if installer.returncode != 0:
+                out = stdout.decode(errors="replace").strip()
+                err = stderr.decode(errors="replace").strip()
+                detail = "\n".join(part for part in [out, err] if part)
+                raise WhatsAppGatewayError(
+                    f"npm install --omit=dev failed with code {installer.returncode}: {detail}"
+                )
 
     async def stop(self) -> None:
         if not self.process or self.process.returncode is not None:
