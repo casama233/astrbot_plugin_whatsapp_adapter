@@ -363,14 +363,60 @@ class GatewayProcess:
                 f"Node.js 20+ is required; current version is {output}"
             )
 
+    @staticmethod
+    def _node_dependencies_current(project_dir: Path) -> bool:
+        try:
+            lock_data = json.loads(
+                (project_dir / "package-lock.json").read_text(encoding="utf-8")
+            )
+            packages = lock_data["packages"]
+            direct_dependencies = packages[""]["dependencies"]
+        except (OSError, KeyError, TypeError, json.JSONDecodeError):
+            return False
+        if not isinstance(packages, dict) or not isinstance(
+            direct_dependencies, dict
+        ):
+            return False
+
+        dependency_names = set(direct_dependencies)
+        # These Baileys runtime dependencies have security-sensitive native/schema
+        # processing paths and must not remain stale across plugin upgrades.
+        dependency_names.update(("protobufjs", "sharp"))
+        checked = 0
+        for name in dependency_names:
+            desired = packages.get(f"node_modules/{name}")
+            if not isinstance(desired, dict):
+                continue
+            desired_version = desired.get("version")
+            if not desired_version:
+                return False
+            try:
+                installed = json.loads(
+                    (
+                        project_dir
+                        / "node_modules"
+                        / Path(*name.split("/"))
+                        / "package.json"
+                    ).read_text(encoding="utf-8")
+                )
+            except (OSError, TypeError, json.JSONDecodeError):
+                return False
+            if (
+                not isinstance(installed, dict)
+                or installed.get("version") != desired_version
+            ):
+                return False
+            checked += 1
+        return checked > 0
+
     async def _ensure_node_dependencies(self) -> None:
         project_dir = self.script_path.parent.parent
-        if (project_dir / "node_modules" / "@whiskeysockets" / "baileys").exists():
+        if self._node_dependencies_current(project_dir):
             return
         async with _NODE_DEPENDENCY_INSTALL_LOCK:
             # Another page/platform startup may have completed installation
             # while this caller waited for the lock.
-            if (project_dir / "node_modules" / "@whiskeysockets" / "baileys").exists():
+            if self._node_dependencies_current(project_dir):
                 return
             if not (project_dir / "package.json").exists():
                 raise WhatsAppGatewayError(
@@ -396,6 +442,11 @@ class GatewayProcess:
                 detail = "\n".join(part for part in [out, err] if part)
                 raise WhatsAppGatewayError(
                     f"npm install --omit=dev failed with code {installer.returncode}: {detail}"
+                )
+            if not self._node_dependencies_current(project_dir):
+                raise WhatsAppGatewayError(
+                    "npm install --omit=dev completed but installed dependency versions "
+                    "do not match package-lock.json"
                 )
 
     async def stop(self) -> None:

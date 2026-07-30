@@ -1,7 +1,7 @@
 {
   "name": "astrbot-plugin-whatsapp-adapter-gateway",
   "private": true,
-  "version": "0.2.25",
+  "version": "0.2.26",
   "type": "module",
   "engines": {
     "node": ">=20"
@@ -11,7 +11,7 @@
     "test": "node --test gateway/*.test.mjs"
   },
   "dependencies": {
-    "@whiskeysockets/baileys": "^7.0.0-rc13",
+    "@whiskeysockets/baileys": "7.0.0-rc14",
     "qrcode": "^1.5.4",
     "qrcode-terminal": "^0.12.0",
     "pino": "^9.6"

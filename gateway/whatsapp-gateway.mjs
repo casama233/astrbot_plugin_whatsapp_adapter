@@ -10,7 +10,6 @@ import makeWASocket, {
   Browsers,
   DisconnectReason,
   downloadMediaMessage,
-  fetchLatestBaileysVersion,
   generateWAMessageFromContent,
   proto,
   useMultiFileAuthState,
@@ -1365,9 +1364,7 @@ async function startSocket(opts = {}) {
   connectionStatus = "starting";
   await mkdir(currentAuthDir, { recursive: true });
   const { state, saveCreds } = await useMultiFileAuthState(currentAuthDir);
-  const { version } = await fetchLatestBaileysVersion();
   socket = makeWASocket({
-    version,
     auth: state,
     printQRInTerminal: false,
     logger: log,

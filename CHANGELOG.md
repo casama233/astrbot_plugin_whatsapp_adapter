@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.26] - 2026-07-30
+
+- Baileys 升级并精确锁定到 `7.0.0-rc14`，带入最新 WhatsApp Web 协议版本、连接兼容性及 profile picture token 修正。
+- Gateway 改用已发布 Baileys 套件内建的协议版本，不再在每次 socket 启动或重连时从 `master` 动态取值，减少外部请求并保证安装结果可复现。
+- 更新 `protobufjs` 至 `7.6.5`、`sharp` 至 `0.35.3`，修复当前生产依赖树中的已知 DoS 与 libvips 高危漏洞。
+- Gateway 启动前会核对 lockfile 中的直接依赖及安全关键传递依赖版本；插件升级后即使旧 `node_modules` 仍存在，也会串行执行一次必要更新，不再因“目录存在”而长期停留在旧版。
+
 ## [0.2.25] - 2026-07-30
 
 - 管理页刷新改为 single-flight：前一次状态/二维码请求结束前不再叠加新一轮轮询，避免 Gateway 启动缓慢时形成请求堆积。
