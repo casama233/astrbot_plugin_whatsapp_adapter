@@ -9,7 +9,7 @@ from typing import Any, Callable, Coroutine, Iterator, Literal, Sequence
 from urllib.parse import unquote
 
 from astrbot import logger
-from astrbot.api.message_components import File, Image, Plain, Record, Video
+from astrbot.api.message_components import File, Image, Plain, Record, Reply, Video
 from astrbot.api.platform import At
 
 from .whatsapp_client import WhatsAppGatewayClient
@@ -764,6 +764,9 @@ async def process_message_chain(
         return chunks[-1]
 
     for component in chain:
+        if isinstance(component, Reply):
+            # Reply is transport metadata, never user-visible nested content.
+            continue
         if isinstance(component, Plain):
             pending_raw = (pending_raw or "") + (component.text or "")
             continue

@@ -1243,7 +1243,7 @@ class WhatsAppPlatformAdapter(Platform):
             session_id=message.session_id,
             client=self.client,
             target_jid=str(raw.get("chatJid") or message.session_id),
-            quoted_message_id=str(raw.get("messageId") or "") or None,
+            source_message_id=str(raw.get("messageId") or "") or None,
             text_chunk_limit=int(self.config.get("text_chunk_limit") or 4000),
             media_caption_mode=str(self.config.get("media_caption_mode") or "separate"),
             link_preview_single_url=bool(self.config.get("link_preview_single_url", True)),

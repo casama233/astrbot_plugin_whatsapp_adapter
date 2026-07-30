@@ -22,6 +22,10 @@ import {
   reconnectDelayMs,
   sessionDirectory,
 } from "./session-lifecycle.mjs";
+import {
+  cacheChatMessage,
+  findChatMessage,
+} from "./message-cache.mjs";
 
 const host = process.env.WA_GATEWAY_HOST || "127.0.0.1";
 const port = Number.parseInt(process.env.WA_GATEWAY_PORT || "18789", 10);
@@ -518,17 +522,6 @@ function sameWhatsappUser(left, right) {
   return normalizeJid(left) === normalizeJid(right);
 }
 
-function cacheMessage(item) {
-  const id = item?.key?.id;
-  const chatJid = item?.key?.remoteJid;
-  if (!id || !chatJid || !item?.message) return;
-  messageCache.set(id, item);
-  messageCache.set(`${chatJid}:${id}`, item);
-  while (messageCache.size > maxMessageCacheSize) {
-    messageCache.delete(messageCache.keys().next().value);
-  }
-}
-
 function rememberIncomingMessage(key) {
   if (!key) return false;
   if (seenIncomingMessages.has(key)) return true;
@@ -723,10 +716,10 @@ function pollFromMessage(message) {
 
 function buildQuotedContext(body) {
   if (!body?.quotedMessageId) return null;
-  const cached = messageCache.get(`${body.to}:${body.quotedMessageId}`) || messageCache.get(body.quotedMessageId);
+  const cached = findChatMessage(messageCache, body.to, body.quotedMessageId);
   return {
     stanzaId: body.quotedMessageId,
-    participant: body.quotedParticipant || cached?.key?.participant || undefined,
+    participant: cached?.key?.participant || body.quotedParticipant || undefined,
   };
 }
 
@@ -776,6 +769,7 @@ async function relayProtoContent(jid, contentObj, body) {
   const message = proto.Message.fromObject(contentObj);
   const waMsg = generateWAMessageFromContent(jid, message, options);
   await socket.relayMessage(jid, waMsg.message, { messageId: waMsg.key.id });
+  cacheChatMessage(messageCache, waMsg, maxMessageCacheSize);
   return { ok: true, id: waMsg.key.id, key: waMsg.key };
 }
 
@@ -832,7 +826,7 @@ function mediaMimeType(message, kind) {
 
 function quotedKey(body) {
   if (!body?.quotedMessageId) return undefined;
-  const quoted = messageCache.get(`${body.to}:${body.quotedMessageId}`) || messageCache.get(body.quotedMessageId);
+  const quoted = findChatMessage(messageCache, body.to, body.quotedMessageId);
   if (!quoted?.message) return undefined;
   return { quoted };
 }
@@ -1143,7 +1137,9 @@ async function handleIncomingMessage(item, options = {}) {
     },
     "accepted inbound WhatsApp message",
   );
-  for (const albumItem of albumItems) cacheMessage(albumItem);
+  for (const albumItem of albumItems) {
+    cacheChatMessage(messageCache, albumItem, maxMessageCacheSize);
+  }
 
   const media = [];
   for (const albumItem of albumItems) {
@@ -1178,7 +1174,7 @@ async function handleIncomingMessage(item, options = {}) {
       text: quotedText || (quotedKind ? `<media:${quotedKind}>` : ""),
       media: quotedMedia,
     };
-    const cachedQuoted = messageCache.get(quotedInfo.stanzaId) || messageCache.get(`${chatJid}:${quotedInfo.stanzaId}`);
+    const cachedQuoted = findChatMessage(messageCache, chatJid, quotedInfo.stanzaId);
     if (cachedQuoted && !quoted.text && !quotedMedia.length) {
       const cachedText = textFromMessage(cachedQuoted.message);
       const cachedKind = mediaKind(cachedQuoted.message);
@@ -1851,6 +1847,7 @@ const server = createServer(async (req, res) => {
       const payload = { text };
       if (mentions.length) payload.mentions = mentions;
       const result = await socket.sendMessage(body.to, payload, options);
+      cacheChatMessage(messageCache, result, maxMessageCacheSize);
       sendJson(res, 200, { ok: true, id: result?.key?.id, key: result?.key });
       return;
     }
@@ -1895,6 +1892,7 @@ const server = createServer(async (req, res) => {
         resolveMediaPayload(body.type, body.pathOrUrl, body.caption),
         options,
       );
+      cacheChatMessage(messageCache, result, maxMessageCacheSize);
       sendJson(res, 200, { ok: true, id: result?.key?.id });
       return;
     }
@@ -1963,6 +1961,7 @@ const server = createServer(async (req, res) => {
         },
         options,
       );
+      cacheChatMessage(messageCache, result, maxMessageCacheSize);
       sendJson(res, 200, { ok: true, id: result?.key?.id, key: result?.key });
       return;
     }

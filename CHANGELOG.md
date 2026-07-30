@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.27] - 2026-07-30
+
+- 出站引用行为与 AstrBot Telegram adapter 对齐：仅当出站 MessageChain 包含 `Reply` 时引用，分段回复只在首段引用，串流回复不再强制反复引用触发消息。
+- `Reply` 组件现在只作为传输控制信息处理，不会再递归发送其内嵌 chain，避免把被引用的旧问题误当成新回复内容。
+- Gateway 引用快取改为严格按聊天室与 message ID 复合键查找，移除跨聊天室全局 ID fallback，并缓存成功发出的消息供后续同聊天室引用。
+- 引用当前入站消息时固定使用该消息发送者作为 participant，不再误用入站消息本身所引用的上一条消息发送者。
+
 ## [0.2.26] - 2026-07-30
 
 - Baileys 升级并精确锁定到 `7.0.0-rc14`，带入最新 WhatsApp Web 协议版本、连接兼容性及 profile picture token 修正。
