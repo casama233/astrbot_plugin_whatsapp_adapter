@@ -34,7 +34,7 @@ PLUGIN_DIR = Path(__file__).resolve().parent
     PLUGIN_NAME,
     "casama233",
     "WhatsApp Web platform adapter backed by a local Gateway process.",
-    "0.2.26",
+    "0.2.27",
 )
 class WhatsAppAdapterPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None):

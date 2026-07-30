@@ -9,7 +9,7 @@ from urllib.parse import unquote
 
 from astrbot import logger
 from astrbot.api.event import AstrMessageEvent, MessageChain
-from astrbot.api.message_components import Plain
+from astrbot.api.message_components import Plain, Reply
 from astrbot.api.platform import AstrBotMessage, At, PlatformMetadata
 from astrbot.core.utils.io import download_image_by_url
 from astrbot.core.utils.metrics import Metric
@@ -59,7 +59,7 @@ class WhatsAppMessageEvent(AstrMessageEvent):
         session_id: str,
         client: WhatsAppGatewayClient,
         target_jid: str,
-        quoted_message_id: str | None = None,
+        source_message_id: str | None = None,
         text_chunk_limit: int = 4000,
         media_caption_mode: str = "separate",
         link_preview_single_url: bool = True,
@@ -71,11 +71,9 @@ class WhatsAppMessageEvent(AstrMessageEvent):
         super().__init__(message_str, message_obj, platform_meta, session_id)
         self.client = client
         self.target_jid = target_jid
-        self.quoted_message_id = quoted_message_id
+        self.source_message_id = source_message_id
         raw = message_obj.raw_message or {}
-        self.quoted_participant = str(
-            (raw.get("quoted") or {}).get("participant") or raw.get("senderJid") or ""
-        ) or None
+        self.source_participant = str(raw.get("senderJid") or "") or None
         self.text_chunk_limit = max(1, text_chunk_limit)
         self.media_caption_mode = media_caption_mode
         self.link_preview_single_url = link_preview_single_url
@@ -88,10 +86,11 @@ class WhatsAppMessageEvent(AstrMessageEvent):
         self._temp_files: set[str] = set()
 
     async def send(self, message: MessageChain):
+        quoted_message_id, quoted_participant = self._quote_target(message)
         logger.debug(
             "WhatsApp event send: target=%s quoted=%s components=%s",
             self.target_jid,
-            bool(self.quoted_message_id),
+            bool(quoted_message_id),
             [component.__class__.__name__ for component in message.chain],
         )
         await self.send_typing()
@@ -103,8 +102,8 @@ class WhatsAppMessageEvent(AstrMessageEvent):
                 link_preview_single_url=self.link_preview_single_url,
                 text_chunk_limit=self.text_chunk_limit,
                 use_caption=self.media_caption_mode == "caption",
-                quoted_message_id=self.quoted_message_id,
-                quoted_participant=self.quoted_participant,
+                quoted_message_id=quoted_message_id,
+                quoted_participant=quoted_participant,
                 resolve_media_func=self._resolve_media_path,
             )
             await _flush_pending_text(
@@ -114,8 +113,8 @@ class WhatsAppMessageEvent(AstrMessageEvent):
                 pending_mentions,
                 link_preview_single_url=self.link_preview_single_url,
                 text_chunk_limit=self.text_chunk_limit,
-                quoted_message_id=self.quoted_message_id,
-                quoted_participant=self.quoted_participant,
+                quoted_message_id=quoted_message_id,
+                quoted_participant=quoted_participant,
             )
         except Exception as exc:
             logger.warning("WhatsApp 事件发送完成但存在错误: target=%s error=%s", self.target_jid, exc)
@@ -128,9 +127,9 @@ class WhatsAppMessageEvent(AstrMessageEvent):
                 try:
                     await self.client.react(
                         self.target_jid,
-                        self.quoted_message_id,
+                        self.source_message_id,
                         self._done_emoji,
-                        self.quoted_participant,
+                        self.source_participant,
                     )
                 except Exception:
                     pass
@@ -165,9 +164,9 @@ class WhatsAppMessageEvent(AstrMessageEvent):
                 try:
                     await self.client.react(
                         self.target_jid,
-                        self.quoted_message_id,
+                        self.source_message_id,
                         self._done_emoji,
-                        self.quoted_participant,
+                        self.source_participant,
                     )
                 except Exception:
                     pass
@@ -201,8 +200,6 @@ class WhatsAppMessageEvent(AstrMessageEvent):
             result = await self.client.send_text(
                 self.target_jid,
                 text,
-                quoted_message_id=self.quoted_message_id,
-                quoted_participant=self.quoted_participant,
                 link_preview=False,
                 mentions=mentions,
             )
@@ -396,22 +393,42 @@ class WhatsAppMessageEvent(AstrMessageEvent):
         )
 
     async def react(self, emoji: str) -> None:
-        if not self.quoted_message_id:
+        if not self.source_message_id:
             return
         try:
             await self.client.react(
                 self.target_jid,
-                self.quoted_message_id,
+                self.source_message_id,
                 emoji,
-                self.quoted_participant,
+                self.source_participant,
             )
         except Exception as exc:
             logger.warning(
                 "WhatsApp 表情回应发送失败: target=%s message_id=%s error=%s",
                 self.target_jid,
-                self.quoted_message_id,
+                self.source_message_id,
                 exc,
             )
+
+    def _quote_target(self, message: MessageChain) -> tuple[str | None, str | None]:
+        """Mirror Telegram: quote only when the outgoing chain contains Reply."""
+        for component in message.chain:
+            if not isinstance(component, Reply):
+                continue
+            message_id = str(getattr(component, "id", "") or "")
+            if not message_id:
+                return None, None
+            if message_id == self.source_message_id:
+                return message_id, self.source_participant
+            participant = str(
+                getattr(component, "sender_id", "")
+                or getattr(component, "qq", "")
+                or ""
+            )
+            # Numeric AstrBot user IDs are not valid WhatsApp participants. The
+            # Gateway will recover the participant from its chat-scoped cache.
+            return message_id, participant if "@" in participant else None
+        return None, None
 
     async def _resolve_media_path(self, value: str | None) -> str:
         if not value:

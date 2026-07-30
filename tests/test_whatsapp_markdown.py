@@ -14,7 +14,7 @@ class _Logger:
         return lambda *args, **kwargs: None
 
 
-def _install_stubs() -> tuple[type, type, type, type, type]:
+def _install_stubs() -> tuple[type, type, type, type, type, type]:
     astrbot = types.ModuleType("astrbot")
     astrbot.logger = _Logger()
     sys.modules["astrbot"] = astrbot
@@ -46,10 +46,24 @@ def _install_stubs() -> tuple[type, type, type, type, type]:
         def __init__(self, text: str = "") -> None:
             self.text = text
 
+    class Reply:
+        def __init__(
+            self,
+            id: str = "",
+            chain=None,
+            sender_id: str = "",
+            qq: str = "",
+        ) -> None:
+            self.id = id
+            self.chain = list(chain or [])
+            self.sender_id = sender_id
+            self.qq = qq
+
     class DummyComponent:
         pass
 
     components.Plain = Plain
+    components.Reply = Reply
     components.File = type("File", (), {})
     components.Image = type("Image", (), {})
     components.Record = type("Record", (), {})
@@ -94,10 +108,10 @@ def _install_stubs() -> tuple[type, type, type, type, type]:
 
     metrics.Metric = Metric
     sys.modules["astrbot.core.utils.metrics"] = metrics
-    return Plain, MessageChain, AstrBotMessage, PlatformMetadata, At
+    return Plain, Reply, MessageChain, AstrBotMessage, PlatformMetadata, At
 
 
-Plain, MessageChain, AstrBotMessage, PlatformMetadata, At = _install_stubs()
+Plain, Reply, MessageChain, AstrBotMessage, PlatformMetadata, At = _install_stubs()
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT.parent))
 PACKAGE = ROOT.name
@@ -216,16 +230,79 @@ class ProcessChainTests(unittest.IsolatedAsyncioTestCase):
         await helpers.flush_pending_text(client, "target", pending, mentions)
         self.assertEqual(client.sent, [("*bold*", [])])
 
+    async def test_reply_component_is_transport_metadata_not_nested_output(self) -> None:
+        client = self.Client()
+        pending, mentions = await helpers.process_message_chain(
+            client,
+            "target",
+            [Reply(id="old-question", chain=[Plain("unrelated question")]), Plain("answer")],
+        )
+        await helpers.flush_pending_text(client, "target", pending, mentions)
+        self.assertEqual(client.sent, [("answer", [])])
+
+
+class EventQuoteTests(unittest.IsolatedAsyncioTestCase):
+    class Client:
+        def __init__(self) -> None:
+            self.sent: list[dict] = []
+
+        async def send_text(self, _target, text, **kwargs):
+            self.sent.append({"text": text, **kwargs})
+            return {"id": str(len(self.sent))}
+
+    def event(self) -> WhatsAppMessageEvent:
+        message = AstrBotMessage()
+        message.raw_message = {
+            "senderJid": "15550001@s.whatsapp.net",
+            "quoted": {"participant": "bot@s.whatsapp.net"},
+        }
+        return WhatsAppMessageEvent(
+            "",
+            message,
+            PlatformMetadata(),
+            "session",
+            self.client,
+            "chat@g.us",
+            source_message_id="current-question",
+            typing_indicator=False,
+        )
+
+    async def asyncSetUp(self) -> None:
+        self.client = self.Client()
+
+    async def test_plain_outgoing_chain_does_not_quote_implicitly(self) -> None:
+        await self.event().send(MessageChain([Plain("answer")]))
+        self.assertIsNone(self.client.sent[0]["quoted_message_id"])
+
+    async def test_only_reply_segment_quotes_current_source_message(self) -> None:
+        event = self.event()
+        await event.send(
+            MessageChain([Reply(id="current-question"), Plain("first segment")]),
+        )
+        await event.send(MessageChain([Plain("second segment")]))
+
+        self.assertEqual(
+            self.client.sent[0]["quoted_message_id"],
+            "current-question",
+        )
+        self.assertEqual(
+            self.client.sent[0]["quoted_participant"],
+            "15550001@s.whatsapp.net",
+        )
+        self.assertIsNone(self.client.sent[1]["quoted_message_id"])
+
 
 class StreamingTests(unittest.IsolatedAsyncioTestCase):
     class Client:
         def __init__(self, *, fail_edit: bool = False, return_id: bool = True) -> None:
             self.operations: list[tuple[str, str, list[str]]] = []
+            self.quote_ids: list[str | None] = []
             self.fail_edit = fail_edit
             self.return_id = return_id
 
         async def send_text(self, _target, text, **kwargs):
             self.operations.append(("send", text, kwargs.get("mentions") or []))
+            self.quote_ids.append(kwargs.get("quoted_message_id"))
             return {"id": f"m{len(self.operations)}" if self.return_id else ""}
 
         async def edit_text(self, _target, _message_id, text, **kwargs):
@@ -259,6 +336,17 @@ class StreamingTests(unittest.IsolatedAsyncioTestCase):
         await self.event(client)._send_streaming_edit(chunks())
         self.assertEqual(client.operations[0][1], "*🥥 最新動態*")
         self.assertNotIn("**", client.operations[-1][1])
+
+    async def test_streaming_does_not_force_quote_without_reply_component(self) -> None:
+        async def chunks():
+            yield MessageChain([Plain("streamed answer")])
+
+        client = self.Client()
+        await self.event(
+            client,
+            source_message_id="current-question",
+        )._send_streaming_edit(chunks())
+        self.assertEqual(client.quote_ids, [None])
 
     async def test_throttle_happens_before_render(self) -> None:
         original = event_module.format_whatsapp_markdown
