@@ -44,11 +44,6 @@ export function astrbotRememberEphemeralChats(cache, chats) {
     const timestamp =
       suppliedTimestamp ||
       (previous?.expiration === expiration ? previous?.timestamp : undefined);
-    if (!timestamp) {
-      cache.delete(jid);
-      continue;
-    }
-
     cache.set(jid, { expiration, timestamp });
   }
 }
