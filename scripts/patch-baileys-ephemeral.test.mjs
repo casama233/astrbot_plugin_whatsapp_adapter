@@ -124,15 +124,21 @@ test("chat cache preserves complete metadata and rejects stale or incomplete upd
   astrbotRememberEphemeralChats(cache, [
     { id: "chat@s.whatsapp.net", ephemeralExpiration: 604800 },
   ]);
-  assert.equal(cache.has("chat@s.whatsapp.net"), false);
+  assert.deepEqual(cache.get("chat@s.whatsapp.net"), {
+    expiration: 604800,
+    timestamp: undefined,
+  });
 
   astrbotRememberEphemeralChats(cache, [
     {
       id: "chat@s.whatsapp.net",
-      ephemeralExpiration: 604800,
       ephemeralSettingTimestamp: "1700001000",
     },
   ]);
+  assert.deepEqual(cache.get("chat@s.whatsapp.net"), {
+    expiration: 604800,
+    timestamp: "1700001000",
+  });
   astrbotRememberEphemeralChats(cache, [
     { id: "chat@s.whatsapp.net", ephemeralExpiration: 0 },
   ]);
