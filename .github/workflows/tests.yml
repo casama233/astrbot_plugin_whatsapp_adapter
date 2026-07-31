@@ -6,9 +6,89 @@ on:
     branches: [main]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
+  prepare-release:
+    if: github.event_name == 'pull_request' && github.head_ref == 'release/v0.2.28' && github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: release/v0.2.28
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Update release metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm version 0.2.28 --no-git-tag-version --allow-same-version
+          python - <<'PY'
+          from pathlib import Path
+
+          old = "0.2.27"
+          new = "0.2.28"
+
+          def replace_exact(path: str, before: str, after: str, expected: int | None = None) -> None:
+              file = Path(path)
+              text = file.read_text(encoding="utf-8")
+              count = text.count(before)
+              if expected is not None and count != expected:
+                  raise SystemExit(f"{path}: expected {expected} occurrence(s) of {before!r}, found {count}")
+              if count == 0:
+                  raise SystemExit(f"{path}: release marker {before!r} not found")
+              file.write_text(text.replace(before, after), encoding="utf-8")
+
+          replace_exact("main.py", f'"{old}"', f'"{new}"', expected=1)
+          replace_exact("metadata.yaml", f"version: {old}", f"version: {new}", expected=1)
+          replace_exact("tests/test_whatsapp_config_policy.py", old, new, expected=2)
+
+          changelog = Path("CHANGELOG.md")
+          text = changelog.read_text(encoding="utf-8")
+          heading = "# Changelog\n\n"
+          if not text.startswith(heading):
+              raise SystemExit("CHANGELOG.md heading is not in the expected format")
+          section = """## [0.2.28] - 2026-08-01
+
+- 修復啟用「應用聊天室的消失訊息設定」後，收件端仍顯示「此訊息不會自動刪除／傳送者可能正在使用版本較舊的 WhatsApp」：針對精確鎖定的 Baileys `7.0.0-rc14` 在安裝期恢復 `ephemeralSettingTimestamp`，並只使用聊天室真實的消失訊息設定時間。
+- 消失訊息期限與設定時間不完整或不相符時改發普通訊息，不再以發送時間偽造 metadata；支援從聊天同步、聊天更新與入站 ephemeral message 回填設定，並正確處理 `0`／`null` 清除計時器。
+- 修復其他 AstrBot 插件只能取得 WhatsApp 群 ID、無法取得群名稱：Gateway 讀取 Baileys `GroupMetadata.subject`，填入 AstrBot 標準 `message.group.group_name`，並實作 `event.get_group()`。
+- 入站事件同步提供 `groupName`、`group_name`、`groupSubject` 兼容欄位；新增群資料快取與 `groups.update` 更新處理，避免統計、權限及群管理插件把 JID 當作群名稱。
+- 新增消失訊息與群名稱回歸測試，以及第一方 GitHub Actions Python／Node 完整測試工作流。
+
+"""
+          if "## [0.2.28]" in text:
+              raise SystemExit("CHANGELOG.md already contains 0.2.28")
+          changelog.write_text(heading + section + text[len(heading):], encoding="utf-8")
+          PY
+      - name: Compile Python
+        run: >-
+          python -m compileall -q
+          main.py whatsapp_adapter.py _whatsapp_adapter_impl.py
+          whatsapp_commands.py whatsapp_config_policy.py whatsapp_helpers.py
+          _whatsapp_helpers_impl.py whatsapp_chunking.py whatsapp_event.py
+          _whatsapp_event_impl.py group_name_compat.py tests
+      - name: Python tests
+        run: python -m unittest discover -v tests
+      - name: Node tests
+        run: node --test gateway/*.test.mjs scripts/*.test.mjs
+      - name: Commit release
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout origin/main -- .github/workflows/tests.yml
+          rm -f .github/workflows/prepare-v0.2.28.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md main.py metadata.yaml package.json package-lock.json tests/test_whatsapp_config_policy.py .github/workflows/tests.yml .github/workflows/prepare-v0.2.28.yml
+          git commit -m "Release v0.2.28: fix disappearing messages and group names"
+          git push origin HEAD:release/v0.2.28
+
   test:
     runs-on: ubuntu-latest
     steps:
