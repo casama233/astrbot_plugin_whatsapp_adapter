@@ -1,0 +1,40 @@
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Compile Python
+        run: >-
+          python -m compileall -q
+          main.py
+          whatsapp_adapter.py
+          _whatsapp_adapter_impl.py
+          whatsapp_commands.py
+          whatsapp_config_policy.py
+          whatsapp_helpers.py
+          _whatsapp_helpers_impl.py
+          whatsapp_chunking.py
+          whatsapp_event.py
+          _whatsapp_event_impl.py
+          group_name_compat.py
+          tests
+      - name: Python tests
+        run: python -m unittest discover -v tests
+      - name: Node tests
+        run: node --test gateway/*.test.mjs scripts/*.test.mjs
