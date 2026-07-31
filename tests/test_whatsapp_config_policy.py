@@ -71,6 +71,10 @@ def _metadata_option_bindings(source: str) -> dict[str, str]:
     raise AssertionError("CONFIG_METADATA not found")
 
 
+def _adapter_implementation_source() -> str:
+    return (ROOT / "_whatsapp_adapter_impl.py").read_text("utf-8")
+
+
 class WhatsAppConfigPolicyTests(unittest.TestCase):
     def test_merge_priority(self) -> None:
         merged = merge_runtime_config(
@@ -169,8 +173,7 @@ class WhatsAppConfigPolicyTests(unittest.TestCase):
         self.assertEqual(get_runtime_wake_prefixes(), ("/", "!"))
 
     def test_platform_ui_has_only_account_specific_fields(self) -> None:
-        source = (ROOT / "whatsapp_adapter.py").read_text("utf-8")
-        defaults = _top_level_dict_keys(source, "DEFAULT_CONFIG")
+        defaults = _top_level_dict_keys(_adapter_implementation_source(), "DEFAULT_CONFIG")
         for key in ("media_caption_mode", "ignore_self_messages", "apply_ephemeral"):
             self.assertIn(key, defaults)
         for key in (
@@ -181,8 +184,7 @@ class WhatsAppConfigPolicyTests(unittest.TestCase):
             self.assertNotIn(key, defaults)
 
     def test_all_finite_platform_fields_are_dropdowns(self) -> None:
-        source = (ROOT / "whatsapp_adapter.py").read_text("utf-8")
-        bindings = _metadata_option_bindings(source)
+        bindings = _metadata_option_bindings(_adapter_implementation_source())
         self.assertEqual(bindings["dm_policy"], "DM_POLICIES")
         self.assertEqual(bindings["group_policy"], "GROUP_POLICIES")
         self.assertEqual(bindings["media_caption_mode"], "MEDIA_CAPTION_MODES")
@@ -196,7 +198,8 @@ class WhatsAppConfigPolicyTests(unittest.TestCase):
             self.assertNotIn(fixed_key, schema)
 
     def test_source_integrations_and_version(self) -> None:
-        adapter = (ROOT / "whatsapp_adapter.py").read_text("utf-8")
+        adapter = _adapter_implementation_source()
+        wrapper = (ROOT / "whatsapp_adapter.py").read_text("utf-8")
         main = (ROOT / "main.py").read_text("utf-8")
         metadata = (ROOT / "metadata.yaml").read_text("utf-8")
         self.assertRegex(
@@ -225,6 +228,8 @@ class WhatsAppConfigPolicyTests(unittest.TestCase):
             "        self._refresh_registered_commands()",
             adapter,
         )
+        self.assertIn("_convert_message_with_group_name", wrapper)
+        self.assertIn("apply_group_name", wrapper)
         self.assertIn("adopt_legacy_gateway_defaults", main)
         self.assertIn("await self._reload_active_adapters()", main)
         self.assertIn("set_runtime_plugin_defaults", main)
