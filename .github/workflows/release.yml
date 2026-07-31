@@ -1,0 +1,172 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".release/*.json"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: whatsapp-adapter-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Read release specification
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          markers = sorted(Path(".release").glob("*.json"))
+          if len(markers) != 1:
+              raise SystemExit(f"expected exactly one release marker, found {len(markers)}")
+
+          marker = markers[0]
+          spec = json.loads(marker.read_text(encoding="utf-8"))
+          required = ("version", "previous_version", "date", "commit_subject", "notes")
+          missing = [key for key in required if not spec.get(key)]
+          if missing:
+              raise SystemExit(f"release marker is missing: {', '.join(missing)}")
+
+          version = str(spec["version"])
+          previous = str(spec["previous_version"])
+          release_date = str(spec["date"])
+          subject = str(spec["commit_subject"]).strip()
+          notes = [str(item).strip() for item in spec["notes"] if str(item).strip()]
+          if not re.fullmatch(r"\d+\.\d+\.\d+", version):
+              raise SystemExit(f"invalid version: {version}")
+          if not re.fullmatch(r"\d+\.\d+\.\d+", previous):
+              raise SystemExit(f"invalid previous version: {previous}")
+          if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", release_date):
+              raise SystemExit(f"invalid release date: {release_date}")
+          if not notes:
+              raise SystemExit("release notes must not be empty")
+
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
+              env.write(f"RELEASE_VERSION={version}\n")
+              env.write(f"PREVIOUS_VERSION={previous}\n")
+              env.write(f"RELEASE_DATE={release_date}\n")
+              env.write(f"RELEASE_MARKER={marker.as_posix()}\n")
+
+          Path("/tmp/release-subject.txt").write_text(subject, encoding="utf-8")
+          bullet_text = "\n".join(f"- {item}" for item in notes)
+          Path("/tmp/release-notes.md").write_text(
+              f"## 更新內容\n\n{bullet_text}\n",
+              encoding="utf-8",
+          )
+          Path("/tmp/changelog-section.md").write_text(
+              f"## [{version}] - {release_date}\n\n{bullet_text}\n\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Update version and changelog
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm version "$RELEASE_VERSION" --no-git-tag-version --allow-same-version
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          old = os.environ["PREVIOUS_VERSION"]
+          new = os.environ["RELEASE_VERSION"]
+
+          def replace_exact(path: str, before: str, after: str, expected: int) -> None:
+              file = Path(path)
+              text = file.read_text(encoding="utf-8")
+              count = text.count(before)
+              if count != expected:
+                  raise SystemExit(
+                      f"{path}: expected {expected} occurrence(s) of {before!r}, found {count}"
+                  )
+              file.write_text(text.replace(before, after), encoding="utf-8")
+
+          replace_exact("main.py", f'"{old}"', f'"{new}"', 1)
+          replace_exact("metadata.yaml", f"version: {old}", f"version: {new}", 1)
+          replace_exact("tests/test_whatsapp_config_policy.py", old, new, 2)
+
+          changelog = Path("CHANGELOG.md")
+          text = changelog.read_text(encoding="utf-8")
+          heading = "# Changelog\n\n"
+          if not text.startswith(heading):
+              raise SystemExit("CHANGELOG.md heading is not in the expected format")
+          if f"## [{new}]" in text:
+              raise SystemExit(f"CHANGELOG.md already contains {new}")
+          section = Path("/tmp/changelog-section.md").read_text(encoding="utf-8")
+          changelog.write_text(heading + section + text[len(heading):], encoding="utf-8")
+          Path(os.environ["RELEASE_MARKER"]).unlink()
+          PY
+
+      - name: Compile Python
+        run: >-
+          python -m compileall -q
+          main.py
+          whatsapp_adapter.py
+          _whatsapp_adapter_impl.py
+          whatsapp_commands.py
+          whatsapp_config_policy.py
+          whatsapp_helpers.py
+          _whatsapp_helpers_impl.py
+          whatsapp_chunking.py
+          whatsapp_event.py
+          _whatsapp_event_impl.py
+          group_name_compat.py
+          tests
+
+      - name: Python tests
+        run: python -m unittest discover -v tests
+
+      - name: Node tests
+        run: node --test gateway/*.test.mjs scripts/*.test.mjs
+
+      - name: Commit release
+        shell: bash
+        run: |
+          set -euo pipefail
+          subject=$(cat /tmp/release-subject.txt)
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md main.py metadata.yaml package.json package-lock.json tests/test_whatsapp_config_policy.py .release
+          git commit -m "Release v${RELEASE_VERSION}: ${subject}"
+          git push origin HEAD:main
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="v${RELEASE_VERSION}"
+          target=$(git rev-parse HEAD)
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists"
+          else
+            gh release create "$tag" \
+              --target "$target" \
+              --title "$tag" \
+              --notes-file /tmp/release-notes.md
+          fi
