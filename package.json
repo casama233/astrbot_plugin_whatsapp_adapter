@@ -8,7 +8,8 @@
   },
   "scripts": {
     "gateway": "node gateway/whatsapp-gateway.mjs",
-    "test": "node --test gateway/*.test.mjs"
+    "postinstall": "node scripts/patch-baileys-ephemeral.mjs",
+    "test": "node --test gateway/*.test.mjs scripts/*.test.mjs"
   },
   "dependencies": {
     "@whiskeysockets/baileys": "7.0.0-rc14",
