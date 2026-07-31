@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.28] - 2026-08-01
+
+- 修復啟用「應用聊天室的消失訊息設定」後，收件端仍顯示「此訊息不會自動刪除／傳送者可能正在使用版本較舊的 WhatsApp」：針對精確鎖定的 Baileys `7.0.0-rc14` 在安裝期恢復 `ephemeralSettingTimestamp`，並只使用聊天室真實的消失訊息設定時間。
+- 消失訊息期限與設定時間不完整或不相符時改發普通訊息，不再以發送時間偽造 metadata；支援從聊天同步、聊天更新與入站 ephemeral message 回填設定，並正確處理 `0`／`null` 清除計時器。
+- 修復其他 AstrBot 插件只能取得 WhatsApp 群 ID、無法取得群名稱：Gateway 讀取 Baileys `GroupMetadata.subject`，填入 AstrBot 標準 `message.group.group_name`，並實作 `event.get_group()`。
+- 入站事件同步提供 `groupName`、`group_name`、`groupSubject` 兼容欄位；新增群資料快取與 `groups.update` 更新處理，避免統計、權限及群管理插件把 JID 當作群名稱。
+- 新增消失訊息與群名稱回歸測試，以及第一方 GitHub Actions Python／Node 完整測試工作流。
+
 ## [0.2.27] - 2026-07-30
 
 - 出站引用行为与 AstrBot Telegram adapter 对齐：仅当出站 MessageChain 包含 `Reply` 时引用，分段回复只在首段引用，串流回复不再强制反复引用触发消息。
