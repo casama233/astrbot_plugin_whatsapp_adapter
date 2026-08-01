@@ -166,6 +166,11 @@ Gateway 默认监听 `127.0.0.1:18789`：
 | POST | `/send/poll` | 发送投票 |
 | POST | `/mentions/resolve` | 解析 @提及 |
 
+插件管理页另提供 `/update/status`、`/update/check` 与 `/update/install` 三个受
+Dashboard 登录保护的页面 API。它们直接读取本仓库稳定 GitHub Release，不经过
+插件市场缓存；安装采用暂存验证、依赖预装、原子切换和重载失败自动回滚。更新
+过程不会删除 `plugin_data` 中的认证目录。
+
 ## 数据目录
 
 遵循 AstrBot 官方规范，存储于 `data/plugin_data/astrbot_plugin_whatsapp_adapter/`：

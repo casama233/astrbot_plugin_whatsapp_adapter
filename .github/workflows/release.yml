@@ -125,6 +125,7 @@ jobs:
         run: >-
           python -m compileall -q
           main.py
+          plugin_updater.py
           whatsapp_adapter.py
           _whatsapp_adapter_impl.py
           whatsapp_commands.py

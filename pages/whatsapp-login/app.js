@@ -26,6 +26,13 @@ const els = {
   policyGroup: document.getElementById("policyGroup"),
   policyAllowFrom: document.getElementById("policyAllowFrom"),
   policyGroups: document.getElementById("policyGroups"),
+  // Updater
+  updatePhase: document.getElementById("updatePhase"),
+  currentVersion: document.getElementById("currentVersion"),
+  latestVersion: document.getElementById("latestVersion"),
+  updateMessage: document.getElementById("updateMessage"),
+  releaseNotesWrap: document.getElementById("releaseNotesWrap"),
+  releaseNotes: document.getElementById("releaseNotes"),
   // QR
   qrWrap: document.getElementById("qrWrap"),
   qrHint: document.getElementById("qrHint"),
@@ -37,6 +44,8 @@ const els = {
   refreshQrBtn: document.getElementById("refreshQr"),
   restartBtn: document.getElementById("restart"),
   logoutBtn: document.getElementById("logout"),
+  checkUpdateBtn: document.getElementById("checkUpdate"),
+  installUpdateBtn: document.getElementById("installUpdate"),
   clearLogBtn: document.getElementById("clearLog"),
   refreshCountdown: document.getElementById("refreshCountdown"),
   liveDot: document.getElementById("liveDot"),
@@ -49,6 +58,10 @@ let loggedOutSince = 0;
 let currentConnectionStatus = "unknown";
 let runtimeLoaded = false;
 let refreshPromise = null;
+let updateInfo = null;
+let updatePollTimer = null;
+let updateStartedHere = false;
+let updatePollAttempts = 0;
 
 // ─── Helpers ───
 function fmtTime() {
@@ -180,6 +193,128 @@ function renderRuntime(runtime) {
     runtime.npm?.path ? `npm ${runtime.npm.path}` : null,
     runtime.dependenciesInstalled ? "Baileys 已安装" : "Baileys 待安装",
   ].filter(Boolean).join(" · ");
+}
+
+// ─── Independent GitHub Release updater ───
+const updatePhaseLabels = {
+  idle: "未检查",
+  queued: "已排队",
+  checking: "检查中",
+  available: "可更新",
+  up_to_date: "已是最新",
+  check_failed: "检查失败",
+  downloading: "下载中",
+  validating: "验证中",
+  installing_dependencies: "准备依赖",
+  installing: "安装中",
+  reloading: "重载中",
+  rolling_back: "回滚中",
+  completed: "已完成",
+  failed: "更新失败",
+};
+
+function renderUpdate(data) {
+  if (!data) return;
+  updateInfo = data;
+  const phase = data.phase || "idle";
+  const isError = ["failed", "check_failed"].includes(phase);
+  const isSuccess = ["up_to_date", "completed"].includes(phase);
+  const isBusy = Boolean(data.busy);
+
+  els.currentVersion.textContent = data.currentVersion ? `v${data.currentVersion}` : "-";
+  els.latestVersion.textContent = data.latestVersion ? `v${data.latestVersion}` : "-";
+  els.updateMessage.textContent = data.message || "直接检查 GitHub Release，不依赖官方插件市场缓存。";
+  els.updatePhase.textContent = updatePhaseLabels[phase] || phase;
+  els.updatePhase.className = "phase-badge";
+  if (isError) els.updatePhase.classList.add("error");
+  else if (isSuccess) els.updatePhase.classList.add("connected");
+  else if (isBusy || data.updateAvailable) els.updatePhase.classList.add("connecting");
+
+  const notes = data.release?.notes || "";
+  els.releaseNotes.textContent = notes;
+  els.releaseNotesWrap.hidden = !notes;
+  els.checkUpdateBtn.disabled = isBusy;
+  els.installUpdateBtn.disabled = isBusy || !data.updateAvailable;
+  els.installUpdateBtn.textContent = isBusy ? "更新处理中…" : "立即更新";
+}
+
+async function checkUpdate({ quiet = false } = {}) {
+  if (!quiet) log("info", "正在直接检查 GitHub Release…");
+  els.checkUpdateBtn.disabled = true;
+  try {
+    const data = await bridge.apiPost("update/check", {});
+    renderUpdate(data);
+    if (!quiet) log(data.updateAvailable ? "warn" : "info", data.message || "更新检查完成");
+    return data;
+  } catch (err) {
+    try {
+      renderUpdate(await bridge.apiGet("update/status"));
+    } catch (_) {
+      // Keep the original network error visible when even the status route failed.
+    }
+    log("error", `更新检查失败: ${err}`);
+    return null;
+  } finally {
+    if (!updateInfo?.busy) els.checkUpdateBtn.disabled = false;
+  }
+}
+
+function stopUpdatePolling() {
+  if (updatePollTimer) clearTimeout(updatePollTimer);
+  updatePollTimer = null;
+}
+
+function pollUpdateStatus() {
+  stopUpdatePolling();
+  updatePollTimer = setTimeout(async () => {
+    updatePollAttempts += 1;
+    if (updatePollAttempts > 120) {
+      updateStartedHere = false;
+      els.updateMessage.textContent = "更新状态确认超时，请重新载入页面查看最终版本。";
+      log("error", "更新状态确认超时");
+      return;
+    }
+    try {
+      const data = await bridge.apiGet("update/status");
+      renderUpdate(data);
+      if (data.busy) {
+        pollUpdateStatus();
+        return;
+      }
+      if (data.phase === "completed") {
+        log("info", data.message || "插件更新完成");
+        if (updateStartedHere) {
+          updateStartedHere = false;
+          setTimeout(() => window.location.reload(), 1200);
+        }
+        return;
+      }
+      if (data.phase === "failed") {
+        log("error", data.message || "插件更新失败");
+      }
+    } catch (err) {
+      // Plugin routes disappear briefly during hot reload; keep polling instead of
+      // treating that expected window as an update failure.
+      pollUpdateStatus();
+    }
+  }, 1500);
+}
+
+async function initializeUpdate() {
+  try {
+    const state = await bridge.apiGet("update/status");
+    renderUpdate(state);
+    if (state.busy) {
+      updatePollAttempts = 0;
+      pollUpdateStatus();
+      return;
+    }
+    const checkedAt = Number(state.checkedAt || 0) * 1000;
+    if (checkedAt && Date.now() - checkedAt < 5 * 60 * 1000) return;
+  } catch (_) {
+    // Fall through to a direct check when no persisted state is available.
+  }
+  await checkUpdate({ quiet: true });
 }
 
 // ─── Render QR ───
@@ -409,6 +544,37 @@ els.logoutBtn.addEventListener("click", async () => {
   setTimeout(() => refresh().catch(() => {}), 2500);
 });
 
+els.checkUpdateBtn?.addEventListener("click", () => {
+  checkUpdate().catch((err) => log("error", `更新检查失败: ${err}`));
+});
+
+els.installUpdateBtn?.addEventListener("click", async () => {
+  if (!updateInfo?.updateAvailable || updateInfo.busy) return;
+  const current = updateInfo.currentVersion || "当前版本";
+  const latest = updateInfo.latestVersion || "最新版";
+  const confirmed = window.confirm(
+    `确定要从 v${String(current).replace(/^v/, "")} 更新到 v${String(latest).replace(/^v/, "")} 吗？\n\n` +
+    "系统会先验证压缩包和依赖，再原子切换；重载失败会自动回滚。WhatsApp 登录凭证不会被删除。",
+  );
+  if (!confirmed) return;
+
+  updateStartedHere = true;
+  updatePollAttempts = 0;
+  els.installUpdateBtn.disabled = true;
+  els.checkUpdateBtn.disabled = true;
+  log("warn", `开始安装 v${String(latest).replace(/^v/, "")}…`);
+  try {
+    const data = await bridge.apiPost("update/install", {});
+    renderUpdate(data);
+    log("info", data.message || "更新任务已启动");
+  } catch (err) {
+    // A route interruption can happen exactly when the plugin reloads. Poll the
+    // persisted state before deciding whether the update actually failed.
+    log("warn", `更新请求已中断，正在确认最终状态: ${err}`);
+  }
+  pollUpdateStatus();
+});
+
 els.clearLogBtn.addEventListener("click", () => {
   clearChildren(els.eventLog);
   const empty = document.createElement("div");
@@ -422,3 +588,4 @@ await bridge.ready();
 log("info", "管理面板已加载");
 startCountdown();
 await refresh().catch((err) => log("error", `初始化失败: ${err}`));
+await initializeUpdate();
