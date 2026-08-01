@@ -428,6 +428,21 @@ h1 {
   background: rgba(255, 94, 107, 0.22);
 }
 
+.btn-success {
+  background: var(--green-dim);
+  color: var(--green);
+  border: 1px solid rgba(37, 211, 102, 0.18);
+}
+
+.btn-success:hover:not(:disabled) {
+  background: rgba(37, 211, 102, 0.22);
+}
+
+.btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .btn-xs {
   padding: 0.3rem 0.65rem;
   font-size: 0.75rem;
@@ -445,6 +460,82 @@ h1 {
   font-size: 0.78rem;
   color: var(--text-faint);
   line-height: 1.5;
+}
+
+/* ─── Independent updater ─── */
+.update-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.25rem;
+  margin-bottom: 1rem;
+}
+
+.update-main {
+  min-width: 0;
+  flex: 1;
+}
+
+.update-head {
+  justify-content: flex-start;
+}
+
+.update-versions {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  margin-top: 0.8rem;
+}
+
+.update-versions > div {
+  display: grid;
+  gap: 0.1rem;
+}
+
+.update-label {
+  color: var(--text-faint);
+  font-size: 0.7rem;
+}
+
+.update-arrow {
+  color: var(--text-faint);
+}
+
+.update-message {
+  margin-top: 0.7rem;
+}
+
+.update-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.6rem;
+  flex-shrink: 0;
+}
+
+.release-notes {
+  margin-top: 0.75rem;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
+.release-notes summary {
+  cursor: pointer;
+  color: var(--green);
+}
+
+.release-notes pre {
+  max-height: 220px;
+  margin-top: 0.6rem;
+  padding: 0.75rem;
+  overflow: auto;
+  border: 1px solid var(--surface-border);
+  border-radius: var(--radius-sm);
+  background: rgba(0, 0, 0, 0.16);
+  color: var(--text-muted);
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 /* ─── Event Log ─── */
@@ -546,6 +637,15 @@ h1 {
   .card-footer {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .update-card {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .update-actions {
+    justify-content: flex-start;
   }
 }
 

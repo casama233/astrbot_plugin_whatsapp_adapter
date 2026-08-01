@@ -201,6 +201,7 @@ class WhatsAppConfigPolicyTests(unittest.TestCase):
         adapter = _adapter_implementation_source()
         wrapper = (ROOT / "whatsapp_adapter.py").read_text("utf-8")
         main = (ROOT / "main.py").read_text("utf-8")
+        updater = (ROOT / "plugin_updater.py").read_text("utf-8")
         metadata = (ROOT / "metadata.yaml").read_text("utf-8")
         self.assertRegex(
             adapter,
@@ -233,6 +234,13 @@ class WhatsAppConfigPolicyTests(unittest.TestCase):
         self.assertIn("adopt_legacy_gateway_defaults", main)
         self.assertIn("await self._reload_active_adapters()", main)
         self.assertIn("set_runtime_plugin_defaults", main)
+        self.assertIn('f"/{PLUGIN_NAME}/update/check"', main)
+        self.assertIn('f"/{PLUGIN_NAME}/update/install"', main)
+        self.assertIn("atomic_swap_plugin", main)
+        self.assertIn("restore_plugin_backup", main)
+        self.assertIn("api.github.com/repos/{PLUGIN_REPOSITORY}/releases", updater)
+        self.assertIn("TRUSTED_DOWNLOAD_HOSTS", updater)
+        self.assertIn("MAX_ARCHIVE_BYTES", updater)
         self.assertIn('"0.2.28"', main)
         self.assertIn("version: 0.2.28", metadata)
         self.assertIn('astrbot_version: ">=4.24.2,<5"', metadata)
