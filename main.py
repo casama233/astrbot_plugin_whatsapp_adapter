@@ -42,7 +42,7 @@ from .whatsapp_config_policy import (
 )
 
 PLUGIN_NAME = "astrbot_plugin_whatsapp_adapter"
-PLUGIN_VERSION = "0.2.28"
+PLUGIN_VERSION = "0.2.29"
 PLUGIN_DIR = Path(__file__).resolve().parent
 _UPDATE_BUSY_PHASES = {
     "queued",
