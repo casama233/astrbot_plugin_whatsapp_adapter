@@ -98,5 +98,12 @@
     "default": 1.0,
     "group": "messaging_defaults",
     "hint": "所有 WhatsApp 平台实例编辑流式文字的全局最小间隔。"
+  },
+  "ignore_self_messages": {
+    "description": "忽略自身发送的消息",
+    "type": "bool",
+    "default": false,
+    "group": "messaging_defaults",
+    "hint": "开启后，Bot 自己发出的消息不会进入处理管线。关闭（默认）时，自己给自己发消息可触发回复。"
   }
 }
