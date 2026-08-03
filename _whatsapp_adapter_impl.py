@@ -1132,7 +1132,7 @@ class WhatsAppPlatformAdapter(Platform):
         self._status = PlatformStatus.STOPPED
 
     async def convert_message(self, data: dict[str, Any]) -> AstrBotMessage | None:
-        if data.get("fromMe"):
+        if data.get("fromMe") and self.config.get("ignore_self_messages", False):
             logger.debug("忽略自身消息: message_id=%s", data.get("messageId"))
             return None
 
