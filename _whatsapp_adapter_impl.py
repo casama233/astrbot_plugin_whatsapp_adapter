@@ -68,7 +68,11 @@ PLUGIN_DIR = Path(__file__).resolve().parent
 _ACTIVE_ADAPTERS: weakref.WeakSet["WhatsAppPlatformAdapter"] = weakref.WeakSet()
 _RUNTIME_OWNER_REGISTRY: dict[str, weakref.ReferenceType["WhatsAppPlatformAdapter"]] = {}
 _LID_PN_CACHE: dict[str, str] = {}  # lid JID → pn JID (e.g. "xxx@lid" → "yyy@s.whatsapp.net")
-_PN_LID_CACHE: dict[str, str] = {}  # pn JID → lid JID，用於出站時目標 JID 還原
+_PN_LID_CACHE: dict[str, str] = {}  # pn JID → lid JID
+
+# Multi-instance port allocation: track which ports are in use by adapter instances
+_ALLOCATED_PORTS: set[int] = set()
+_BASE_GATEWAY_PORT = 18789，用於出站時目標 JID 還原
 
 
 def _base_pn_jid(pn_jid: str) -> str:
@@ -905,7 +909,7 @@ class WhatsAppPlatformAdapter(Platform):
 
     @property
     def _base_url(self) -> str:
-        return f"http://{self.config['gateway_host']}:{int(self.config['gateway_port'])}"
+        return f"http://{self.config.get('gateway_host', '127.0.0.1')}:{int(self.config.get('gateway_port', _BASE_GATEWAY_PORT))}"
 
     def meta(self) -> PlatformMetadata:
         return PlatformMetadata(
@@ -1119,6 +1123,10 @@ class WhatsAppPlatformAdapter(Platform):
         logger.info("正在终止 WhatsApp 平台适配器")
         self._stopped.set()
         self._reconnect_event.set()
+        # Release allocated port for multi-instance
+        allocated_port = int(self.config.get("gateway_port", 0))
+        if allocated_port:
+            _ALLOCATED_PORTS.discard(allocated_port)
         run_task = getattr(self, '_run_task', None)
         if run_task is not None and not run_task.done():
             run_task.cancel()
@@ -1635,7 +1643,11 @@ class WhatsAppPlatformAdapter(Platform):
         configured = str(self.config.get("auth_dir") or "").strip()
         if configured:
             return Path(configured).expanduser().resolve()
-        return self._data_dir() / "whatsapp-auth"
+        # Multi-instance: use instance-specific auth directory
+        instance_id = str(self.config.get("id") or "whatsapp")
+        if instance_id == "whatsapp":
+            return self._data_dir() / "whatsapp-auth"
+        return self._data_dir() / f"whatsapp-auth-{instance_id}"
 
     _migrated = False
 
@@ -1850,12 +1862,38 @@ class WhatsAppPlatformAdapter(Platform):
         # the complete active CommandFilter registry after every reconnect.
         self._refresh_registered_commands()
 
+    def _allocate_gateway_port(self) -> int:
+        """Allocate a unique gateway port for this adapter instance.
+
+        If the configured port is already taken by another instance and this
+        instance uses auto_start_gateway, find the next available port.
+        """
+        configured_port = int(self.config.get("gateway_port", _BASE_GATEWAY_PORT))
+        instance_id = str(self.config.get("id") or "whatsapp")
+        # First instance keeps the configured port
+        if instance_id == "whatsapp" or configured_port not in _ALLOCATED_PORTS:
+            _ALLOCATED_PORTS.add(configured_port)
+            return configured_port
+        # Find next available port
+        port = configured_port
+        while port in _ALLOCATED_PORTS:
+            port += 1
+        _ALLOCATED_PORTS.add(port)
+        if port != configured_port:
+            logger.info(
+                "WhatsApp multi-instance: port %d already in use, allocated port %d for instance '%s'",
+                configured_port, port, instance_id,
+            )
+            self.config["gateway_port"] = port
+        return port
+
     def _create_gateway_process(self) -> GatewayProcess:
+        port = self._allocate_gateway_port()
         return GatewayProcess(
             node_executable=str(self.config["node_executable"]),
             script_path=PLUGIN_DIR / "gateway" / "whatsapp-gateway.mjs",
             host=str(self.config["gateway_host"]),
-            port=int(self.config["gateway_port"]),
+            port=port,
             auth_dir=self._auth_dir(),
             log_level=str(self.config["log_level"]),
             data_dir=self._data_dir(),
