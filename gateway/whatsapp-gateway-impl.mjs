@@ -17,6 +17,7 @@ import makeWASocket, {
 import pino from "pino";
 import QRCode from "qrcode";
 import qrcode from "qrcode-terminal";
+import { HttpsProxyAgent } from "https-proxy-agent";
 import {
   disconnectKind,
   reconnectDelayMs,
@@ -1045,7 +1046,7 @@ async function handleIncomingMessage(item, options = {}) {
       "DM allowlist check",
     );
   }
-  if (fromMe) {
+  if (fromMe && runtimeConfig.ignoreSelfMessages !== false) {
     log.debug({ chatJid, senderJid, messageId: primary.key.id }, "ignored inbound message from self");
     return;
   }
@@ -1367,6 +1368,18 @@ async function startSocket(opts = {}) {
     markOnlineOnConnect: Boolean(runtimeConfig.markOnline),
     browser: Browsers.macOS("Chrome"),
     syncFullHistory: false,
+    ...(() => {
+      const proxyUrl = process.env.HTTPS_PROXY || process.env.HTTP_PROXY || "";
+      if (!proxyUrl) return {};
+      try {
+        const agent = new HttpsProxyAgent(proxyUrl);
+        log.info({ proxyUrl }, "Using HTTPS proxy for WhatsApp WebSocket");
+        return { agent, fetchAgent: agent };
+      } catch (e) {
+        log.error({ error: e.message, proxyUrl }, "Failed to create proxy agent");
+        return {};
+      }
+    })(),
   });
 
   let credsSaveQueue = Promise.resolve();
