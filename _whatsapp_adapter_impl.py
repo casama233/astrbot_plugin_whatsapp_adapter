@@ -72,7 +72,7 @@ _PN_LID_CACHE: dict[str, str] = {}  # pn JID → lid JID
 
 # Multi-instance port allocation: track which ports are in use by adapter instances
 _ALLOCATED_PORTS: set[int] = set()
-_BASE_GATEWAY_PORT = 18789，用於出站時目標 JID 還原
+_BASE_GATEWAY_PORT = 18789
 
 
 def _base_pn_jid(pn_jid: str) -> str:
