@@ -1807,6 +1807,31 @@ const server = createServer(async (req, res) => {
       sendJson(res, 200, result);
       return;
     }
+    if (req.method === "POST" && url.pathname === "/pair-code") {
+      if (!socket) {
+        sendJson(res, 503, { error: "WhatsApp socket not available. Wait for QR to appear first." });
+        return;
+      }
+      const body = await readJson(req);
+      const phone = String(body.phone || "").replace(/[^0-9]/g, "");
+      if (!phone) {
+        sendJson(res, 400, { error: "Missing phone number" });
+        return;
+      }
+      try {
+        if (typeof socket.requestPairingCode === "function") {
+          const code = await socket.requestPairingCode(phone);
+          log.info({ phone, code }, "Pairing code generated");
+          sendJson(res, 200, { ok: true, code: code });
+        } else {
+          sendJson(res, 500, { error: "requestPairingCode not available in this Baileys version" });
+        }
+      } catch (error) {
+        log.error({ error: error.message, phone }, "Failed to generate pairing code");
+        sendJson(res, 500, { error: String(error.message || error) });
+      }
+      return;
+    }
     if (!socket || !ready) {
       sendJson(res, 503, { error: "WhatsApp is not connected. Scan the QR code in Gateway logs." });
       return;
