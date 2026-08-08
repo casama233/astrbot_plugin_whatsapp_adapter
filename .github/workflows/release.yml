@@ -155,6 +155,18 @@ jobs:
           git commit -m "Release v${RELEASE_VERSION}: ${subject}"
           git push origin HEAD:main
 
+      - name: Build AstrBot plugin ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          asset="astrbot_plugin_whatsapp_adapter-v${RELEASE_VERSION}.zip"
+          git archive \
+            --format=zip \
+            --prefix="astrbot_plugin_whatsapp_adapter/" \
+            --output="/tmp/${asset}" \
+            HEAD
+          echo "RELEASE_ASSET=/tmp/${asset}" >> "$GITHUB_ENV"
+
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -164,10 +176,11 @@ jobs:
           tag="v${RELEASE_VERSION}"
           target=$(git rev-parse HEAD)
           if gh release view "$tag" >/dev/null 2>&1; then
-            echo "Release $tag already exists"
+            gh release upload "$tag" "$RELEASE_ASSET" --clobber
           else
             gh release create "$tag" \
               --target "$target" \
               --title "$tag" \
-              --notes-file /tmp/release-notes.md
+              --notes-file /tmp/release-notes.md \
+              "$RELEASE_ASSET"
           fi
