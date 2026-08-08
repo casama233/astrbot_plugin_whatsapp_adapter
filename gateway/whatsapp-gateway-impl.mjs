@@ -56,6 +56,7 @@ let lastError = null;
 const messageCache = new Map();
 const maxMessageCacheSize = 500;
 const mentionDirectory = new Map();
+const mentionDisplayNames = new Map();
 const maxKnownContacts = 10000;
 
 // 統一聯絡人儲存：JID → contact 物件（含 id/lid/jid 欄位）
@@ -66,9 +67,11 @@ const chatEphemeral = new Map();
 
 function updateContact(contact) {
   if (!contact?.id) return;
-  knownContacts.set(contact.id, contact);
-  if (contact.jid && contact.jid !== contact.id) knownContacts.set(contact.jid, contact);
-  if (contact.lid && contact.lid !== contact.id) knownContacts.set(contact.lid, contact);
+  const previous = knownContacts.get(contact.id) || {};
+  const merged = { ...previous, ...contact };
+  knownContacts.set(contact.id, merged);
+  if (merged.jid && merged.jid !== merged.id) knownContacts.set(merged.jid, merged);
+  if (merged.lid && merged.lid !== merged.id) knownContacts.set(merged.lid, merged);
   while (knownContacts.size > maxKnownContacts) {
     knownContacts.delete(knownContacts.keys().next().value);
   }
@@ -460,9 +463,43 @@ function rememberMentionIdentity(jid, ...names) {
     const normalized = mentionKey(key);
     if (normalized) mentionDirectory.set(normalized, fullJid);
   }
+  const displayName = names
+    .map((name) => String(name || "").trim())
+    .find((name) => name && mentionKey(name) !== mentionKey(fullJid) && name !== normalizeJid(fullJid));
+  if (displayName) mentionDisplayNames.set(fullJid, displayName);
   while (mentionDirectory.size > 5000) {
     mentionDirectory.delete(mentionDirectory.keys().next().value);
   }
+  while (mentionDisplayNames.size > 5000) {
+    mentionDisplayNames.delete(mentionDisplayNames.keys().next().value);
+  }
+}
+
+function contactDisplayName(contact) {
+  return [
+    contact?.name,
+    contact?.notify,
+    contact?.verifiedName,
+    contact?.pushName,
+    contact?.displayName,
+  ]
+    .map((name) => String(name || "").trim())
+    .find(Boolean) || "";
+}
+
+function mentionDisplayName(jid) {
+  const value = String(jid || "");
+  if (!value) return "";
+  if ((selfJid && sameWhatsappUser(value, selfJid)) || (selfLid && sameWhatsappUser(value, selfLid))) {
+    return String(socket?.user?.name || "").trim();
+  }
+  const contact = knownContacts.get(value);
+  const aliases = [value, contact?.id, contact?.jid, contact?.lid].filter(Boolean);
+  for (const alias of aliases) {
+    const remembered = mentionDisplayNames.get(String(alias));
+    if (remembered) return remembered;
+  }
+  return contactDisplayName(contact);
 }
 
 function rememberContact(contact) {
@@ -484,7 +521,14 @@ async function rememberGroupParticipants(chatJid) {
     const metadata = await socket.groupMetadata(chatJid);
     for (const participant of metadata?.participants || []) {
       const jid = participant?.id || participant?.jid;
-      rememberMentionIdentity(jid);
+      rememberMentionIdentity(
+        jid,
+        participant?.name,
+        participant?.notify,
+        participant?.verifiedName,
+        participant?.pushName,
+        participant?.displayName,
+      );
       if (jid && String(jid).endsWith("@lid")) {
         const resolved = resolveLidToPn(jid);
         if (resolved) rememberLidPnMapping(jid, resolved);
@@ -538,6 +582,15 @@ function mentionedJidsForAstrBot(message) {
     if (selfJid && selfLid && sameWhatsappUser(jid, selfLid)) return selfJid;
     return jid;
   });
+}
+
+function mentionedNamesForAstrBot(message) {
+  const names = {};
+  for (const jid of mentionedJidsForAstrBot(message)) {
+    const name = mentionDisplayName(jid);
+    if (name) names[jid] = name;
+  }
+  return names;
 }
 
 function normalizePhone(value) {
@@ -1131,6 +1184,7 @@ async function handleIncomingMessage(item, options = {}) {
       hasText: Boolean(textFromMessage(primary.message)),
       mentionCount: mentionedJidsFromMessage(primary.message).length,
       mentions: mentionedJidsForAstrBot(primary.message),
+      mentionNames: mentionedNamesForAstrBot(primary.message),
       mediaKind: mediaKind(primary.message),
       quotedStanzaId: quotedInfo?.stanzaId || null,
       quotedParticipant: quotedInfo?.participant || null,
@@ -1156,6 +1210,8 @@ async function handleIncomingMessage(item, options = {}) {
 
   let quoted = null;
   if (quotedInfo) {
+    const cachedQuoted = findChatMessage(messageCache, chatJid, quotedInfo.stanzaId);
+    const quotedParticipant = quotedInfo.participant || cachedQuoted?.key?.participant || cachedQuoted?.key?.remoteJid || "";
     const quotedKind = quotedInfo.quotedMessage ? mediaKind(quotedInfo.quotedMessage) : null;
     const quotedText = quotedInfo.quotedMessage ? textFromMessage(quotedInfo.quotedMessage) : "";
     const quotedMedia = [];
@@ -1170,11 +1226,12 @@ async function handleIncomingMessage(item, options = {}) {
     }
     quoted = {
       stanzaId: quotedInfo.stanzaId,
-      participant: quotedInfo.participant,
+      participant: quotedParticipant,
+      participantName: mentionDisplayName(quotedParticipant) || cachedQuoted?.pushName || quotedParticipant,
+      timestamp: Number(cachedQuoted?.messageTimestamp || 0),
       text: quotedText || (quotedKind ? `<media:${quotedKind}>` : ""),
       media: quotedMedia,
     };
-    const cachedQuoted = findChatMessage(messageCache, chatJid, quotedInfo.stanzaId);
     if (cachedQuoted && !quoted.text && !quotedMedia.length) {
       const cachedText = textFromMessage(cachedQuoted.message);
       const cachedKind = mediaKind(cachedQuoted.message);
@@ -1214,7 +1271,7 @@ async function handleIncomingMessage(item, options = {}) {
     albumMessageIds: albumItems.length > 1 ? albumItems.map((albumItem) => albumItem.key.id) : undefined,
     chatJid,
     senderJid,
-    senderPn: primary.key.senderPn || null,
+    senderPn: primary.key.senderPn || primary.key.participantPn || null,
     senderPhone: allowedResult.senderPhone || resolvePhone(senderJid) || "",
     senderName: primary.pushName || senderJid,
     fromMe,
@@ -1222,6 +1279,7 @@ async function handleIncomingMessage(item, options = {}) {
     selfLid,
     text,
     mentionedJids: mentionedJidsForAstrBot(primary.message),
+    mentionedNames: mentionedNamesForAstrBot(primary.message),
     media,
     quoted,
     extras,
@@ -1894,6 +1952,33 @@ const server = createServer(async (req, res) => {
       );
       cacheChatMessage(messageCache, result, maxMessageCacheSize);
       sendJson(res, 200, { ok: true, id: result?.key?.id });
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/send/location") {
+      const body = await readJson(req);
+      const latitude = Number(body.latitude);
+      const longitude = Number(body.longitude);
+      if (!body.to || !Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+        sendJson(res, 400, { ok: false, error: "target jid and finite latitude/longitude are required" });
+        return;
+      }
+      const options = quotedKey(body) || {};
+      const ephemeral = getEphemeralExpiration(body.to);
+      if (ephemeral) options.ephemeralExpiration = ephemeral;
+      const result = await socket.sendMessage(
+        body.to,
+        {
+          location: {
+            degreesLatitude: latitude,
+            degreesLongitude: longitude,
+            name: String(body.name || ""),
+            address: String(body.address || ""),
+          },
+        },
+        options,
+      );
+      cacheChatMessage(messageCache, result, maxMessageCacheSize);
+      sendJson(res, 200, { ok: true, id: result?.key?.id, key: result?.key });
       return;
     }
     if (req.method === "POST" && url.pathname === "/send/reaction") {

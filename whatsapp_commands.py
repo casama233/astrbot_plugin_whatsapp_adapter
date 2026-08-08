@@ -12,7 +12,13 @@ def collect_registered_commands() -> list[str]:
     try:
         from astrbot.core.star.filter.command import CommandFilter
         from astrbot.core.star.filter.command_group import CommandGroupFilter
-        from astrbot.core.star.star import star_handlers_registry, star_map
+        from astrbot.core.star.star import star_map
+        try:
+            # AstrBot 4.27+
+            from astrbot.core.star.star_handler import star_handlers_registry
+        except ImportError:
+            # Older AstrBot compatibility
+            from astrbot.core.star.star import star_handlers_registry
     except Exception as exc:
         logger.debug("WhatsApp legacy command collection skipped: %s", exc)
         return commands

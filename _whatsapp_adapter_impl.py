@@ -76,10 +76,18 @@ def _base_pn_jid(pn_jid: str) -> str:
     return f"{user}@s.whatsapp.net" if user else ""
 
 
+def _base_lid_jid(lid_jid: str) -> str:
+    user = str(lid_jid or "").split("@", 1)[0].split(":", 1)[0]
+    return f"{user}@lid" if user else ""
+
+
 def _cache_lid_mapping(lid_jid: str, pn_jid: str) -> None:
     if not lid_jid or not pn_jid:
         return
     _LID_PN_CACHE[lid_jid] = pn_jid
+    base_lid = _base_lid_jid(lid_jid)
+    if base_lid:
+        _LID_PN_CACHE[base_lid] = pn_jid
     _PN_LID_CACHE[pn_jid] = lid_jid
     base_pn = _base_pn_jid(pn_jid)
     if base_pn:
@@ -1155,6 +1163,18 @@ class WhatsAppPlatformAdapter(Platform):
             _cache_lid_mapping(chat_jid, sender_pn)
             _save_lid_mapping(self._auth_dir(), chat_jid, sender_pn)
 
+        # Baileys 并非每一条消息都会带 senderPn；一旦学到过映射，后续必须
+        # 继续使用同一个手机号身份，避免同一成员在 QQ 式 user_id 语义下分裂。
+        if not sender_pn and sender_jid.endswith("@lid"):
+            sender_pn = _LID_PN_CACHE.get(sender_jid) or _LID_PN_CACHE.get(_base_lid_jid(sender_jid), "")
+        if not sender_phone and sender_pn.endswith("@s.whatsapp.net"):
+            digits = self._numeric_whatsapp_id(sender_pn)
+            sender_phone = f"+{digits}" if digits else ""
+        if sender_pn:
+            data["senderPn"] = sender_pn
+        if sender_phone:
+            data["senderPhone"] = sender_phone
+
         # session_id 統一使用原始 JID（lid 或 group），不做 PN 轉換
         if chat_jid.endswith("@g.us"):
             normalized_chat_jid = chat_jid
@@ -1189,16 +1209,40 @@ class WhatsAppPlatformAdapter(Platform):
         abm = AstrBotMessage()
         abm.type = MessageType.GROUP_MESSAGE if is_group else MessageType.FRIEND_MESSAGE
         abm.group_id = group_id
-        abm.message_str = text
+        text_without_mentions = self._text_without_visible_mentions(data, text)
+        abm.message_str = self._qq_style_message_str(data, text)
         abm.sender = MessageMember(
             user_id=user_id,
             nickname=str(data.get("senderName") or sender_pn or sender_jid),
         )
-        abm.message = self._message_chain(data, text)
-        abm.raw_message = data
+        abm.message = self._message_chain(data, text_without_mentions)
         abm.self_id = str(data.get("selfJid") or "whatsapp")
         abm.session_id = normalized_chat_jid
         abm.message_id = str(data.get("messageId") or "")
+        try:
+            abm.timestamp = int(float(data.get("timestamp") or time.time()))
+        except (TypeError, ValueError):
+            abm.timestamp = int(time.time())
+
+        # 暴露常用 OneBot 同名字段，方便原本面向 QQ raw_message 的插件复用；
+        # WhatsApp 原始 JID 字段仍完整保留，不能用这些别名参与实际投递。
+        data.setdefault("post_type", "message")
+        data.setdefault("message_type", "group" if is_group else "private")
+        data.setdefault("user_id", user_id)
+        if is_group:
+            data.setdefault("group_id", group_id)
+        data.setdefault("self_id", abm.self_id)
+        data.setdefault("message_id", abm.message_id)
+        data.setdefault("time", abm.timestamp)
+        data.setdefault(
+            "sender",
+            {
+                "user_id": user_id,
+                "nickname": abm.sender.nickname,
+                "card": abm.sender.nickname if is_group else "",
+            },
+        )
+        abm.raw_message = data
         logger.debug(
             "Converted WhatsApp message: type=%s session=%s sender=%s message_id=%s chain=%s",
             abm.type,
@@ -1297,22 +1341,109 @@ class WhatsAppPlatformAdapter(Platform):
         )
         self.commit_event(event)
 
+    @staticmethod
+    def _text_without_visible_mentions(data: dict[str, Any], text: str) -> str:
+        """移除已结构化为 At 组件的 ``@JID``，避免内容中重复显示 ID。"""
+        value = str(text or "")
+        if not value:
+            return ""
+        tokens: set[str] = set()
+        mentioned_jids = data.get("mentionedJids") or []
+        if not isinstance(mentioned_jids, (list, tuple, set)):
+            mentioned_jids = []
+        for jid in mentioned_jids:
+            token = str(jid or "").split("@", 1)[0].split(":", 1)[0]
+            if token:
+                tokens.add(token)
+        self_lid = str(data.get("selfLid") or "")
+        self_jid_token = str(data.get("selfJid") or "").split("@", 1)[0].split(":", 1)[0]
+        if self_lid and self_jid_token in tokens:
+            tokens.add(self_lid.split("@", 1)[0].split(":", 1)[0])
+        if not tokens:
+            return value
+        pattern = r"[ \t]*(?<![\w@])@(?:" + "|".join(
+            re.escape(token) for token in sorted(tokens, key=len, reverse=True)
+        ) + r")(?![\w@])[ \t]*"
+        cleaned = re.sub(pattern, " ", value)
+        return cleaned.strip()
+
+    def _qq_style_message_str(self, data: dict[str, Any], text: str) -> str:
+        """按 QQ 适配器语义生成 message_str，同时保留 WhatsApp 正文顺序。"""
+        value = str(text or "")
+        mentioned_jids = data.get("mentionedJids") or []
+        if not isinstance(mentioned_jids, (list, tuple, set)):
+            return value.strip()
+        mentioned_names = data.get("mentionedNames") or {}
+        if not isinstance(mentioned_names, dict):
+            mentioned_names = {}
+        self_id = str(data.get("selfJid") or "")
+        self_lid = str(data.get("selfLid") or "")
+        first_self_processed = False
+        missing_mentions: list[str] = []
+
+        for raw_jid in mentioned_jids:
+            mentioned = str(raw_jid or "")
+            if not mentioned:
+                continue
+            is_self = self._is_self_mention(mentioned, self_id, self_lid)
+            display_id = self._numeric_whatsapp_id(mentioned) or mentioned
+            display_name = str(mentioned_names.get(mentioned) or display_id)
+            if is_self and not first_self_processed:
+                replacement = " "
+                first_self_processed = True
+            else:
+                replacement = f" @{display_name}({display_id}) "
+
+            tokens = {
+                mentioned.split("@", 1)[0].split(":", 1)[0],
+            }
+            if is_self:
+                for own_jid in (self_id, self_lid):
+                    token = own_jid.split("@", 1)[0].split(":", 1)[0]
+                    if token:
+                        tokens.add(token)
+            tokens.discard("")
+            if not tokens:
+                if replacement.strip():
+                    missing_mentions.append(replacement.strip())
+                continue
+            pattern = r"[ \t]*(?<![\w@])@(?:" + "|".join(
+                re.escape(token) for token in sorted(tokens, key=len, reverse=True)
+            ) + r")(?![\w@])[ \t]*"
+            value, count = re.subn(pattern, lambda _match: replacement, value, count=1)
+            if count == 0 and replacement.strip():
+                missing_mentions.append(replacement.strip())
+
+        if missing_mentions:
+            value = " ".join([*missing_mentions, value])
+        return value.strip()
+
     def _message_chain(self, data: dict[str, Any], text: str) -> list[Any]:
         chain: list[Any] = []
         self_id = str(data.get("selfJid") or "whatsapp")
         self_lid = str(data.get("selfLid") or "")
+        mentioned_names = data.get("mentionedNames") or {}
+        if not isinstance(mentioned_names, dict):
+            mentioned_names = {}
         quoted_data = data.get("quoted")
         if quoted_data:
-            quoted_chain = self._quoted_media_chain(quoted_data)
             quoted_text = str(quoted_data.get("text") or "")
+            if quoted_text and bool(self.config.get("parse_inbound_formatting", True)):
+                quoted_text = format_markdown_from_whatsapp(quoted_text)
+            quoted_chain = self._quoted_media_chain(quoted_data, quoted_text=quoted_text)
             quoted_sender = str(quoted_data.get("participant") or "")
             quoted_sender_id = self._numeric_whatsapp_id(quoted_sender) if quoted_sender else "0"
+            quoted_sender_name = str(quoted_data.get("participantName") or quoted_sender)
+            try:
+                quoted_timestamp = int(float(quoted_data.get("timestamp") or 0))
+            except (TypeError, ValueError):
+                quoted_timestamp = 0
             chain.append(Reply(
                 id=str(quoted_data.get("stanzaId") or ""),
                 chain=quoted_chain if quoted_chain else None,
                 sender_id=quoted_sender_id,
-                sender_nickname=quoted_sender,
-                time=0,
+                sender_nickname=quoted_sender_name,
+                time=quoted_timestamp,
                 message_str=quoted_text,
                 text=quoted_text,
                 qq=quoted_sender_id,
@@ -1322,14 +1453,16 @@ class WhatsAppPlatformAdapter(Platform):
             if not mentioned:
                 continue
             at_id = self_id if self._is_self_mention(mentioned, self_id, self_lid) else mentioned
+            display_name = str(mentioned_names.get(mentioned) or mentioned)
             logger.info(
-                "WhatsApp @提及映射: 提及=%s at_id=%s self_id=%s self_lid=%s",
+                "WhatsApp @提及映射: 提及=%s 昵称=%s at_id=%s self_id=%s self_lid=%s",
                 mentioned,
+                display_name,
                 at_id,
                 self_id,
                 self_lid,
             )
-            chain.append(At(qq=at_id, name=mentioned))
+            chain.append(At(qq=at_id, name=display_name))
         extras = data.get("extras") or {}
         reaction = extras.get("reaction")
         display_text = text or (self._reaction_message_text(reaction) if reaction else "")
@@ -1404,9 +1537,15 @@ class WhatsAppPlatformAdapter(Platform):
             chain.append(Plain(text=""))
         return chain
 
-    def _quoted_media_chain(self, quoted_data: dict[str, Any]) -> list[Any]:
+    def _quoted_media_chain(
+        self,
+        quoted_data: dict[str, Any],
+        *,
+        quoted_text: str | None = None,
+    ) -> list[Any]:
         chain: list[Any] = []
-        quoted_text = str(quoted_data.get("text") or "")
+        if quoted_text is None:
+            quoted_text = str(quoted_data.get("text") or "")
         if quoted_text and not quoted_text.startswith("<media:"):
             chain.append(Plain(text=quoted_text))
         for media in quoted_data.get("media") or []:
