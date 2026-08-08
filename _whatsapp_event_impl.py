@@ -344,7 +344,8 @@ class WhatsAppMessageEvent(AstrMessageEvent):
                 elif isinstance(component, At):
                     visible = mention_text_from_at(component)
                     jid = mention_jid_from_at(component)
-                    state.raw += visible
+                    # QQ/OneBot 发送 At 后会补空格；流式与普通发送保持相同语义。
+                    state.raw += visible + " "
                     if jid:
                         state.mentions.append(MentionRef(jid=jid, text=visible))
                 else:

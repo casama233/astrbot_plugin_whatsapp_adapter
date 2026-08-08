@@ -140,6 +140,29 @@ class WhatsAppGatewayClient:
             quoted_participant=quoted_participant,
         )
 
+    async def send_location(
+        self,
+        to: str,
+        latitude: float,
+        longitude: float,
+        name: str = "",
+        address: str = "",
+        quoted_message_id: str | None = None,
+        quoted_participant: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "to": to,
+            "latitude": latitude,
+            "longitude": longitude,
+            "name": name,
+            "address": address,
+        }
+        if quoted_message_id:
+            payload["quotedMessageId"] = quoted_message_id
+        if quoted_participant:
+            payload["quotedParticipant"] = quoted_participant
+        return await self._request("POST", "/send/location", json_data=payload)
+
     async def send_presence(self, to: str, state: str) -> dict[str, Any]:
         return await self._request("POST", "/presence", json_data={"to": to, "state": state})
 

@@ -9,7 +9,7 @@ from typing import Any, Callable, Coroutine, Iterator, Literal, Sequence
 from urllib.parse import unquote
 
 from astrbot import logger
-from astrbot.api.message_components import File, Image, Plain, Record, Reply, Video
+from astrbot.api.message_components import File, Image, Location, Plain, Record, Reply, Video
 from astrbot.api.platform import At
 
 from .whatsapp_client import WhatsAppGatewayClient
@@ -305,17 +305,48 @@ def _convert_emphasis(value: str, *, streaming: bool) -> str:
     value = re.sub(r"__(?=\S)([\s\S]*?\S)__", r"*\1*", value)
     value = re.sub(r"~~(?=\S)([\s\S]*?\S)~~", r"~\1~", value)
 
-    if streaming:
-        # 對尚未閉合的增量標記加入暫時閉合，避免使用者看到裸 ** / __ / ~~。
-        value = re.sub(r"(?<!\*)\*\*(?!\*)(?=\S)([^\n]*)$", r"*\1*", value)
-        value = re.sub(r"(?<![\w_])__(?!_)(?=\S)([^\n]*)$", r"*\1*", value)
-        value = re.sub(r"(?<![\w~])~~(?!~)(?=\S)([^\n]*)$", r"~\1~", value)
-
-    # 最終仍不完整時保守降級，但不誤傷 foo__bar / foo~~bar。
-    value = re.sub(r"(?<!\*)\*{2,}(?!\*)", "*", value)
-    value = re.sub(r"(?<![\w_])_{2,}(?!_)|(?<!_)_{2,}(?![\w_])", "*", value)
-    value = re.sub(r"(?<![\w~])~{2,}(?!~)|(?<!~)~{2,}(?![\w~])", "~", value)
+    # 不為流式中的未閉合 Markdown 人工補尾符。WhatsApp edit 訊息可能在
+    # 不同裝置上亂序到達；舊版本產生的臨時 ``~`` / ``*`` 因而可能覆蓋
+    # 最終 edit，留下肉眼可見的 ``~*``。完整標記已在上方轉換，這裡只需
+    # 移除剩餘的無配對 Markdown delimiter，先以純文字顯示即可。
+    value = re.sub(r"(?<!\*)\*{2,}(?!\*)", "", value)
+    value = re.sub(r"(?<![\w_])_{2,}(?!_)|(?<!_)_{2,}(?![\w_])", "", value)
+    value = re.sub(r"(?<![\w~])~{2,}(?!~)|(?<!~)~{2,}(?![\w~])", "", value)
     return value
+
+
+def _remove_unmatched_single_delimiters(value: str) -> str:
+    """移除孤立的 WhatsApp/Markdown 单分隔符，保留成对格式与正文内符号。"""
+    delimiters = {"*", "_", "~"}
+    stack: list[tuple[str, int]] = []
+    remove: set[int] = set()
+
+    for index, token in enumerate(value):
+        if token not in delimiters:
+            continue
+        previous = value[index - 1] if index else ""
+        following = value[index + 1] if index + 1 < len(value) else ""
+
+        if stack and stack[-1][0] == token and previous and not previous.isspace():
+            stack.pop()
+            continue
+
+        previous_is_boundary = not previous or previous.isspace() or (
+            not previous.isalnum() and previous not in {"_", "\x00"}
+        )
+        following_has_content = bool(following and not following.isspace())
+        if previous_is_boundary and following_has_content:
+            stack.append((token, index))
+            continue
+
+        following_is_boundary = not following or following.isspace() or not following.isalnum()
+        if previous and not previous.isspace() and following_is_boundary:
+            remove.add(index)
+
+    remove.update(index for _token, index in stack)
+    if not remove:
+        return value
+    return "".join(char for index, char in enumerate(value) if index not in remove)
 
 
 def format_whatsapp_markdown(
@@ -345,6 +376,7 @@ def format_whatsapp_markdown(
     value = _convert_markdown_blocks(value, streaming=streaming)
     value = _convert_links(value)
     value = _convert_emphasis(value, streaming=streaming)
+    value = _remove_unmatched_single_delimiters(value)
     value = _restore_code(value, fenced, "FENCE")
     value = _restore_code(value, inline, "INLINE")
     value = _restore_escaped_markdown(value, escaped)
@@ -601,6 +633,8 @@ async def flush_pending_text(
     if not pending:
         return None, list(mentions or [])  # type: ignore[list-item]
     rendered = format_whatsapp_markdown(pending, source_format=source_format)
+    if not has_visible_whatsapp_content(rendered):
+        return None, []
     for chunk in split_whatsapp_text(rendered, text_chunk_limit):
         chunk_mentions = await mentions_for_text(client, target, chunk, mentions or [])
         await client.send_text(
@@ -773,7 +807,8 @@ async def process_message_chain(
         if isinstance(component, At):
             visible = mention_text_from_at(component)
             jid = mention_jid_from_at(component)
-            pending_raw = (pending_raw or "") + visible
+            # 与 aiocqhttp 一致：At 后固定保留一个分隔空格，避免昵称和正文粘连。
+            pending_raw = (pending_raw or "") + visible + " "
             if jid:
                 pending_mentions.append(MentionRef(jid=jid, text=visible))
             continue
@@ -869,6 +904,16 @@ async def process_message_chain(
                 )
             pending_raw = None
             pending_mentions = []
+        elif isinstance(component, Location):
+            await flush()
+            await client.send_location(
+                target,
+                float(getattr(component, "lat", 0) or 0),
+                float(getattr(component, "lon", 0) or 0),
+                str(getattr(component, "title", "") or ""),
+                str(getattr(component, "content", "") or ""),
+                **send_kwargs,
+            )
         elif isinstance(component, (WhatsAppButtons, WhatsAppList, WhatsAppPoll, WhatsAppEdit)):
             await flush()
             await send_whatsapp_component(client, target, component, **send_kwargs)
