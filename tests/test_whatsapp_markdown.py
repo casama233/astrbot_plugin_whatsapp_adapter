@@ -46,6 +46,19 @@ def _install_stubs() -> tuple[type, type, type, type, type, type]:
         def __init__(self, text: str = "") -> None:
             self.text = text
 
+    class Location:
+        def __init__(
+            self,
+            lat: float = 0,
+            lon: float = 0,
+            title: str = "",
+            content: str = "",
+        ) -> None:
+            self.lat = lat
+            self.lon = lon
+            self.title = title
+            self.content = content
+
     class Reply:
         def __init__(
             self,
@@ -63,6 +76,7 @@ def _install_stubs() -> tuple[type, type, type, type, type, type]:
         pass
 
     components.Plain = Plain
+    components.Location = Location
     components.Reply = Reply
     components.File = type("File", (), {})
     components.Image = type("Image", (), {})
@@ -175,7 +189,7 @@ class ConverterTests(unittest.TestCase):
         for part in ("**", "storm", "**"):
             raw += part
             renders.append(helpers.format_whatsapp_markdown(raw, streaming=True))
-        self.assertEqual(renders, ["*", "*storm*", "*storm*"])
+        self.assertEqual(renders, ["", "storm", "*storm*"])
         self.assertFalse(helpers.has_visible_whatsapp_content(renders[0]))
 
     def test_source_format_contract_prevents_double_conversion(self) -> None:
@@ -334,7 +348,7 @@ class StreamingTests(unittest.IsolatedAsyncioTestCase):
 
         client = self.Client()
         await self.event(client)._send_streaming_edit(chunks())
-        self.assertEqual(client.operations[0][1], "*🥥 最新動態*")
+        self.assertEqual(client.operations[-1][1], "*🥥 最新動態*")
         self.assertNotIn("**", client.operations[-1][1])
 
     async def test_streaming_does_not_force_quote_without_reply_component(self) -> None:

@@ -343,7 +343,12 @@ def _remove_unmatched_single_delimiters(value: str) -> str:
         if previous and not previous.isspace() and following_is_boundary:
             remove.add(index)
 
-    remove.update(index for _token, index in stack)
+    # 流式正文开头的单个标记（例如 ``*正在生成``）仍可能在后续 edit
+    # 收到闭合符；保留它交给切片器临时配对。只有末尾完全由控制符组成的
+    # 残片（如 ``~*``）才与已识别的孤立符一起删除。
+    for _token, index in stack:
+        if value[index:] and all(char in delimiters for char in value[index:]):
+            remove.add(index)
     if not remove:
         return value
     return "".join(char for index, char in enumerate(value) if index not in remove)
