@@ -25,8 +25,19 @@ export function astrbotRememberEphemeralChats(cache, chats) {
     if (!jid) continue;
 
     const previous = cache.get(jid);
+    const previousTimestamp = astrbotNormalizeEphemeralTimestamp(previous?.timestamp);
     const hasExpiration = Object.prototype.hasOwnProperty.call(chat, "ephemeralExpiration");
     const suppliedTimestamp = astrbotNormalizeEphemeralTimestamp(chat?.ephemeralSettingTimestamp);
+
+    // Chat metadata describes a versioned setting. Never let a delayed history
+    // or buffered chat event roll a newer setting back to an older timestamp.
+    if (
+      suppliedTimestamp &&
+      previousTimestamp &&
+      BigInt(suppliedTimestamp) < BigInt(previousTimestamp)
+    ) {
+      continue;
+    }
 
     if (!hasExpiration) {
       if (suppliedTimestamp && previous?.expiration) {
@@ -43,12 +54,18 @@ export function astrbotRememberEphemeralChats(cache, chats) {
 
     const timestamp =
       suppliedTimestamp ||
-      (previous?.expiration === expiration ? previous?.timestamp : undefined);
+      (previous?.expiration === expiration ? previousTimestamp : undefined);
     cache.set(jid, { expiration, timestamp });
   }
 }
 
 export function astrbotRememberEphemeralMessages(cache, payload, normalizeMessageContent) {
+  // Baileys also emits historical/append message batches through messages.upsert.
+  // Their contextInfo can carry an old ephemeral setting timestamp (including an
+  // earlier cycle with the same expiration), so only live notify messages are a
+  // safe fallback for repairing missing chat metadata.
+  if (payload?.type && payload.type !== "notify") return;
+
   for (const item of payload?.messages || []) {
     const jid = String(item?.key?.remoteJid || "");
     if (!jid || !item?.message) continue;
@@ -64,9 +81,14 @@ export function astrbotRememberEphemeralMessages(cache, payload, normalizeMessag
     const timestamp = astrbotNormalizeEphemeralTimestamp(
       contextInfo?.ephemeralSettingTimestamp,
     );
-    if (expiration > 0 && timestamp) {
-      cache.set(jid, { expiration, timestamp });
+    if (!(expiration > 0 && timestamp)) continue;
+
+    const previous = cache.get(jid);
+    const previousTimestamp = astrbotNormalizeEphemeralTimestamp(previous?.timestamp);
+    if (previousTimestamp && BigInt(timestamp) <= BigInt(previousTimestamp)) {
+      continue;
     }
+    cache.set(jid, { expiration, timestamp });
   }
 }
 
@@ -79,6 +101,44 @@ function indentSource(source, indent) {
 
 function insertBeforeIndex(source, index, block) {
   return `${source.slice(0, index)}${block}${source.slice(index)}`;
+}
+
+function replaceInjectedFunction(source, name, replacement) {
+  const token = `function ${name}(`;
+  const functionIndex = source.indexOf(token);
+  if (functionIndex < 0) return { content: source, found: false, changed: false };
+
+  const lineStart = source.lastIndexOf("\n", functionIndex) + 1;
+  const indent = source.slice(lineStart, functionIndex).match(/^\s*/)?.[0] || "";
+  const braceStart = source.indexOf("{", functionIndex + token.length);
+  if (braceStart < 0) {
+    throw new Error(`Malformed injected Baileys helper: ${name}`);
+  }
+
+  let depth = 0;
+  let end = -1;
+  for (let index = braceStart; index < source.length; index += 1) {
+    if (source[index] === "{") depth += 1;
+    if (source[index] === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        end = index + 1;
+        break;
+      }
+    }
+  }
+  if (end < 0) {
+    throw new Error(`Malformed injected Baileys helper body: ${name}`);
+  }
+
+  const current = source.slice(lineStart, end);
+  const next = indentSource(replacement.toString(), indent);
+  if (current === next) return { content: source, found: true, changed: false };
+  return {
+    content: `${source.slice(0, lineStart)}${next}${source.slice(end)}`,
+    found: true,
+    changed: true,
+  };
 }
 
 export function patchBaileysMessagesUtility(source) {
@@ -163,7 +223,37 @@ export function patchBaileysMessagesUtility(source) {
 
 export function patchBaileysMessagesSend(source) {
   if (source.includes(`const ${SOCKET_PATCH_MARKER} =`)) {
-    return { content: source, changed: false };
+    let content = source;
+    let changed = false;
+
+    for (const [name, replacement] of [
+      ["astrbotRememberEphemeralChats", astrbotRememberEphemeralChats],
+      ["astrbotRememberEphemeralMessages", astrbotRememberEphemeralMessages],
+    ]) {
+      const result = replaceInjectedFunction(content, name, replacement);
+      if (!result.found) {
+        throw new Error(`Installed Baileys ephemeral patch is missing helper: ${name}`);
+      }
+      content = result.content;
+      changed = changed || result.changed;
+    }
+
+    if (!content.includes('ev.on("messaging-history.set"')) {
+      const anchor = 'ev.on("chats.upsert"';
+      const anchorIndex = content.indexOf(anchor);
+      if (anchorIndex < 0) {
+        throw new Error(
+          "Installed Baileys ephemeral patch is missing chats.upsert listener.",
+        );
+      }
+      const lineStart = content.lastIndexOf("\n", anchorIndex) + 1;
+      const indent = content.slice(lineStart, anchorIndex).match(/^\s*/)?.[0] || "";
+      const listener = `${indent}ev.on(\"messaging-history.set\", (history) => astrbotRememberEphemeralChats(astrbotEphemeralSettings, history?.chats))\n`;
+      content = insertBeforeIndex(content, lineStart, listener);
+      changed = true;
+    }
+
+    return { content, changed };
   }
 
   const anchorPattern = /const\s+getLIDForPN\s*=/m;
@@ -184,6 +274,7 @@ export function patchBaileysMessagesSend(source) {
     astrbotNormalizeEphemeralTimestamp.toString(),
     astrbotRememberEphemeralChats.toString(),
     astrbotRememberEphemeralMessages.toString(),
+    "ev.on(\"messaging-history.set\", (history) => astrbotRememberEphemeralChats(astrbotEphemeralSettings, history?.chats))",
     "ev.on(\"chats.upsert\", (chats) => astrbotRememberEphemeralChats(astrbotEphemeralSettings, chats))",
     "ev.on(\"chats.update\", (chats) => astrbotRememberEphemeralChats(astrbotEphemeralSettings, chats))",
     "ev.on(\"messages.upsert\", (payload) =>",
