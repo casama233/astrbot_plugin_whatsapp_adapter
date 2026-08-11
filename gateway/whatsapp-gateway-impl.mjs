@@ -24,8 +24,37 @@ import {
 } from "./session-lifecycle.mjs";
 import {
   cacheChatMessage,
+  cacheEditedMessage,
   findChatMessage,
 } from "./message-cache.mjs";
+import {
+  inboundMediaDownloadContext,
+  removePartialInboundMedia,
+} from "./media-download-compat.mjs";
+import {
+  contextInfoFromMessagePayload,
+  normalizeIncomingItem,
+  normalizeMessageInput,
+  normalizeMessagePayload,
+} from "./message-normalization.mjs";
+import {
+  groupOwnerIdentity,
+  groupParticipantIdentity,
+  identityUser,
+  isLidJid,
+  isPnJid,
+  normalizeIdentityJid,
+  participantIdentityValues,
+  phoneFromIdentity,
+  resolveExplicitIdentityMentions,
+  senderIdentityFromKey,
+} from "./identity-compat.mjs";
+import {
+  buildContactContent,
+  buildEventContent,
+  buildPollContent,
+  eventDetailsFromMessage,
+} from "./native-tools.mjs";
 
 const host = process.env.WA_GATEWAY_HOST || "127.0.0.1";
 const port = Number.parseInt(process.env.WA_GATEWAY_PORT || "18789", 10);
@@ -56,6 +85,7 @@ let lastError = null;
 const messageCache = new Map();
 const maxMessageCacheSize = 500;
 const mentionDirectory = new Map();
+const mentionDirectoriesByChat = new Map();
 const mentionDisplayNames = new Map();
 const maxKnownContacts = 10000;
 
@@ -66,12 +96,21 @@ const knownContacts = new Map();
 const chatEphemeral = new Map();
 
 function updateContact(contact) {
-  if (!contact?.id) return;
-  const previous = knownContacts.get(contact.id) || {};
-  const merged = { ...previous, ...contact };
-  knownContacts.set(contact.id, merged);
-  if (merged.jid && merged.jid !== merged.id) knownContacts.set(merged.jid, merged);
-  if (merged.lid && merged.lid !== merged.id) knownContacts.set(merged.lid, merged);
+  const identity = groupParticipantIdentity(contact);
+  const id = String(contact?.id || contact?.jid || identity.lidJid || identity.pnJid || "");
+  if (!id) return;
+  const previous = knownContacts.get(id) || {};
+  const merged = {
+    ...previous,
+    ...contact,
+    id,
+    jid: contact?.jid || identity.pnJid || previous.jid,
+    lid: contact?.lid || identity.lidJid || previous.lid,
+    phoneNumber: contact?.phoneNumber || identity.pnJid || previous.phoneNumber,
+  };
+  for (const alias of [merged.id, merged.jid, merged.lid, merged.phoneNumber].filter(Boolean)) {
+    knownContacts.set(String(alias), merged);
+  }
   while (knownContacts.size > maxKnownContacts) {
     knownContacts.delete(knownContacts.keys().next().value);
   }
@@ -80,8 +119,8 @@ function updateContact(contact) {
 function pnJidFromValue(value) {
   const raw = String(value || "").trim();
   if (!raw || raw === "*" || raw.endsWith("@g.us")) return null;
-  if (raw.endsWith("@s.whatsapp.net")) return raw;
-  if (raw.endsWith("@lid")) return resolveLidToPn(raw);
+  if (isPnJid(raw)) return raw;
+  if (isLidJid(raw)) return resolveLidToPn(raw);
   const digits = raw.replace(/\D/g, "");
   return digits ? `${digits}@s.whatsapp.net` : null;
 }
@@ -99,7 +138,7 @@ async function persistLidMapping(lidJid, pnJid) {
 }
 
 function rememberLidPnMapping(lidJid, pnJid, persist = true) {
-  if (!lidJid || !pnJid || !String(lidJid).endsWith("@lid") || !String(pnJid).endsWith("@s.whatsapp.net")) return false;
+  if (!lidJid || !pnJid || !isLidJid(lidJid) || !isPnJid(pnJid)) return false;
   updateContact({ id: lidJid, jid: pnJid, lid: lidJid });
   if (persist) persistLidMapping(lidJid, pnJid).catch(() => {});
   return true;
@@ -115,14 +154,14 @@ function rememberLidPnMapping(lidJid, pnJid, persist = true) {
 function resolvePhone(jid) {
   if (!jid) return null;
   const raw = String(jid).trim();
-  if (raw.endsWith("@s.whatsapp.net")) {
-    const digits = raw.split("@")[0].replace(/\D/g, "");
-    return digits ? `+${digits}` : null;
+  if (isPnJid(raw)) {
+    return phoneFromIdentity(raw);
   }
-  if (raw.endsWith("@lid")) {
+  if (isLidJid(raw)) {
     const contact = knownContacts.get(raw);
     if (contact) {
-      const pnJid = [contact.jid, contact.id].find((j) => j && j.endsWith("@s.whatsapp.net"));
+      const pnJid = [contact.phoneNumber, contact.jid, contact.id]
+        .find((j) => isPnJid(j));
       if (pnJid) {
         const digits = pnJid.split("@")[0].replace(/\D/g, "");
         if (digits) return `+${digits}`;
@@ -137,7 +176,8 @@ function resolvePhone(jid) {
 function normalizeLidJid(value) {
   const text = String(value || "").trim();
   if (!text) return null;
-  return text.endsWith("@lid") ? text : `${text}@lid`;
+  const normalized = normalizeIdentityJid(text);
+  return isLidJid(normalized) ? normalized : `${identityUser(normalized)}@lid`;
 }
 
 /**
@@ -145,22 +185,33 @@ function normalizeLidJid(value) {
  * 透過 knownContacts 查找 LID→PN 映射
  */
 function resolveLidToPn(lidJid) {
-  if (!lidJid || !String(lidJid).endsWith("@lid")) return null;
+  if (!lidJid || !isLidJid(lidJid)) return null;
   const contact = knownContacts.get(String(lidJid).trim());
   if (contact) {
-    const pnJid = [contact.jid, contact.id].find((j) => j && j.endsWith("@s.whatsapp.net"));
+    const pnJid = [contact.phoneNumber, contact.jid, contact.id]
+      .find((j) => isPnJid(j));
     if (pnJid) return pnJid;
   }
   return null;
 }
 
-async function resolveLidToPnDeep(lidJid) {
+async function resolveLidToPnDeep(
+  lidJid,
+  mappingSocket = socket,
+  expectedGeneration = socketGeneration,
+) {
   const existing = resolveLidToPn(lidJid);
   if (existing) return existing;
-  if (!socket?.signalRepository?.lidMapping || !String(lidJid || "").endsWith("@lid")) return null;
+  if (
+    expectedGeneration !== socketGeneration
+    || mappingSocket !== socket
+    || !mappingSocket?.signalRepository?.lidMapping
+    || !isLidJid(lidJid)
+  ) return null;
   try {
-    const pn = await socket.signalRepository.lidMapping.getPNForLID(lidJid);
-    if (pn?.endsWith?.("@s.whatsapp.net")) {
+    const pn = await mappingSocket.signalRepository.lidMapping.getPNForLID(lidJid);
+    if (expectedGeneration !== socketGeneration || mappingSocket !== socket) return null;
+    if (isPnJid(pn)) {
       rememberLidPnMapping(lidJid, pn);
       return pn;
     }
@@ -206,25 +257,46 @@ async function loadLidMappingsFromDisk() {
  * 提供 Lid→PN 映射，但可能比 messages.upsert 稍晚到達。
  */
 async function waitForLidPnMapping(lidJid, timeoutMs) {
-  const existing = await resolveLidToPnDeep(lidJid);
+  const mappingSocket = socket;
+  const expectedGeneration = socketGeneration;
+  const isStale = () => (
+    expectedGeneration !== socketGeneration || mappingSocket !== socket
+  );
+  const resolveDeep = () => resolveLidToPnDeep(
+    lidJid,
+    mappingSocket,
+    expectedGeneration,
+  );
+  const existing = await resolveDeep();
   if (existing) return existing;
+  if (isStale()) return null;
   return (async () => {
-    if (socket?.presenceSubscribe) {
-      try { await socket.presenceSubscribe(lidJid); } catch {}
+    if (mappingSocket?.presenceSubscribe) {
+      try { await mappingSocket.presenceSubscribe(lidJid); } catch {}
     }
-    const afterSubscribe = await resolveLidToPnDeep(lidJid);
+    if (isStale()) return null;
+    const afterSubscribe = await resolveDeep();
     if (afterSubscribe) return afterSubscribe;
     return new Promise((resolve) => {
       const EVENTS = ["contacts.upsert", "lid-mapping.update", "chats.phoneNumberShare"];
+      const removeListeners = () => {
+        for (const evt of EVENTS) mappingSocket?.ev?.off(evt, handler);
+      };
       const timer = setTimeout(() => {
-        for (const evt of EVENTS) socket.ev.off(evt, handler);
-        resolve(resolveLidToPnDeep(lidJid));
+        removeListeners();
+        resolve(isStale() ? null : resolveDeep());
       }, timeoutMs);
       const handler = (...args) => {
+        if (isStale()) {
+          clearTimeout(timer);
+          removeListeners();
+          resolve(null);
+          return;
+        }
         const data = args[0];
         let pn = null;
         if (data && data.id === lidJid) {
-          pn = [data.jid, data.id].find((j) => j && j.endsWith("@s.whatsapp.net"));
+          pn = [data.phoneNumber, data.jid, data.id].find((j) => isPnJid(j));
         } else if (data && data.lid === lidJid) {
           pn = data.pn || data.pnJid || data.jid;
         } else if (data && data.lidJid === lidJid) {
@@ -232,20 +304,20 @@ async function waitForLidPnMapping(lidJid, timeoutMs) {
         }
         if (!pn && Array.isArray(data)) {
           const matched = data.find((c) => c.id === lidJid || c.lid === lidJid || c.jid === lidJid);
-          if (matched) pn = [matched.jid, matched.id].find((j) => j && j.endsWith("@s.whatsapp.net"));
+          if (matched) pn = [matched.phoneNumber, matched.jid, matched.id].find((j) => isPnJid(j));
         }
         if (pn) {
           rememberLidPnMapping(lidJid, pn);
           clearTimeout(timer);
-          for (const evt of EVENTS) socket.ev.off(evt, handler);
+          removeListeners();
           resolve(pn);
         }
       };
-      for (const evt of EVENTS) socket.ev.on(evt, handler);
-      resolveLidToPnDeep(lidJid).then((recheck) => {
+      for (const evt of EVENTS) mappingSocket.ev.on(evt, handler);
+      resolveDeep().then((recheck) => {
         if (!recheck) return;
         clearTimeout(timer);
-        for (const evt of EVENTS) socket.ev.off(evt, handler);
+        removeListeners();
         resolve(recheck);
       });
     });
@@ -254,7 +326,7 @@ async function waitForLidPnMapping(lidJid, timeoutMs) {
 
 /**
  * 從訊息中提取所有可能的比對候選（電話號碼 + 原始 JID）
- * 優先使用 Baileys 提供的 senderPn/participantPn，再查聯絡人映射
+ * 同时接受 Baileys 7 的 participantAlt/remoteJidAlt 与旧版 PN 字段。
  */
 function messageCandidates(item, chatJid, senderJid) {
   const phones = [];
@@ -262,8 +334,9 @@ function messageCandidates(item, chatJid, senderJid) {
   const jids = [];
   const seenJids = new Set();
 
-  const add = (jid) => {
-    if (!jid || seenJids.has(jid)) return;
+  const add = (value) => {
+    const jid = String(value || "").trim();
+    if (!jid || jid.endsWith("@g.us") || jid.endsWith("@status") || jid.endsWith("@broadcast") || seenJids.has(jid)) return;
     seenJids.add(jid);
     jids.push(jid);
     const phone = resolvePhone(jid);
@@ -275,34 +348,14 @@ function messageCandidates(item, chatJid, senderJid) {
 
   if (!String(chatJid || "").endsWith("@g.us")) add(chatJid);
   add(senderJid);
-  if (item?.key?.participant) add(item.key.participant);
-
-  // Baileys key.senderPn / key.participantPn — 直接提供 LID→PN 映射
-  const senderPn = item?.key?.senderPn;
-  const participantPn = item?.key?.participantPn;
-  if (senderPn) {
-    const normalized = String(senderPn).trim();
-    if (normalized.endsWith("@s.whatsapp.net")) {
-      add(normalized);
-    } else {
-      const digits = normalized.replace(/\D/g, "");
-      if (digits && !seenPhones.has(`+${digits}`)) {
-        seenPhones.add(`+${digits}`);
-        phones.push(`+${digits}`);
-      }
-    }
-  }
-  if (participantPn) {
-    const normalized = String(participantPn).trim();
-    if (normalized.endsWith("@s.whatsapp.net")) {
-      add(normalized);
-    } else {
-      const digits = normalized.replace(/\D/g, "");
-      if (digits && !seenPhones.has(`+${digits}`)) {
-        seenPhones.add(`+${digits}`);
-        phones.push(`+${digits}`);
-      }
-    }
+  for (const candidate of [
+    item?.key?.participant,
+    item?.key?.participantAlt,
+    item?.key?.remoteJidAlt,
+    item?.key?.senderPn,
+    item?.key?.participantPn,
+  ]) {
+    add(candidate);
   }
 
   return { phones, jids };
@@ -448,7 +501,7 @@ function broadcast(data) {
 }
 
 function normalizeJid(jid) {
-  return String(jid || "").split(":", 1)[0].split("@", 1)[0];
+  return identityUser(jid);
 }
 
 function mentionKey(value) {
@@ -475,10 +528,89 @@ function rememberMentionIdentity(jid, ...names) {
   }
 }
 
+function rememberScopedMentionIdentity(chatJid, jid, ...names) {
+  rememberMentionIdentity(jid, ...names);
+  const chat = String(chatJid || "");
+  if (!chat || !jid) return;
+  let directory = mentionDirectoriesByChat.get(chat);
+  if (!directory) {
+    directory = new Map();
+    mentionDirectoriesByChat.set(chat, directory);
+  }
+  const fullJid = String(jid);
+  for (const key of [fullJid, normalizeJid(fullJid), jidToPhone(fullJid), ...names].filter(Boolean)) {
+    const normalized = mentionKey(key);
+    if (normalized) directory.set(normalized, fullJid);
+  }
+  while (mentionDirectoriesByChat.size > 1000) {
+    mentionDirectoriesByChat.delete(mentionDirectoriesByChat.keys().next().value);
+  }
+}
+
+function rememberScopedMentionAliases(chatJid, targetJid, aliases, names = []) {
+  const chat = String(chatJid || "");
+  const target = String(targetJid || "");
+  if (!chat || !target) return;
+  rememberScopedMentionIdentity(chat, target, ...names);
+  const directory = mentionDirectoriesByChat.get(chat);
+  for (const alias of aliases.filter(Boolean)) {
+    const value = String(alias);
+    for (const key of [value, normalizeJid(value), jidToPhone(value)]) {
+      const normalized = mentionKey(key);
+      if (normalized) directory.set(normalized, target);
+    }
+  }
+  for (const name of names.filter(Boolean)) {
+    const normalized = mentionKey(name);
+    if (normalized) directory.set(normalized, target);
+  }
+}
+
+function rememberResolvedIdentity(identity, ...names) {
+  if (!identity) return identity;
+  if (identity.lidJid && identity.pnJid) {
+    rememberLidPnMapping(identity.lidJid, identity.pnJid);
+  }
+  for (const jid of [identity.jid, identity.pnJid, identity.lidJid].filter(Boolean)) {
+    rememberMentionIdentity(jid, ...names);
+  }
+  return identity;
+}
+
+function rememberGroupParticipantIdentity(participant, chatJid = null) {
+  const identity = groupParticipantIdentity(participant);
+  const names = [
+    participant?.name,
+    participant?.notify,
+    participant?.username,
+    participant?.verifiedName,
+    participant?.pushName,
+    participant?.displayName,
+  ];
+  if (identity.lidJid && identity.pnJid) {
+    rememberLidPnMapping(identity.lidJid, identity.pnJid);
+  }
+  const aliases = [identity.pnJid, identity.lidJid, identity.jid].filter(Boolean);
+  for (const jid of aliases) {
+    rememberMentionIdentity(jid, ...names);
+  }
+  if (chatJid) rememberScopedMentionAliases(chatJid, identity.jid, aliases, names);
+  return identity;
+}
+
+function rememberGroupOwnerIdentity(metadata) {
+  return rememberResolvedIdentity(groupOwnerIdentity(metadata));
+}
+
+function sameGroupParticipant(participant, jid) {
+  return participantIdentityValues(participant).some((value) => sameWhatsappUser(value, jid));
+}
+
 function contactDisplayName(contact) {
   return [
     contact?.name,
     contact?.notify,
+    contact?.username,
     contact?.verifiedName,
     contact?.pushName,
     contact?.displayName,
@@ -494,7 +626,7 @@ function mentionDisplayName(jid) {
     return String(socket?.user?.name || "").trim();
   }
   const contact = knownContacts.get(value);
-  const aliases = [value, contact?.id, contact?.jid, contact?.lid].filter(Boolean);
+  const aliases = [value, contact?.id, contact?.jid, contact?.lid, contact?.phoneNumber].filter(Boolean);
   for (const alias of aliases) {
     const remembered = mentionDisplayNames.get(String(alias));
     if (remembered) return remembered;
@@ -503,22 +635,32 @@ function mentionDisplayName(jid) {
 }
 
 function rememberContact(contact) {
-  const jid = contact?.id || contact?.jid;
-  rememberMentionIdentity(
-    jid,
+  const identity = rememberResolvedIdentity(
+    groupParticipantIdentity(contact),
     contact?.name,
     contact?.notify,
+    contact?.username,
     contact?.verifiedName,
     contact?.pushName,
     contact?.displayName,
   );
-  updateContact(contact);
+  updateContact({ ...contact, id: contact?.id || identity?.jid });
 }
 
-async function rememberGroupParticipants(chatJid) {
-  if (!socket?.groupMetadata || !String(chatJid || "").endsWith("@g.us")) return;
+async function rememberGroupParticipants(
+  chatJid,
+  expectedGeneration = socketGeneration,
+  metadataSocket = socket,
+) {
+  if (
+    expectedGeneration !== socketGeneration
+    || metadataSocket !== socket
+    || !metadataSocket?.groupMetadata
+    || !String(chatJid || "").endsWith("@g.us")
+  ) return null;
   try {
-    const metadata = await socket.groupMetadata(chatJid);
+    const metadata = await metadataSocket.groupMetadata(chatJid);
+    if (expectedGeneration !== socketGeneration || metadataSocket !== socket) return null;
     for (const participant of metadata?.participants || []) {
       const jid = participant?.id || participant?.jid;
       rememberMentionIdentity(
@@ -529,13 +671,15 @@ async function rememberGroupParticipants(chatJid) {
         participant?.pushName,
         participant?.displayName,
       );
-      if (jid && String(jid).endsWith("@lid")) {
+      if (jid && isLidJid(jid)) {
         const resolved = resolveLidToPn(jid);
         if (resolved) rememberLidPnMapping(jid, resolved);
       }
     }
+    return metadata;
   } catch (error) {
     log.debug({ error, chatJid }, "failed to refresh group mention directory");
+    return null;
   }
 }
 
@@ -547,19 +691,31 @@ function mentionTokensFromText(text) {
   return tokens;
 }
 
-function resolveMentionTokens(tokens) {
+function resolveMentionTokens(tokens, chatJid = null) {
   const mentions = [];
+  const scoped = mentionDirectoriesByChat.get(String(chatJid || ""));
   for (const token of tokens || []) {
     const key = mentionKey(token);
     if (!key) continue;
-    let jid = mentionDirectory.get(key);
-    if (!jid) {
-      const digits = String(token || "").replace(/\D/g, "");
-      if (digits) jid = mentionDirectory.get(mentionKey(digits)) || `${digits}@s.whatsapp.net`;
+    const raw = String(token || "").trim();
+    const isDirectIdentity = raw.includes("@") || /^\+?\d+$/.test(raw);
+    let jid = scoped?.get(key) || (!chatJid || isDirectIdentity ? mentionDirectory.get(key) : null);
+    if (!jid && isDirectIdentity) {
+      const digits = raw.replace(/\D/g, "");
+      if (digits) jid = scoped?.get(mentionKey(digits)) || mentionDirectory.get(mentionKey(digits)) || `${digits}@s.whatsapp.net`;
     }
     if (jid && !mentions.includes(jid)) mentions.push(jid);
   }
   return mentions;
+}
+
+function resolveExplicitMentions(values, chatJid = null) {
+  const scoped = mentionDirectoriesByChat.get(String(chatJid || ""));
+  return resolveExplicitIdentityMentions(values, {
+    chatJid,
+    scopedDirectory: scoped,
+    globalDirectory: mentionDirectory,
+  });
 }
 
 function sameWhatsappUser(left, right) {
@@ -580,6 +736,7 @@ function mentionedJidsForAstrBot(message) {
   return mentionedJidsFromMessage(message).map((jid) => {
     if (selfJid && sameWhatsappUser(jid, selfJid)) return selfJid;
     if (selfJid && selfLid && sameWhatsappUser(jid, selfLid)) return selfJid;
+    if (isLidJid(jid)) return resolveLidToPn(jid) || jid;
     return jid;
   });
 }
@@ -597,13 +754,11 @@ function normalizePhone(value) {
   const text = String(value || "").trim();
   if (!text) return "";
   if (text === "*") return "*";
-  const digits = text.replace(/\D/g, "");
-  return digits ? `+${digits}` : text;
+  return phoneFromIdentity(text) || text;
 }
 
 function jidToPhone(jid) {
-  const digits = normalizeJid(jid).replace(/\D/g, "");
-  return digits ? `+${digits}` : normalizeJid(jid);
+  return phoneFromIdentity(jid) || normalizeJid(jid);
 }
 
 function allowedByList(value, allowList) {
@@ -657,13 +812,14 @@ function allowedMessageResult(chatJid, senderJid, item) {
 async function refreshAndRetryAllowedMessage(chatJid, senderJid, item) {
   await refreshAllowlistLidMappings("inbound_unresolved_lid");
   const cachedPn = resolveLidToPn(senderJid) || resolveLidToPn(chatJid);
-  if (cachedPn && senderJid.endsWith("@lid")) {
+  if (cachedPn && isLidJid(senderJid)) {
     rememberLidPnMapping(senderJid, cachedPn);
   }
   return allowedMessageResult(chatJid, senderJid, item);
 }
 
 function textFromMessage(message) {
+  message = normalizeMessagePayload(message);
   if (!message) return "";
   if (message.conversation) return message.conversation;
   if (message.extendedTextMessage?.text) return message.extendedTextMessage.text;
@@ -711,18 +867,27 @@ function textFromMessage(message) {
       : "";
     return [title, price].filter(Boolean).join(" — ") || "Product";
   }
+  const event = eventDetailsFromMessage(message);
+  if (event) {
+    const label = event.name || "Event";
+    const summary = event.description ? `${label}: ${event.description}` : label;
+    return event.isCanceled ? `Cancelled event: ${summary}` : summary;
+  }
   return "";
 }
 
 function extrasFromMessage(message) {
+  message = normalizeMessagePayload(message);
   if (!message) return null;
   const extras = {};
-  if (message.locationMessage) {
+  const locationMessage = message.locationMessage || message.liveLocationMessage;
+  if (locationMessage) {
     extras.location = {
-      latitude: message.locationMessage.degreesLatitude || 0,
-      longitude: message.locationMessage.degreesLongitude || 0,
-      name: message.locationMessage.name || "",
-      address: message.locationMessage.address || "",
+      latitude: locationMessage.degreesLatitude || 0,
+      longitude: locationMessage.degreesLongitude || 0,
+      name: locationMessage.name || "",
+      address: locationMessage.address || "",
+      live: Boolean(message.liveLocationMessage),
     };
   }
   if (message.contactMessage) {
@@ -758,6 +923,8 @@ function extrasFromMessage(message) {
       options: (pollMsg.options || []).map((item) => item.optionName || "").filter(Boolean),
     };
   }
+  const event = eventDetailsFromMessage(message);
+  if (event) extras.event = event;
   if (Object.keys(extras).length === 0) return null;
   return extras;
 }
@@ -827,23 +994,14 @@ async function relayProtoContent(jid, contentObj, body) {
 }
 
 function contextInfoFromMessage(message) {
-  if (!message) return null;
-  return (
-    message.extendedTextMessage?.contextInfo ||
-    message.imageMessage?.contextInfo ||
-    message.videoMessage?.contextInfo ||
-    message.documentMessage?.contextInfo ||
-    message.audioMessage?.contextInfo ||
-    message.stickerMessage?.contextInfo ||
-    null
-  );
+  return contextInfoFromMessagePayload(message);
 }
 
 function quotedInfoFromContext(contextInfo) {
   if (!contextInfo) return null;
   const stanzaId = contextInfo.stanzaId || null;
   const participant = contextInfo.participant || null;
-  const quotedMessage = contextInfo.quotedMessage || null;
+  const quotedMessage = normalizeMessagePayload(contextInfo.quotedMessage) || null;
   if (!stanzaId && !quotedMessage) return null;
   return { stanzaId, participant, quotedMessage };
 }
@@ -853,7 +1011,17 @@ function mentionedJidsFromMessage(message) {
   return Array.isArray(mentioned) ? mentioned.filter(Boolean) : [];
 }
 
+function mentionAllFromMessage(message) {
+  return Number(contextInfoFromMessage(message)?.nonJidMentions || 0) === 1;
+}
+
+function mediaPayloadFromInput(message) {
+  return normalizeMessageInput(message);
+}
+
 function mediaKind(message) {
+  message = mediaPayloadFromInput(message);
+  if (!message) return null;
   if (message.imageMessage) return "image";
   if (message.videoMessage) return "video";
   if (message.audioMessage) return "audio";
@@ -863,10 +1031,12 @@ function mediaKind(message) {
 }
 
 function mediaFileName(message, kind) {
+  message = mediaPayloadFromInput(message);
   return message?.documentMessage?.fileName || message?.imageMessage?.fileName || message?.videoMessage?.fileName || `${kind || "media"}`;
 }
 
 function mediaMimeType(message, kind) {
+  message = mediaPayloadFromInput(message);
   return (
     message?.imageMessage?.mimetype ||
     message?.videoMessage?.mimetype ||
@@ -884,7 +1054,7 @@ function quotedKey(body) {
   return { quoted };
 }
 
-async function saveInboundMedia(message, kind, id) {
+async function saveInboundMedia(message, kind, id, mediaSocket = socket) {
   const maxBytes = inboundMaxBytes(kind);
   const expectedBytes = inboundMediaSize(message, kind);
   if (expectedBytes && expectedBytes > maxBytes) {
@@ -892,40 +1062,52 @@ async function saveInboundMedia(message, kind, id) {
   }
   const originalName = mediaFileName(message, kind);
   const extension = extensionForInboundMedia(originalName, message, kind);
-  const safeId = String(id || "message").replace(/[^a-zA-Z0-9_-]/g, "");
   const fileName = `whatsapp_${kind}_${Date.now()}_${randomUUID().slice(0, 8)}.${extension}`;
   const filePath = path.join(tempDir, fileName);
   await mkdir(tempDir, { recursive: true });
-  // 串流寫入磁碟，避免大型媒體佔用記憶體
-  const stream = await downloadMediaMessage(message, "stream", {}, { logger: log });
-  if (!stream || typeof stream.pipe !== "function") {
-    throw new Error("downloadMediaMessage did not return a readable stream");
-  }
-  const writeStream = createWriteStream(filePath);
-  let writtenBytes = 0;
-  await new Promise((resolve, reject) => {
-    writeStream.on("error", (err) => {
-      stream.destroy();
-      reject(err);
-    });
-    stream.on("error", (err) => {
-      writeStream.destroy();
-      reject(err);
-    });
-    stream.on("data", (chunk) => {
-      writtenBytes += chunk.length;
-      if (writtenBytes > maxBytes) {
-        writeStream.destroy();
+  try {
+    // Baileys retries expired (404/410) media URLs only when supplied with the
+    // socket re-upload callback. Capture and bind the originating socket so a
+    // reconnect cannot redirect an old message's retry through a new account.
+    // 串流寫入磁碟，避免大型媒體佔用記憶體
+    const stream = await downloadMediaMessage(
+      message,
+      "stream",
+      {},
+      inboundMediaDownloadContext(mediaSocket, log),
+    );
+    if (!stream || typeof stream.pipe !== "function") {
+      throw new Error("downloadMediaMessage did not return a readable stream");
+    }
+    const writeStream = createWriteStream(filePath);
+    let writtenBytes = 0;
+    await new Promise((resolve, reject) => {
+      writeStream.on("error", (err) => {
         stream.destroy();
-        reject(new Error(`${kind} exceeds inbound limit ${Math.floor(maxBytes / 1024 / 1024)}MB`));
-      }
+        reject(err);
+      });
+      stream.on("error", (err) => {
+        writeStream.destroy();
+        reject(err);
+      });
+      stream.on("data", (chunk) => {
+        writtenBytes += chunk.length;
+        if (writtenBytes > maxBytes) {
+          writeStream.destroy();
+          stream.destroy();
+          reject(new Error(`${kind} exceeds inbound limit ${Math.floor(maxBytes / 1024 / 1024)}MB`));
+        }
+      });
+      stream.pipe(writeStream).on("finish", () => {
+        writeStream.close();
+        resolve();
+      });
     });
-    stream.pipe(writeStream).on("finish", () => {
-      writeStream.close();
-      resolve();
-    });
-  });
-  return { path: filePath, size: writtenBytes, fileName: originalName, mimetype: mediaMimeType(message, kind) };
+    return { path: filePath, size: writtenBytes, fileName: originalName, mimetype: mediaMimeType(message, kind) };
+  } catch (error) {
+    await removePartialInboundMedia(filePath, log);
+    throw error;
+  }
 }
 
 function extensionForInboundMedia(fileName, message, kind) {
@@ -964,6 +1146,7 @@ function extensionForMime(mimetype) {
 }
 
 function inboundMediaSize(message, kind) {
+  message = mediaPayloadFromInput(message);
   const value = (
     message?.imageMessage?.fileLength ||
     message?.videoMessage?.fileLength ||
@@ -1011,10 +1194,21 @@ function clearAlbumBuffers() {
   albumBuffers.clear();
 }
 
-function scheduleAlbumItem(item) {
+function clearAccountRuntimeCaches() {
+  messageCache.clear();
+  seenIncomingMessages.clear();
+  knownContacts.clear();
+  mentionDirectory.clear();
+  mentionDirectoriesByChat.clear();
+  mentionDisplayNames.clear();
+  chatEphemeral.clear();
+  if (typeof groupMetadataCache !== "undefined") groupMetadataCache.clear();
+}
+
+function scheduleAlbumItem(item, expectedGeneration = socketGeneration, eventSocket = socket) {
   const chatJid = item.key.remoteJid;
-  const senderJid = item.key.participant || chatJid;
-  const bufferKey = `${chatJid}:${senderJid}`;
+  const senderJid = item.key.participant || item.key.participantAlt || (item.key.fromMe ? selfJid : null) || chatJid;
+  const bufferKey = `${expectedGeneration}:${chatJid}:${senderJid}`;
   const debounceMs = Number(runtimeConfig.mediaAlbumDebounceMs || 0);
   let buffer = albumBuffers.get(bufferKey);
   if (!buffer) {
@@ -1027,17 +1221,29 @@ function scheduleAlbumItem(item) {
     const pending = albumBuffers.get(bufferKey);
     albumBuffers.delete(bufferKey);
     if (!pending?.items?.length) return;
+    if (expectedGeneration !== socketGeneration || eventSocket !== socket) return;
     const items = pending.items;
-    handleIncomingMessage(items[0], { albumItems: items }).catch((error) =>
+    handleIncomingMessage(
+      items[0],
+      { albumItems: items },
+      expectedGeneration,
+      eventSocket,
+    ).catch((error) =>
       log.warn({ error, count: items.length }, "album message handling failed"),
     );
   }, debounceMs);
 }
 
-async function routeIncomingMessage(item) {
+async function routeIncomingMessage(
+  item,
+  expectedGeneration = socketGeneration,
+  eventSocket = socket,
+) {
+  if (expectedGeneration !== socketGeneration || eventSocket !== socket) return;
+  item = normalizeIncomingItem(item);
   const chatJid = item.key.remoteJid;
   if (!chatJid || chatJid.endsWith("@status") || chatJid.endsWith("@broadcast")) return;
-  const senderJid = item.key.participant || chatJid;
+  const senderJid = item.key.participant || item.key.participantAlt || (item.key.fromMe ? selfJid : null) || chatJid;
   const dedupKey = `${chatJid}:${senderJid}:${item.key.id || ""}`;
   if (rememberIncomingMessage(dedupKey)) {
     log.debug({ chatJid, senderJid, messageId: item.key.id }, "ignored duplicate inbound WhatsApp message");
@@ -1045,42 +1251,66 @@ async function routeIncomingMessage(item) {
   }
   const debounceMs = Number(runtimeConfig.mediaAlbumDebounceMs || 0);
   if (debounceMs > 0 && isAlbumCandidate(item)) {
-    scheduleAlbumItem(item);
+    scheduleAlbumItem(item, expectedGeneration, eventSocket);
     return;
   }
-  await handleIncomingMessage(item);
+  await handleIncomingMessage(item, {}, expectedGeneration, eventSocket);
 }
 
-async function handleIncomingMessage(item, options = {}) {
-  const albumItems = options.albumItems?.length ? options.albumItems : [item];
+async function handleIncomingMessage(
+  item,
+  options = {},
+  expectedGeneration = socketGeneration,
+  eventSocket = socket,
+) {
+  const isStaleSocketEvent = () => (
+    expectedGeneration !== socketGeneration || eventSocket !== socket
+  );
+  if (isStaleSocketEvent()) return;
+  const albumItems = (options.albumItems?.length ? options.albumItems : [item])
+    .map(normalizeIncomingItem);
   const primary = albumItems[0];
   const chatJid = primary.key.remoteJid;
   if (!chatJid || chatJid.endsWith("@status") || chatJid.endsWith("@broadcast")) return;
   const fromMe = Boolean(primary.key.fromMe);
-  const senderJid = primary.key.participant || chatJid;
-  rememberMentionIdentity(senderJid, primary.pushName);
-  const pnSource = primary.key.senderPn || primary.key.participantPn || null;
-  if (pnSource && senderJid.endsWith("@lid")) {
-    let pnJid = String(pnSource).trim();
-    if (!pnJid.endsWith("@s.whatsapp.net")) {
-      const digits = pnJid.replace(/\D/g, "");
-      if (digits) pnJid = `${digits}@s.whatsapp.net`;
-      else pnJid = null;
-    }
-    if (pnJid) rememberLidPnMapping(senderJid, pnJid);
+  const isGroup = chatJid.endsWith("@g.us");
+  const senderJid = primary.key.participant || primary.key.participantAlt || (fromMe ? selfJid : null) || chatJid;
+  const senderIdentity = senderIdentityFromKey(primary.key, {
+    isGroup,
+    fromMe,
+    senderJid,
+    chatJid,
+    selfJid,
+    selfLid,
+  });
+  rememberResolvedIdentity({ jid: senderJid, ...senderIdentity }, primary.pushName);
+  const senderPn = senderIdentity.pnJid;
+  const directSessionIdentity = isGroup
+    ? null
+    : senderIdentityFromKey(primary.key, {
+      isGroup: false,
+      fromMe: false,
+      senderJid: chatJid,
+      chatJid,
+    });
+  if (directSessionIdentity) {
+    rememberResolvedIdentity({ jid: chatJid, ...directSessionIdentity }, primary.pushName);
   }
-  rememberGroupParticipants(chatJid).catch(() => {});
+  const canonicalSessionJid = isGroup
+    ? chatJid
+    : (directSessionIdentity?.lidJid || directSessionIdentity?.pnJid || chatJid);
+  rememberGroupParticipants(chatJid, expectedGeneration, eventSocket).catch(() => {});
   if (primary.message?.protocolMessage) {
     log.debug({ chatJid, messageId: primary.key.id, protocolType: primary.message.protocolMessage.type }, "ignored protocol message");
     return;
   }
-  const isGroup = chatJid.endsWith("@g.us");
   if (!configured) {
     log.warn({ chatJid, senderJid, messageId: primary.key.id }, "Gateway not yet configured; passing message through without allowlist check");
   }
   let allowedResult = configured ? allowedMessageResult(chatJid, senderJid, primary) : { allowed: true, reason: "not_yet_configured", senderPhone: "" };
-  if (configured && !allowedResult.allowed && !allowedResult.senderPhone && senderJid.endsWith("@lid")) {
+  if (configured && !allowedResult.allowed && !allowedResult.senderPhone && isLidJid(senderJid)) {
     const retry = await refreshAndRetryAllowedMessage(chatJid, senderJid, primary);
+    if (isStaleSocketEvent()) return;
     if (retry.allowed || retry.senderPhone) allowedResult = retry;
   }
   if (!isGroup) {
@@ -1099,8 +1329,14 @@ async function handleIncomingMessage(item, options = {}) {
     );
   }
   if (fromMe) {
-    log.debug({ chatJid, senderJid, messageId: primary.key.id }, "ignored inbound message from self");
-    return;
+    const adapterSent = Boolean(findChatMessage(messageCache, chatJid, primary.key.id));
+    if (runtimeConfig.ignoreSelfMessages || adapterSent) {
+      log.debug(
+        { chatJid, senderJid, messageId: primary.key.id, adapterSent },
+        "ignored inbound message from self",
+      );
+      return;
+    }
   }
   if (!allowedResult.allowed) {
     log.info(
@@ -1117,8 +1353,9 @@ async function handleIncomingMessage(item, options = {}) {
       "rejected inbound WhatsApp message",
     );
     if (!isGroup && allowedResult.reason === "dm_allowlist") {
-      if (!allowedResult.senderPhone && senderJid.endsWith("@lid")) {
+      if (!allowedResult.senderPhone && isLidJid(senderJid)) {
         const resolved = await waitForLidPnMapping(senderJid, 3000);
+        if (isStaleSocketEvent()) return;
         if (resolved) {
           rememberLidPnMapping(senderJid, resolved);
           const retry = allowedMessageResult(chatJid, senderJid, primary);
@@ -1157,7 +1394,7 @@ async function handleIncomingMessage(item, options = {}) {
         broadcast({
           type: "rejected",
           chatJid, senderJid,
-          senderPn: primary.key.senderPn || null,
+          senderPn,
           senderName: primary.pushName || senderJid,
           senderPhone: allowedResult.senderPhone,
           reason: allowedResult.reason, fromMe,
@@ -1200,9 +1437,20 @@ async function handleIncomingMessage(item, options = {}) {
     const kind = mediaKind(albumItem.message);
     if (!kind) continue;
     try {
-      media.push({ type: kind, ...(await saveInboundMedia(albumItem, kind, albumItem.key.id)) });
+      media.push({
+        type: kind,
+        ...(await saveInboundMedia(albumItem, kind, albumItem.key.id, eventSocket)),
+      });
+      if (isStaleSocketEvent()) return;
     } catch (error) {
-      log.warn({ error, messageId: albumItem.key.id }, "failed to save inbound media");
+      log.warn(
+        {
+          error: String(error?.message || error),
+          stack: error?.stack,
+          messageId: albumItem.key.id,
+        },
+        "failed to save inbound media",
+      );
       media.push({ type: kind, error: String(error?.message || error) });
     }
   }
@@ -1211,47 +1459,71 @@ async function handleIncomingMessage(item, options = {}) {
   let quoted = null;
   if (quotedInfo) {
     const cachedQuoted = findChatMessage(messageCache, chatJid, quotedInfo.stanzaId);
-    const quotedParticipant = quotedInfo.participant || cachedQuoted?.key?.participant || cachedQuoted?.key?.remoteJid || "";
-    const quotedKind = quotedInfo.quotedMessage ? mediaKind(quotedInfo.quotedMessage) : null;
-    const quotedText = quotedInfo.quotedMessage ? textFromMessage(quotedInfo.quotedMessage) : "";
+    const cachedFromMe = Boolean(cachedQuoted?.key?.fromMe);
+    const quotedParticipant = cachedFromMe
+      ? (selfJid || selfLid || quotedInfo.participant || "")
+      : (quotedInfo.participant || cachedQuoted?.key?.participant || cachedQuoted?.key?.remoteJid || "");
+    const quotedIdentity = senderIdentityFromKey(cachedQuoted?.key, {
+      isGroup,
+      fromMe: cachedFromMe,
+      senderJid: quotedParticipant,
+      chatJid,
+      selfJid,
+      selfLid,
+    });
+    rememberResolvedIdentity({ jid: quotedParticipant, ...quotedIdentity }, cachedQuoted?.pushName);
+    const quotedParticipantPn = quotedIdentity.pnJid || resolveLidToPn(quotedParticipant) || "";
+    const quotedMessage = normalizeMessagePayload(quotedInfo.quotedMessage || cachedQuoted?.message) || null;
+    const quotedKind = quotedMessage ? mediaKind(quotedMessage) : null;
+    const quotedText = quotedMessage ? textFromMessage(quotedMessage) : "";
     const quotedMedia = [];
-    if (quotedInfo.quotedMessage && quotedKind) {
+    if (quotedMessage && quotedKind) {
       try {
-        const quotedItem = { key: { id: quotedInfo.stanzaId, remoteJid: chatJid, fromMe: sameWhatsappUser(quotedInfo.participant || "", selfJid || "") }, message: quotedInfo.quotedMessage };
-        quotedMedia.push({ type: quotedKind, ...(await saveInboundMedia(quotedItem, quotedKind, `quoted-${quotedInfo.stanzaId || "unknown"}`)) });
+        const quotedItem = {
+          key: { id: quotedInfo.stanzaId, remoteJid: chatJid, fromMe: cachedFromMe || sameWhatsappUser(quotedParticipant, selfJid || "") },
+          message: quotedMessage,
+        };
+        quotedMedia.push({
+          type: quotedKind,
+          ...(await saveInboundMedia(
+            quotedItem,
+            quotedKind,
+            `quoted-${quotedInfo.stanzaId || "unknown"}`,
+            eventSocket,
+          )),
+        });
+        if (isStaleSocketEvent()) return;
       } catch (error) {
-        log.warn({ error, quotedStanzaId: quotedInfo.stanzaId }, "failed to save quoted inbound media");
+        log.warn(
+          {
+            error: String(error?.message || error),
+            stack: error?.stack,
+            quotedStanzaId: quotedInfo.stanzaId,
+          },
+          "failed to save quoted inbound media",
+        );
         quotedMedia.push({ type: quotedKind, error: String(error?.message || error) });
       }
     }
     quoted = {
       stanzaId: quotedInfo.stanzaId,
       participant: quotedParticipant,
+      participantPn: quotedParticipantPn,
       participantName: mentionDisplayName(quotedParticipant) || cachedQuoted?.pushName || quotedParticipant,
       timestamp: Number(cachedQuoted?.messageTimestamp || 0),
       text: quotedText || (quotedKind ? `<media:${quotedKind}>` : ""),
+      mentionedJids: quotedMessage ? mentionedJidsForAstrBot(quotedMessage) : [],
+      mentionedNames: quotedMessage ? mentionedNamesForAstrBot(quotedMessage) : {},
+      mentionAll: quotedMessage ? mentionAllFromMessage(quotedMessage) : false,
       media: quotedMedia,
     };
-    if (cachedQuoted && !quoted.text && !quotedMedia.length) {
-      const cachedText = textFromMessage(cachedQuoted.message);
-      const cachedKind = mediaKind(cachedQuoted.message);
-      if (cachedText) quoted.text = cachedText;
-      if (cachedKind && !quotedMedia.length) {
-        try {
-          quotedMedia.push({ type: cachedKind, ...(await saveInboundMedia(cachedQuoted, cachedKind, `quoted-${quotedInfo.stanzaId || "unknown"}`)) });
-        } catch (error) {
-          log.warn({ error, quotedStanzaId: quotedInfo.stanzaId }, "failed to save cached quoted inbound media");
-          quotedMedia.push({ type: cachedKind, error: String(error?.message || error) });
-        }
-      }
-      quoted.media = quotedMedia;
-    }
   }
 
-  if (runtimeConfig.sendReadReceipts && socket) {
+  if (isStaleSocketEvent()) return;
+  if (runtimeConfig.sendReadReceipts && eventSocket) {
     const isSelf = selfJid && senderJid && sameWhatsappUser(senderJid, selfJid);
     if (!runtimeConfig.ignoreSelfMessages || !isSelf) {
-      socket.readMessages(albumItems.map((albumItem) => albumItem.key)).catch((error) =>
+      eventSocket.readMessages(albumItems.map((albumItem) => albumItem.key)).catch((error) =>
         log.debug({ error }, "read receipt failed"),
       );
     }
@@ -1271,7 +1543,9 @@ async function handleIncomingMessage(item, options = {}) {
     albumMessageIds: albumItems.length > 1 ? albumItems.map((albumItem) => albumItem.key.id) : undefined,
     chatJid,
     senderJid,
-    senderPn: primary.key.senderPn || primary.key.participantPn || null,
+    senderPn,
+    senderLid: senderIdentity.lidJid,
+    canonicalSessionJid,
     senderPhone: allowedResult.senderPhone || resolvePhone(senderJid) || "",
     senderName: primary.pushName || senderJid,
     fromMe,
@@ -1280,6 +1554,7 @@ async function handleIncomingMessage(item, options = {}) {
     text,
     mentionedJids: mentionedJidsForAstrBot(primary.message),
     mentionedNames: mentionedNamesForAstrBot(primary.message),
+    mentionAll: mentionAllFromMessage(primary.message),
     media,
     quoted,
     extras,
@@ -1366,6 +1641,7 @@ async function resetSocketSession(reason = "manual_reset") {
   connectionStatus = "resetting";
   broadcast({ type: "status", status: connectionStatus, ready: false, reason });
   invalidateCurrentSocket();
+  clearAccountRuntimeCaches();
   selfJid = null;
   selfLid = null;
   latestQr = null;
@@ -1405,9 +1681,17 @@ async function startSocket(opts = {}) {
   const generation = ++socketGeneration;
   if (reconnectTimer) clearTimeout(reconnectTimer);
   reconnectTimer = null;
-  if (socket?.end) {
+  const previousSocket = socket;
+  if (previousSocket?.ev?.removeAllListeners) {
     try {
-      socket.end(undefined);
+      previousSocket.ev.removeAllListeners();
+    } catch (error) {
+      log.debug({ error }, "failed to remove previous socket listeners");
+    }
+  }
+  if (previousSocket?.end) {
+    try {
+      previousSocket.end(undefined);
     } catch (error) {
       log.debug({ error }, "failed to close previous socket");
     }
@@ -1418,7 +1702,7 @@ async function startSocket(opts = {}) {
   connectionStatus = "starting";
   await mkdir(currentAuthDir, { recursive: true });
   const { state, saveCreds } = await useMultiFileAuthState(currentAuthDir);
-  socket = makeWASocket({
+  const socketForGeneration = makeWASocket({
     auth: state,
     printQRInTerminal: false,
     logger: log,
@@ -1426,26 +1710,45 @@ async function startSocket(opts = {}) {
     browser: Browsers.macOS("Chrome"),
     syncFullHistory: false,
   });
+  socket = socketForGeneration;
 
   let credsSaveQueue = Promise.resolve();
-  socket.ev.on("creds.update", () => {
+  socketForGeneration.ev.on("creds.update", () => {
     if (generation !== socketGeneration) return;
     credsSaveQueue = credsSaveQueue
       .then(() => saveCreds())
       .catch((error) => {
+        if (generation !== socketGeneration || socketForGeneration !== socket) return;
         lastError = `保存登录凭证失败: ${String(error?.message || error)}`;
         log.error({ error, generation, sessionId: currentSessionId }, "failed to persist auth credentials");
       });
   });
-  socket.ev.on("contacts.upsert", (contacts) => {
+  socketForGeneration.ev.on("messaging-history.set", (history) => {
+    if (generation !== socketGeneration || socketForGeneration !== socket) return;
+    for (const mapping of history?.lidPnMappings || []) {
+      if (mapping?.lid && mapping?.pn) rememberLidPnMapping(mapping.lid, mapping.pn);
+    }
+    for (const contact of history?.contacts || []) rememberContact(contact);
+    if (runtimeConfig.applyEphemeral) {
+      for (const chat of history?.chats || []) {
+        if (chat?.id && chat?.ephemeralExpiration) {
+          chatEphemeral.set(chat.id, chat.ephemeralExpiration);
+        }
+      }
+    }
+  });
+  socketForGeneration.ev.on("contacts.upsert", (contacts) => {
+    if (generation !== socketGeneration || socketForGeneration !== socket) return;
     for (const contact of contacts || []) {
       rememberContact(contact);
     }
   });
-  socket.ev.on("contacts.update", (contacts) => {
+  socketForGeneration.ev.on("contacts.update", (contacts) => {
+    if (generation !== socketGeneration || socketForGeneration !== socket) return;
     for (const contact of contacts || []) rememberContact(contact);
   });
-  socket.ev.on("chats.upsert", (chats) => {
+  socketForGeneration.ev.on("chats.upsert", (chats) => {
+    if (generation !== socketGeneration || socketForGeneration !== socket) return;
     if (!runtimeConfig.applyEphemeral) return;
     for (const chat of chats || []) {
       if (chat?.id && chat?.ephemeralExpiration) {
@@ -1453,7 +1756,8 @@ async function startSocket(opts = {}) {
       }
     }
   });
-  socket.ev.on("chats.update", (chats) => {
+  socketForGeneration.ev.on("chats.update", (chats) => {
+    if (generation !== socketGeneration || socketForGeneration !== socket) return;
     if (!runtimeConfig.applyEphemeral) {
       chatEphemeral.clear();
       return;
@@ -1469,19 +1773,21 @@ async function startSocket(opts = {}) {
     }
   });
   // lid-mapping.update — Baileys 提供 LID→PN 映射，統一存入 contact store
-  socket.ev.on("lid-mapping.update", (mapping) => {
+  socketForGeneration.ev.on("lid-mapping.update", (mapping) => {
+    if (generation !== socketGeneration || socketForGeneration !== socket) return;
     if (mapping?.lid && mapping?.pn) rememberLidPnMapping(mapping.lid, mapping.pn);
     if (mapping?.lidJid && mapping?.pnJid) rememberLidPnMapping(mapping.lidJid, mapping.pnJid);
   });
   // chats.phoneNumberShare — Baileys 在收到 LID 格式訊息時提供 LID→PN 映射
-  socket.ev.on("chats.phoneNumberShare", ({ lid, jid }) => {
+  socketForGeneration.ev.on("chats.phoneNumberShare", ({ lid, jid }) => {
+    if (generation !== socketGeneration || socketForGeneration !== socket) return;
     if (lid && jid) {
       log.debug({ lid, pn: jid }, "phoneNumberShare: LID→PN mapping received");
       rememberLidPnMapping(lid, jid);
     }
   });
-  socket.ev.on("connection.update", (update) => {
-    if (generation !== socketGeneration) return;
+  socketForGeneration.ev.on("connection.update", (update) => {
+    if (generation !== socketGeneration || socketForGeneration !== socket) return;
     const { connection, lastDisconnect, qr, isNewLogin } = update;
     if (qr) {
       connectionStatus = "qr_pending";
@@ -1509,8 +1815,10 @@ async function startSocket(opts = {}) {
       latestQrDataUrl = null;
       lastError = null;
       connectionStatus = "connected";
-      selfJid = socket.user?.id || null;
-      selfLid = normalizeLidJid(socket.authState?.creds?.me?.lid);
+      selfJid = socketForGeneration.user?.id
+        ? normalizeIdentityJid(socketForGeneration.user.id)
+        : null;
+      selfLid = normalizeLidJid(socketForGeneration.authState?.creds?.me?.lid);
       if (selfLid && selfJid) rememberLidPnMapping(selfLid, selfJid);
       // Presence is a global account state. Keep an account explicitly offline
       // when the periodic-online option is disabled; chat typing is handled
@@ -1589,10 +1897,17 @@ async function startSocket(opts = {}) {
       }
     }
   });
-  socket.ev.on("messages.upsert", async ({ messages, type }) => {
-    if (type !== "notify") return;
+  socketForGeneration.ev.on("messages.upsert", async ({ messages, type }) => {
+    if (
+      generation !== socketGeneration
+      || socketForGeneration !== socket
+      || type !== "notify"
+    ) return;
     for (const message of messages) {
-      await routeIncomingMessage(message).catch((error) => log.warn({ error }, "message handling failed"));
+      if (generation !== socketGeneration || socketForGeneration !== socket) return;
+      await routeIncomingMessage(message, generation, socketForGeneration).catch((error) =>
+        log.warn({ error }, "message handling failed"),
+      );
     }
   });
   await loadLidMappingsFromDisk();
@@ -1634,7 +1949,7 @@ function statusPayload() {
   };
 }
 
-function resolveMediaPayload(type, pathOrUrl, caption) {
+function resolveMediaPayload(type, pathOrUrl, caption, requestedFileName = "") {
   const payload = {};
   const normalizedPath = normalizeLocalMediaPath(pathOrUrl);
   const mediaInfo = mediaInfoForPath(type, pathOrUrl, normalizedPath);
@@ -1649,7 +1964,7 @@ function resolveMediaPayload(type, pathOrUrl, caption) {
     payload.ptt = true;
   } else {
     payload.document = source;
-    payload.fileName = mediaInfo.fileName;
+    payload.fileName = path.basename(String(requestedFileName || mediaInfo.fileName || "file"));
   }
   if (mediaInfo.mimetype) payload.mimetype = mediaInfo.mimetype;
   if (mediaInfo.type === "image" || mediaInfo.type === "video") payload.jpegThumbnail = null;
@@ -1831,14 +2146,14 @@ const server = createServer(async (req, res) => {
       const body = await readJson(req);
       if (body.chatJid) await rememberGroupParticipants(body.chatJid);
       const tokens = Array.isArray(body.tokens) ? body.tokens : mentionTokensFromText(body.text);
-      sendJson(res, 200, { ok: true, mentions: resolveMentionTokens(tokens) });
+      sendJson(res, 200, { ok: true, mentions: resolveMentionTokens(tokens, body.chatJid) });
       return;
     }
     if (req.method === "POST" && url.pathname === "/lid/resolve") {
       const body = await readJson(req);
       const lidJid = String(body.lidJid || "").trim();
-      if (!lidJid.endsWith("@lid")) {
-        sendJson(res, 400, { ok: false, error: "lidJid must end with @lid" });
+      if (!isLidJid(lidJid)) {
+        sendJson(res, 400, { ok: false, error: "lidJid must be a WhatsApp LID JID" });
         return;
       }
       const existing = resolveLidToPn(lidJid);
@@ -1869,6 +2184,54 @@ const server = createServer(async (req, res) => {
       sendJson(res, 503, { error: "WhatsApp is not connected. Scan the QR code in Gateway logs." });
       return;
     }
+    if (req.method === "POST" && url.pathname === "/group/info") {
+      const body = await readJson(req);
+      const groupJid = String(body.groupJid || "").trim();
+      if (!groupJid.endsWith("@g.us")) {
+        sendJson(res, 400, { error: "groupJid must end with @g.us" });
+        return;
+      }
+      const metadata = await socket.groupMetadata(groupJid);
+      const participants = (metadata?.participants || []).map((participant) => {
+        const identity = rememberGroupParticipantIdentity(participant, groupJid);
+        const jid = String(identity?.jid || "");
+        const pnJid = identity?.pnJid || resolveLidToPn(identity?.lidJid || jid) || "";
+        const role = participant?.admin === "superadmin"
+          ? "owner"
+          : participant?.admin === "admin"
+            ? "admin"
+            : "member";
+        return {
+          jid,
+          pnJid,
+          userId: normalizeJid(pnJid || jid),
+          name: mentionDisplayName(pnJid) || mentionDisplayName(identity?.lidJid || jid) || normalizeJid(pnJid || jid),
+          role,
+        };
+      });
+      const ownerIdentity = rememberGroupOwnerIdentity(metadata);
+      const owner = normalizeJid(
+        ownerIdentity?.pnJid
+        || resolveLidToPn(ownerIdentity?.lidJid || ownerIdentity?.jid)
+        || ownerIdentity?.jid
+        || "",
+      )
+        || participants.find((participant) => participant.role === "owner")?.userId
+        || "";
+      const admins = participants
+        .filter((participant) => participant.role === "admin" && participant.userId !== owner)
+        .map((participant) => participant.userId);
+      sendJson(res, 200, {
+        ok: true,
+        groupId: normalizeJid(metadata?.id || groupJid),
+        groupJid,
+        subject: String(metadata?.subject || ""),
+        owner,
+        admins,
+        participants,
+      });
+      return;
+    }
     if (req.method === "POST" && url.pathname === "/presence") {
       const body = await readJson(req);
       const state = String(body.state || "available");
@@ -1890,20 +2253,13 @@ const server = createServer(async (req, res) => {
       const options = quotedKey(body) || {};
       const ephemeral = getEphemeralExpiration(body.to);
       if (ephemeral) options.ephemeralExpiration = ephemeral;
-      const explicitMentions = Array.isArray(body.mentions) ? body.mentions.filter(Boolean) : [];
-      // 嘗試透過 mention directory 解析顯式提及，還原完整 JID
-      const resolvedExplicit = explicitMentions.map((jid) => {
-        if (jid.includes(":")) return jid;
-        const directoryJid = mentionDirectory.get(mentionKey(jid));
-        if (directoryJid) return directoryJid;
-        const digits = String(jid || "").replace(/\D/g, "");
-        if (digits) return mentionDirectory.get(mentionKey(digits)) || jid;
-        return jid;
-      });
-      const autoMentions = body.resolveTextMentions ? resolveMentionTokens(mentionTokensFromText(text)) : [];
+      const { mentions: resolvedExplicit, mentionAll } = resolveExplicitMentions(body.mentions, body.to);
+      const autoMentions = body.resolveTextMentions ? resolveMentionTokens(mentionTokensFromText(text), body.to) : [];
       const mentions = [...new Set([...resolvedExplicit, ...autoMentions])];
       const payload = { text };
+      if (body.linkPreview === false) payload.linkPreview = null;
       if (mentions.length) payload.mentions = mentions;
+      if (mentionAll) payload.mentionAll = true;
       const result = await socket.sendMessage(body.to, payload, options);
       cacheChatMessage(messageCache, result, maxMessageCacheSize);
       sendJson(res, 200, { ok: true, id: result?.key?.id, key: result?.key });
@@ -1921,17 +2277,24 @@ const server = createServer(async (req, res) => {
       const payload = { text, edit: key };
       const ephemeral = getEphemeralExpiration(body.to);
       const editOptions = ephemeral ? { ephemeralExpiration: ephemeral } : {};
-      const explicitMentions = Array.isArray(body.mentions) ? body.mentions.filter(Boolean) : [];
-      const resolvedExplicit = explicitMentions.map((jid) => {
-        if (jid.includes(":")) return jid;
-        const directoryJid = mentionDirectory.get(mentionKey(jid));
-        if (directoryJid) return directoryJid;
-        const digits = String(jid || "").replace(/\D/g, "");
-        if (digits) return mentionDirectory.get(mentionKey(digits)) || jid;
-        return jid;
-      });
+      const { mentions: resolvedExplicit, mentionAll } = resolveExplicitMentions(body.mentions, body.to);
       if (resolvedExplicit.length) payload.mentions = resolvedExplicit;
+      if (mentionAll) payload.mentionAll = true;
       const result = await socket.sendMessage(body.to, payload, editOptions);
+      let editedMessage = normalizeMessagePayload(result?.message?.protocolMessage?.editedMessage);
+      if (!editedMessage) {
+        const cached = findChatMessage(messageCache, body.to, body.messageId);
+        const previousContext = contextInfoFromMessagePayload(cached?.message);
+        const contextInfo = previousContext ? { ...previousContext } : {};
+        delete contextInfo.mentionedJid;
+        delete contextInfo.nonJidMentions;
+        if (resolvedExplicit.length) contextInfo.mentionedJid = resolvedExplicit;
+        if (mentionAll) contextInfo.nonJidMentions = 1;
+        const extendedTextMessage = { text };
+        if (Object.keys(contextInfo).length) extendedTextMessage.contextInfo = contextInfo;
+        editedMessage = { extendedTextMessage };
+      }
+      cacheEditedMessage(messageCache, key, editedMessage, maxMessageCacheSize);
       sendJson(res, 200, { ok: true, id: result?.key?.id, key: result?.key });
       return;
     }
@@ -1945,11 +2308,16 @@ const server = createServer(async (req, res) => {
       const options = quotedKey(body) || {};
       const ephemeral = getEphemeralExpiration(body.to);
       if (ephemeral) options.ephemeralExpiration = ephemeral;
-      const result = await socket.sendMessage(
-        body.to,
-        resolveMediaPayload(body.type, body.pathOrUrl, body.caption),
-        options,
+      const payload = resolveMediaPayload(
+        body.type,
+        body.pathOrUrl,
+        body.caption,
+        body.fileName,
       );
+      const { mentions, mentionAll } = resolveExplicitMentions(body.mentions, body.to);
+      if (mentions.length) payload.mentions = mentions;
+      if (mentionAll) payload.mentionAll = true;
+      const result = await socket.sendMessage(body.to, payload, options);
       cacheChatMessage(messageCache, result, maxMessageCacheSize);
       sendJson(res, 200, { ok: true, id: result?.key?.id });
       return;
@@ -2021,31 +2389,65 @@ const server = createServer(async (req, res) => {
       sendJson(res, 200, result);
       return;
     }
-    if (req.method === "POST" && url.pathname === "/send/poll") {
+    if (req.method === "POST" && url.pathname === "/send/contact") {
       const body = await readJson(req);
-      if (!body.to || !body.name) {
-        sendJson(res, 400, { error: "missing target jid or poll name" });
+      if (!body.to) {
+        sendJson(res, 400, { error: "missing target jid" });
         return;
       }
-      const values = Array.isArray(body.options) ? body.options.map(String).filter(Boolean) : [];
-      if (values.length < 2) {
-        sendJson(res, 400, { error: "poll requires at least 2 options" });
+      let content;
+      try {
+        content = buildContactContent(body);
+      } catch (error) {
+        sendJson(res, 400, { error: String(error?.message || error) });
         return;
       }
       const options = quotedKey(body) || {};
       const ephemeral = getEphemeralExpiration(body.to);
       if (ephemeral) options.ephemeralExpiration = ephemeral;
-      const result = await socket.sendMessage(
-        body.to,
-        {
-          poll: {
-            name: String(body.name).slice(0, 255),
-            values,
-            selectableCount: Number(body.selectableCount ?? body.selectable_count ?? 0),
-          },
-        },
-        options,
-      );
+      const result = await socket.sendMessage(body.to, content, options);
+      cacheChatMessage(messageCache, result, maxMessageCacheSize);
+      sendJson(res, 200, { ok: true, id: result?.key?.id, key: result?.key });
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/send/event") {
+      const body = await readJson(req);
+      if (!body.to) {
+        sendJson(res, 400, { error: "missing target jid" });
+        return;
+      }
+      let content;
+      try {
+        content = buildEventContent(body);
+      } catch (error) {
+        sendJson(res, 400, { error: String(error?.message || error) });
+        return;
+      }
+      const options = quotedKey(body) || {};
+      const ephemeral = getEphemeralExpiration(body.to);
+      if (ephemeral) options.ephemeralExpiration = ephemeral;
+      const result = await socket.sendMessage(body.to, content, options);
+      cacheChatMessage(messageCache, result, maxMessageCacheSize);
+      sendJson(res, 200, { ok: true, id: result?.key?.id, key: result?.key });
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/send/poll") {
+      const body = await readJson(req);
+      if (!body.to) {
+        sendJson(res, 400, { error: "missing target jid" });
+        return;
+      }
+      let content;
+      try {
+        content = buildPollContent(body);
+      } catch (error) {
+        sendJson(res, 400, { error: String(error?.message || error) });
+        return;
+      }
+      const options = quotedKey(body) || {};
+      const ephemeral = getEphemeralExpiration(body.to);
+      if (ephemeral) options.ephemeralExpiration = ephemeral;
+      const result = await socket.sendMessage(body.to, content, options);
       cacheChatMessage(messageCache, result, maxMessageCacheSize);
       sendJson(res, 200, { ok: true, id: result?.key?.id, key: result?.key });
       return;

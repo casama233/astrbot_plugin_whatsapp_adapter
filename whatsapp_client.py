@@ -70,6 +70,13 @@ class WhatsAppGatewayClient:
         result = await self._request("POST", "/lid/resolve", json_data={"lidJid": lid_jid})
         return result.get("pnJid") or None
 
+    async def group_info(self, group_jid: str) -> dict[str, Any]:
+        return await self._request(
+            "POST",
+            "/group/info",
+            json_data={"groupJid": group_jid},
+        )
+
     async def send_text(
         self,
         to: str,
@@ -111,6 +118,8 @@ class WhatsAppGatewayClient:
         caption: str | None = None,
         quoted_message_id: str | None = None,
         quoted_participant: str | None = None,
+        mentions: list[str] | None = None,
+        file_name: str | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "to": to,
@@ -119,6 +128,10 @@ class WhatsAppGatewayClient:
         }
         if caption:
             payload["caption"] = caption
+        if mentions:
+            payload["mentions"] = mentions
+        if file_name:
+            payload["fileName"] = file_name
         if quoted_message_id:
             payload["quotedMessageId"] = quoted_message_id
         if quoted_participant:
@@ -235,6 +248,46 @@ class WhatsAppGatewayClient:
         if quoted_participant:
             payload["quotedParticipant"] = quoted_participant
         return await self._request("POST", "/send/poll", json_data=payload)
+
+    async def send_contact(
+        self,
+        to: str,
+        display_name: str,
+        phone_number: str,
+        organization: str = "",
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "to": to,
+            "displayName": display_name,
+            "phoneNumber": phone_number,
+        }
+        if organization:
+            payload["organization"] = organization
+        return await self._request("POST", "/send/contact", json_data=payload)
+
+    async def send_event(
+        self,
+        to: str,
+        name: str,
+        start_timestamp_ms: int,
+        end_timestamp_ms: int | None = None,
+        description: str = "",
+        location_name: str = "",
+        location_address: str = "",
+        extra_guests_allowed: bool = False,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "to": to,
+            "name": name,
+            "startTimestampMs": start_timestamp_ms,
+            "description": description,
+            "locationName": location_name,
+            "locationAddress": location_address,
+            "extraGuestsAllowed": extra_guests_allowed,
+        }
+        if end_timestamp_ms is not None:
+            payload["endTimestampMs"] = end_timestamp_ms
+        return await self._request("POST", "/send/event", json_data=payload)
 
     async def restart(self) -> dict[str, Any]:
         return await self._request("POST", "/restart", json_data={})

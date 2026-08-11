@@ -135,11 +135,16 @@ jobs:
           whatsapp_chunking.py
           whatsapp_event.py
           _whatsapp_event_impl.py
+          whatsapp_ai_tools.py
+          whatsapp_identity.py
           group_name_compat.py
           tests
 
       - name: Python tests
         run: python -m unittest discover -v tests
+
+      - name: Install Node dependencies
+        run: npm ci
 
       - name: Node tests
         run: node --test gateway/*.test.mjs scripts/*.test.mjs

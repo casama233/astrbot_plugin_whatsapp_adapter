@@ -15,6 +15,8 @@ class _Group:
     def __init__(self, group_id: str):
         self.group_id = group_id
         self.group_name = None
+        self.group_owner = None
+        self.group_admins = None
 
 
 class _Message:
@@ -43,6 +45,49 @@ class GroupNameCompatibilityTests(unittest.TestCase):
             module.extract_group_name({"groupSubject": "舊插件兼容群"}),
             "舊插件兼容群",
         )
+
+    def test_applies_group_owner_and_admin_snapshot(self):
+        message = _Message()
+        module.apply_group_name(
+            message,
+            {
+                "groupName": "群資料測試",
+                "groupOwner": "15550001",
+                "groupAdmins": ["15550001", 15550002, ""],
+            },
+        )
+        self.assertEqual(message.group.group_owner, "15550001")
+        self.assertEqual(message.group.group_admins, ["15550002"])
+
+    def test_group_admin_snapshot_is_string_deduplicated_and_excludes_owner(self):
+        message = _Message()
+        module.apply_group_name(
+            message,
+            {
+                "groupOwner": 15550001,
+                "groupAdmins": [
+                    15550001,
+                    15550002,
+                    "15550002",
+                    " 15550003 ",
+                    "",
+                ],
+            },
+        )
+        self.assertEqual(message.group.group_owner, "15550001")
+        self.assertEqual(
+            message.group.group_admins,
+            ["15550002", "15550003"],
+        )
+
+    def test_admin_update_still_excludes_owner_from_existing_snapshot(self):
+        message = _Message()
+        message.group.group_owner = "15550001"
+        module.apply_group_name(
+            message,
+            {"groupAdmins": ["15550001", "15550002"]},
+        )
+        self.assertEqual(message.group.group_admins, ["15550002"])
 
     def test_event_group_lookup_accepts_numeric_and_jid_ids(self):
         message = _Message()

@@ -7,6 +7,8 @@ import shutil
 import time
 import traceback
 import weakref
+from collections.abc import Mapping
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +21,7 @@ try:
     from astrbot.core.utils.astrbot_path import get_astrbot_data_path as _get_astrbot_data_path
 except ImportError:
     _get_astrbot_data_path = None
-from astrbot.api.message_components import File, Image, Location, Plain, Record, Reply, Video
+from astrbot.api.message_components import AtAll, File, Image, Location, Plain, Record, Reply, Video
 from astrbot.api.platform import (
     AstrBotMessage,
     At,
@@ -58,71 +60,120 @@ from .whatsapp_config_policy import (
     normalize_pre_ack_public,
 )
 from .whatsapp_helpers import (
+    QuoteState,
     flush_pending_text,
     format_markdown_from_whatsapp,
     process_message_chain,
+)
+from .whatsapp_identity import (
+    IdentityMappingCache,
+    active_auth_session_dir as _active_auth_session_dir,
+    base_lid_jid as _normalize_lid_jid,
+    base_pn_jid as _normalize_pn_jid,
+    identity_user as _identity_user,
+    is_lid_jid as _is_lid_jid,
+    is_pn_jid as _is_pn_jid,
+    load_lid_mappings as _load_identity_mappings,
+    normalize_user_jid as _normalize_user_jid,
+    phone_from_identity as _phone_from_identity,
+    save_lid_mapping as _save_identity_mapping,
 )
 
 
 PLUGIN_DIR = Path(__file__).resolve().parent
 _ACTIVE_ADAPTERS: weakref.WeakSet["WhatsAppPlatformAdapter"] = weakref.WeakSet()
 _RUNTIME_OWNER_REGISTRY: dict[str, weakref.ReferenceType["WhatsAppPlatformAdapter"]] = {}
-_LID_PN_CACHE: dict[str, str] = {}  # lid JID → pn JID (e.g. "xxx@lid" → "yyy@s.whatsapp.net")
-_PN_LID_CACHE: dict[str, str] = {}  # pn JID → lid JID，用於出站時目標 JID 還原
+_LEGACY_IDENTITY_CACHE = IdentityMappingCache()
+# Kept as compatibility aliases for integrations importing these names. Runtime
+# adapters use their own ``IdentityMappingCache`` and never share these maps.
+_LID_PN_CACHE = _LEGACY_IDENTITY_CACHE.lid_to_pn
+_PN_LID_CACHE = _LEGACY_IDENTITY_CACHE.pn_to_lid
+
+
+class AttrDict(dict):
+    """A recursively attribute-accessible mapping compatible with OneBot Event."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__()
+        self.update(*args, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        # aiocqhttp.Event returns None for event fields absent from a payload.
+        return self.get(name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        self[name] = _as_attr_dict(value)
+
+    def __delattr__(self, name: str) -> None:
+        try:
+            del self[name]
+        except KeyError as exc:
+            raise AttributeError(name) from exc
+
+    def __setitem__(self, key: Any, value: Any) -> None:
+        super().__setitem__(key, _as_attr_dict(value))
+
+    def update(self, *args: Any, **kwargs: Any) -> None:
+        for key, value in dict(*args, **kwargs).items():
+            self[key] = value
+
+    def setdefault(self, key: Any, default: Any = None) -> Any:
+        if key not in self:
+            self[key] = default
+        return self[key]
+
+
+def _as_attr_dict(value: Any) -> Any:
+    if isinstance(value, AttrDict):
+        return value
+    if isinstance(value, Mapping):
+        converted = AttrDict()
+        for key, item in value.items():
+            converted[key] = item
+        return converted
+    if isinstance(value, list):
+        return [_as_attr_dict(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_as_attr_dict(item) for item in value)
+    return value
 
 
 def _base_pn_jid(pn_jid: str) -> str:
-    user = str(pn_jid or "").split("@", 1)[0].split(":", 1)[0]
-    return f"{user}@s.whatsapp.net" if user else ""
+    return _normalize_pn_jid(pn_jid)
 
 
 def _base_lid_jid(lid_jid: str) -> str:
-    user = str(lid_jid or "").split("@", 1)[0].split(":", 1)[0]
-    return f"{user}@lid" if user else ""
+    return _normalize_lid_jid(lid_jid)
 
 
-def _cache_lid_mapping(lid_jid: str, pn_jid: str) -> None:
-    if not lid_jid or not pn_jid:
-        return
-    _LID_PN_CACHE[lid_jid] = pn_jid
-    base_lid = _base_lid_jid(lid_jid)
-    if base_lid:
-        _LID_PN_CACHE[base_lid] = pn_jid
-    _PN_LID_CACHE[pn_jid] = lid_jid
-    base_pn = _base_pn_jid(pn_jid)
-    if base_pn:
-        _PN_LID_CACHE[base_pn] = lid_jid
+def _cache_lid_mapping(
+    lid_jid: str,
+    pn_jid: str,
+    cache: IdentityMappingCache | None = None,
+) -> None:
+    (cache if cache is not None else _LEGACY_IDENTITY_CACHE).remember(lid_jid, pn_jid)
 
 
 def _lid_mapping_path(auth_dir: Path, lid_jid: str) -> Path | None:
     """lid JID 對應的磁碟映射文件路徑（lid-mapping-{lid数字}_reverse.json）。"""
-    lid_num = lid_jid.split("@", 1)[0].split(":", 1)[0]
+    lid_num = _identity_user(lid_jid)
     if not lid_num.isdigit():
         return None
-    return auth_dir / f"lid-mapping-{lid_num}_reverse.json"
+    return _active_auth_session_dir(auth_dir) / f"lid-mapping-{lid_num}_reverse.json"
 
 
-def _load_lid_mappings(auth_dir: Path) -> None:
+def _load_lid_mappings(
+    auth_dir: Path,
+    cache: IdentityMappingCache | None = None,
+) -> None:
     """從 Gateway auth 目錄加載所有 lid-mapping-*_reverse.json 到緩存。"""
-    if not auth_dir or not auth_dir.is_dir():
+    if not auth_dir:
         return
-    _LID_PN_CACHE.clear()
-    _PN_LID_CACHE.clear()
+    target = cache if cache is not None else _LEGACY_IDENTITY_CACHE
     try:
-        for f in auth_dir.iterdir():
-            m = re.match(r"^lid-mapping-(\d+)_reverse\.json$", f.name)
-            if not m:
-                continue
-            try:
-                phone = json.loads(f.read_text("utf-8"))
-                if phone and isinstance(phone, str):
-                    lid_jid = f"{m.group(1)}@lid"
-                    pn_jid = f"{phone}@s.whatsapp.net"
-                    _cache_lid_mapping(lid_jid, pn_jid)
-            except Exception:
-                continue
-        if _LID_PN_CACHE:
-            logger.info("已加載 %d 條 lid→PN 映射到緩存", len(_LID_PN_CACHE))
+        loaded = _load_identity_mappings(auth_dir, target)
+        if loaded:
+            logger.info("已加載 %d 條 lid→PN 映射到緩存", loaded)
     except Exception as exc:
         logger.debug("加載 lid 映射失敗: %s", exc)
 
@@ -131,19 +182,15 @@ def _save_lid_mapping(auth_dir: Path, lid_jid: str, pn_jid: str) -> None:
     """持久化 lid→PN 映射到 Gateway auth 目錄。"""
     if not auth_dir:
         return
-    path = _lid_mapping_path(auth_dir, lid_jid)
-    if not path or path.exists():
-        return
     try:
-        auth_dir.mkdir(parents=True, exist_ok=True)
-        pn = re.sub(r"\D", "", pn_jid.split("@", 1)[0].split(":", 1)[0])
-        path.write_text(json.dumps(pn), "utf-8")
+        _save_identity_mapping(auth_dir, lid_jid, pn_jid)
     except Exception:
         pass
 
 
 def _runtime_owner_registry() -> dict[str, weakref.ReferenceType["WhatsAppPlatformAdapter"]]:
     return _RUNTIME_OWNER_REGISTRY
+
 
 LOGO_ABSOLUTE = str(PLUGIN_DIR / "logo.svg")
 # 熱重載時建立版本化 logo 副本，使用 timestamp 確保 cache key 唯一
@@ -894,12 +941,12 @@ class WhatsAppPlatformAdapter(Platform):
         self._platform_settings = platform_settings or {}
         self._registered_commands: list[str] = []
         self._legacy_command_prefix = extract_legacy_command_prefix(sanitized_config)
-        self._send_text_buffers: dict[str, str] = {}
-        self._send_text_sessions: dict[str, MessageSesion] = {}
-        self._send_text_tasks: dict[str, asyncio.Task] = {}
+        self._identity_cache = IdentityMappingCache()
         _ACTIVE_ADAPTERS.add(self)
         self._refresh_registered_commands()
-        _load_lid_mappings(self._auth_dir())
+        identity_auth_dir = self._auth_dir()
+        _load_lid_mappings(identity_auth_dir, self._identity_cache)
+        self._identity_session_dir = _active_auth_session_dir(identity_auth_dir)
         logger.info(
             "WhatsApp platform adapter initialized: gateway=%s auto_start=%s dm_policy=%s allow_from=%s group_policy=%s groups=%s auth_dir=%s",
             self._base_url,
@@ -923,117 +970,95 @@ class WhatsAppPlatformAdapter(Platform):
             logo_path=LOGO_ABSOLUTE,
         )
 
+    def _identity_mappings(
+        self,
+        *,
+        refresh_session: bool = False,
+    ) -> IdentityMappingCache:
+        """Return this adapter/account's private PN/LID mapping cache."""
+        cache = getattr(self, "_identity_cache", None)
+        if cache is None:
+            cache = IdentityMappingCache()
+            self._identity_cache = cache
+        if refresh_session:
+            previous_dir = getattr(self, "_identity_session_dir", None)
+            runtime_config = getattr(self, "config", {}) or {}
+            configured_dir = str(runtime_config.get("auth_dir") or "").strip()
+            # Properly initialized adapters always have ``previous_dir``. The
+            # explicit-config fallback keeps lightweight compatibility objects
+            # useful without invoking data migration just to inspect a cache.
+            if previous_dir is not None or configured_dir:
+                auth_dir = self._auth_dir()
+                active_dir = _active_auth_session_dir(auth_dir)
+                if active_dir != previous_dir:
+                    _load_lid_mappings(auth_dir, cache)
+                    self._identity_session_dir = active_dir
+        return cache
+
+    def _unique_session_enabled(self) -> bool:
+        platform_settings = getattr(self, "_platform_settings", {}) or {}
+        return bool(platform_settings.get("unique_session", False))
+
+    @staticmethod
+    def _delivery_target_from_session_id(session_id: str) -> str:
+        """Recover a WhatsApp group JID from AstrBot's sender_group session."""
+        value = str(session_id or "").strip()
+        if value.endswith("@g.us") and "_" in value:
+            group_jid = value.rsplit("_", 1)[-1]
+            if group_jid.endswith("@g.us"):
+                return group_jid
+        return value
+
     async def send_by_session(self, session: MessageSesion, message_chain: MessageChain):
         target = getattr(session, "session_id", None) or getattr(session, "message_session_id", None)
         if not target:
-            logger.debug("WhatsApp send_by_session 跳过自訂發送（無目標會話）")
-            await super().send_by_session(session, message_chain)
-            return
+            raise ValueError("WhatsApp send_by_session 缺少目标会话")
+
+        target = self._delivery_target_from_session_id(str(target))
+        if "@" not in target:
+            if getattr(session, "message_type", None) == MessageType.GROUP_MESSAGE:
+                group_id = "".join(character for character in target if character.isdigit())
+                target = f"{group_id}@g.us" if group_id else target
+            else:
+                target = _normalize_pn_jid(target) or target
+        elif _is_lid_jid(target) or _is_pn_jid(target):
+            target = _normalize_user_jid(target)
 
         # PN→lid 正向解析：若目標是 PN 且有緩存 lid，用 lid 確保訊息歸流正確
-        target_key = str(target)
-        lid_target = _PN_LID_CACHE.get(target_key) if target else None
-        if not lid_target and target_key.endswith("@s.whatsapp.net"):
-            lid_target = _PN_LID_CACHE.get(_base_pn_jid(target_key))
+        target_key = target
+        lid_target = self._identity_mappings(refresh_session=True).lid_for_pn(target_key)
         if lid_target:
             target = lid_target
 
-        plain_text = self._plain_text_only(message_chain)
-        if plain_text is not None and self._segmented_reply_enabled():
-            self._buffer_segmented_text(str(target), session, plain_text)
-            return
-
         logger.debug(
             "WhatsApp send_by_session: target=%s components=%s",
             target,
             [component.__class__.__name__ for component in message_chain.chain],
         )
         await self._send_presence(target, "composing")
-        try:
-            pending_caption, pending_mentions = await process_message_chain(
-                self.client, target, message_chain.chain,
-                link_preview_single_url=bool(self.config.get("link_preview_single_url", True)),
-                text_chunk_limit=int(self.config.get("text_chunk_limit") or 4000),
-                use_caption=str(self.config.get("media_caption_mode") or "separate") == "caption",
-            )
-            await flush_pending_text(
-                self.client, target, pending_caption, pending_mentions,
-                link_preview_single_url=bool(self.config.get("link_preview_single_url", True)),
-                text_chunk_limit=int(self.config.get("text_chunk_limit") or 4000),
-            )
-            await super().send_by_session(session, message_chain)
-        finally:
-            await self._send_presence(target, "paused")
-
-    def _segmented_reply_enabled(self) -> bool:
-        self._ensure_send_buffer_state()
-        segmented = (getattr(self, "_platform_settings", {}) or {}).get("segmented_reply") or {}
-        return bool(segmented.get("enable"))
-
-    def _ensure_send_buffer_state(self) -> None:
-        if not hasattr(self, "_platform_settings"):
-            self._platform_settings = {}
-        if not hasattr(self, "_send_text_buffers"):
-            self._send_text_buffers = {}
-        if not hasattr(self, "_send_text_sessions"):
-            self._send_text_sessions = {}
-        if not hasattr(self, "_send_text_tasks"):
-            self._send_text_tasks = {}
-
-    def _plain_text_only(self, message_chain: MessageChain) -> str | None:
-        parts: list[str] = []
-        for component in message_chain.chain:
-            if not isinstance(component, Plain):
-                return None
-            parts.append(str(component.text or ""))
-        text = "".join(parts)
-        return text if text.strip() else None
-
-    def _buffer_segmented_text(self, target: str, session: MessageSesion, text: str) -> None:
-        self._ensure_send_buffer_state()
-        previous = self._send_text_buffers.get(target)
-        self._send_text_buffers[target] = f"{previous}\n\n{text}" if previous else text
-        self._send_text_sessions[target] = session
-        task = self._send_text_tasks.get(target)
-        if task and not task.done():
-            task.cancel()
-        self._send_text_tasks[target] = asyncio.create_task(self._flush_segmented_text_later(target))
-
-    async def _flush_segmented_text_later(self, target: str) -> None:
-        try:
-            self._ensure_send_buffer_state()
-            await asyncio.sleep(2.2)
-            text = self._send_text_buffers.pop(target, "")
-            session = self._send_text_sessions.pop(target, None)
-            self._send_text_tasks.pop(target, None)
-            if not text or session is None:
-                return
-            logger.debug("WhatsApp 聚合分段纯文本发送: target=%s text_len=%s", target, len(text))
-            await self._send_text_message(target, session, MessageChain().message(text))
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            logger.warning("WhatsApp 聚合分段文本发送失败: target=%s error=%s", target, exc)
-
-    async def _send_text_message(self, target: str, session: MessageSesion, message_chain: MessageChain) -> None:
-        logger.debug(
-            "WhatsApp send_by_session: target=%s components=%s",
-            target,
-            [component.__class__.__name__ for component in message_chain.chain],
+        reply = next(
+            (component for component in message_chain.chain if isinstance(component, Reply)),
+            None,
         )
-        await self._send_presence(target, "composing")
+        quote_state = QuoteState(
+            str(getattr(reply, "id", "") or "") or None,
+        )
         try:
             pending_caption, pending_mentions = await process_message_chain(
                 self.client, target, message_chain.chain,
                 link_preview_single_url=bool(self.config.get("link_preview_single_url", True)),
                 text_chunk_limit=int(self.config.get("text_chunk_limit") or 4000),
                 use_caption=str(self.config.get("media_caption_mode") or "separate") == "caption",
+                quote_state=quote_state,
             )
             await flush_pending_text(
                 self.client, target, pending_caption, pending_mentions,
                 link_preview_single_url=bool(self.config.get("link_preview_single_url", True)),
                 text_chunk_limit=int(self.config.get("text_chunk_limit") or 4000),
+                quote_state=quote_state,
             )
+            if quote_state.sent_count == 0:
+                raise RuntimeError("WhatsApp message produced no deliverable content")
             await super().send_by_session(session, message_chain)
         finally:
             await self._send_presence(target, "paused")
@@ -1118,7 +1143,9 @@ class WhatsAppPlatformAdapter(Platform):
         self.client.update_base_url(self._base_url)
         await self._stop_health_monitor()
         self._force_gateway_restart = True
-        _load_lid_mappings(self._auth_dir())
+        identity_auth_dir = self._auth_dir()
+        _load_lid_mappings(identity_auth_dir, self._identity_mappings())
+        self._identity_session_dir = _active_auth_session_dir(identity_auth_dir)
         if self._stopped.is_set():
             return
         self._reconnect_event.set()
@@ -1140,7 +1167,7 @@ class WhatsAppPlatformAdapter(Platform):
         self._status = PlatformStatus.STOPPED
 
     async def convert_message(self, data: dict[str, Any]) -> AstrBotMessage | None:
-        if data.get("fromMe"):
+        if data.get("fromMe") and self.config.get("ignore_self_messages", False):
             logger.debug("忽略自身消息: message_id=%s", data.get("messageId"))
             return None
 
@@ -1148,38 +1175,58 @@ class WhatsAppPlatformAdapter(Platform):
         sender_jid = str(data.get("senderJid") or chat_jid)
         sender_pn = str(data.get("senderPn") or "")
         sender_phone = str(data.get("senderPhone") or "")
+        identity_cache = self._identity_mappings(refresh_session=True)
+
+        if _is_lid_jid(chat_jid) or _is_pn_jid(chat_jid):
+            chat_jid = _normalize_user_jid(chat_jid)
+            data["chatJid"] = chat_jid
+        if _is_lid_jid(sender_jid) or _is_pn_jid(sender_jid):
+            sender_jid = _normalize_user_jid(sender_jid)
+            data["senderJid"] = sender_jid
+        if _is_pn_jid(sender_pn):
+            sender_pn = _base_pn_jid(sender_pn)
 
         if sender_phone:
-            digits = "".join(ch for ch in sender_phone if ch.isdigit())
-            if digits and not sender_pn.endswith("@s.whatsapp.net"):
+            sender_phone = _phone_from_identity(sender_phone)
+            digits = sender_phone.lstrip("+")
+            if digits and not _is_pn_jid(sender_pn):
                 sender_pn = f"{digits}@s.whatsapp.net"
 
         # 缓存 lid→PN 映射，用于出站 @mention 时解析
-        if sender_jid.endswith("@lid") and sender_pn.endswith("@s.whatsapp.net"):
-            if sender_jid not in _LID_PN_CACHE:
-                _cache_lid_mapping(sender_jid, sender_pn)
+        if _is_lid_jid(sender_jid) and _is_pn_jid(sender_pn):
+            if not identity_cache.pn_for_lid(sender_jid):
+                _cache_lid_mapping(sender_jid, sender_pn, identity_cache)
                 _save_lid_mapping(self._auth_dir(), sender_jid, sender_pn)
-        if chat_jid.endswith("@lid") and chat_jid not in _LID_PN_CACHE and sender_pn.endswith("@s.whatsapp.net"):
-            _cache_lid_mapping(chat_jid, sender_pn)
+        if (
+            _is_lid_jid(chat_jid)
+            and not identity_cache.pn_for_lid(chat_jid)
+            and _is_pn_jid(sender_pn)
+        ):
+            _cache_lid_mapping(chat_jid, sender_pn, identity_cache)
             _save_lid_mapping(self._auth_dir(), chat_jid, sender_pn)
 
         # Baileys 并非每一条消息都会带 senderPn；一旦学到过映射，后续必须
         # 继续使用同一个手机号身份，避免同一成员在 QQ 式 user_id 语义下分裂。
-        if not sender_pn and sender_jid.endswith("@lid"):
-            sender_pn = _LID_PN_CACHE.get(sender_jid) or _LID_PN_CACHE.get(_base_lid_jid(sender_jid), "")
-        if not sender_phone and sender_pn.endswith("@s.whatsapp.net"):
-            digits = self._numeric_whatsapp_id(sender_pn)
-            sender_phone = f"+{digits}" if digits else ""
+        if not _is_pn_jid(sender_pn) and _is_lid_jid(sender_jid):
+            sender_pn = identity_cache.pn_for_lid(sender_jid)
+        if not sender_phone and _is_pn_jid(sender_pn):
+            sender_phone = _phone_from_identity(sender_pn)
         if sender_pn:
             data["senderPn"] = sender_pn
         if sender_phone:
             data["senderPhone"] = sender_phone
 
-        # session_id 統一使用原始 JID（lid 或 group），不做 PN 轉換
-        if chat_jid.endswith("@g.us"):
+        # Gateway canonicalSessionJid keeps a direct conversation stable when
+        # WhatsApp switches that contact between PN and LID addressing modes.
+        canonical_session_jid = str(data.get("canonicalSessionJid") or "")
+        if _is_lid_jid(canonical_session_jid) or _is_pn_jid(canonical_session_jid):
+            canonical_session_jid = _normalize_user_jid(canonical_session_jid)
+        if canonical_session_jid:
+            normalized_chat_jid = canonical_session_jid
+        elif chat_jid.endswith("@g.us"):
             normalized_chat_jid = chat_jid
-        elif chat_jid.endswith("@lid") or sender_jid.endswith("@lid"):
-            normalized_chat_jid = sender_jid if sender_jid.endswith("@lid") else chat_jid
+        elif _is_lid_jid(chat_jid) or _is_lid_jid(sender_jid):
+            normalized_chat_jid = sender_jid if _is_lid_jid(sender_jid) else chat_jid
         else:
             normalized_chat_jid = chat_jid
         extras = data.get("extras") or {}
@@ -1191,6 +1238,10 @@ class WhatsAppPlatformAdapter(Platform):
             if text and bool(self.config.get("parse_inbound_formatting", True)):
                 text = format_markdown_from_whatsapp(text)
         media_items = data.get("media") or []
+        # Gateway uses this generic marker only as a transport summary.  Once
+        # a concrete media record exists, let the component chain represent
+        # either the downloaded file or one explicit ``unavailable`` marker;
+        # otherwise failed media without a caption appears twice.
         if media_items and re.fullmatch(r"<media:[a-z]+>(?: x\d+)?", text.strip()):
             text = ""
         is_group = chat_jid.endswith("@g.us")
@@ -1199,7 +1250,7 @@ class WhatsAppPlatformAdapter(Platform):
             sender_phone = ""
 
         user_id = ""
-        if sender_pn and sender_pn.endswith("@s.whatsapp.net"):
+        if _is_pn_jid(sender_pn):
             user_id = self._numeric_whatsapp_id(sender_pn)
         elif sender_phone:
             user_id = "".join(ch for ch in sender_phone if ch.isdigit())
@@ -1209,15 +1260,19 @@ class WhatsAppPlatformAdapter(Platform):
         abm = AstrBotMessage()
         abm.type = MessageType.GROUP_MESSAGE if is_group else MessageType.FRIEND_MESSAGE
         abm.group_id = group_id
-        text_without_mentions = self._text_without_visible_mentions(data, text)
         abm.message_str = self._qq_style_message_str(data, text)
         abm.sender = MessageMember(
             user_id=user_id,
             nickname=str(data.get("senderName") or sender_pn or sender_jid),
         )
-        abm.message = self._message_chain(data, text_without_mentions)
-        abm.self_id = str(data.get("selfJid") or "whatsapp")
-        abm.session_id = normalized_chat_jid
+        abm.message = self._message_chain(data, text)
+        raw_self_jid = str(data.get("selfJid") or "")
+        raw_self_lid = str(data.get("selfLid") or "")
+        abm.self_id = self._numeric_whatsapp_id(raw_self_jid or raw_self_lid) or "whatsapp"
+        if is_group and self._unique_session_enabled():
+            abm.session_id = f"{str(user_id)}_{chat_jid}"
+        else:
+            abm.session_id = normalized_chat_jid
         abm.message_id = str(data.get("messageId") or "")
         try:
             abm.timestamp = int(float(data.get("timestamp") or time.time()))
@@ -1226,23 +1281,28 @@ class WhatsAppPlatformAdapter(Platform):
 
         # 暴露常用 OneBot 同名字段，方便原本面向 QQ raw_message 的插件复用；
         # WhatsApp 原始 JID 字段仍完整保留，不能用这些别名参与实际投递。
-        data.setdefault("post_type", "message")
-        data.setdefault("message_type", "group" if is_group else "private")
-        data.setdefault("user_id", user_id)
+        data["post_type"] = "message"
+        data["message_type"] = "group" if is_group else "private"
+        data["sub_type"] = "normal" if is_group else "friend"
+        data["user_id"] = str(user_id)
         if is_group:
-            data.setdefault("group_id", group_id)
-        data.setdefault("self_id", abm.self_id)
-        data.setdefault("message_id", abm.message_id)
+            data["group_id"] = str(group_id or "")
+        elif "group_id" in data:
+            data["group_id"] = str(data["group_id"])
+        data["self_id"] = str(abm.self_id)
+        data["message_id"] = str(abm.message_id)
         data.setdefault("time", abm.timestamp)
-        data.setdefault(
-            "sender",
-            {
-                "user_id": user_id,
-                "nickname": abm.sender.nickname,
-                "card": abm.sender.nickname if is_group else "",
-            },
-        )
-        abm.raw_message = data
+        data.setdefault("font", 0)
+        data.setdefault("raw_message", str(data.get("text") or ""))
+        data.setdefault("message", self._onebot_message_projection(abm.message))
+        raw_sender = data.get("sender")
+        sender_projection = dict(raw_sender) if isinstance(raw_sender, Mapping) else {}
+        sender_projection["user_id"] = str(user_id)
+        sender_projection.setdefault("nickname", abm.sender.nickname)
+        sender_projection.setdefault("card", abm.sender.nickname if is_group else "")
+        sender_projection.setdefault("role", str(data.get("senderRole") or "member"))
+        data["sender"] = sender_projection
+        abm.raw_message = _as_attr_dict(data)
         logger.debug(
             "Converted WhatsApp message: type=%s session=%s sender=%s message_id=%s chain=%s",
             abm.type,
@@ -1263,7 +1323,12 @@ class WhatsAppPlatformAdapter(Platform):
                 logger.info("忽略自身消息: sender=%s", sender_jid)
                 return
         is_private = message.type == MessageType.FRIEND_MESSAGE
-        is_self_mentioned = self._message_mentions_self(raw)
+        platform_settings = getattr(self, "_platform_settings", {}) or {}
+        ignore_at_all = bool(platform_settings.get("ignore_at_all", False))
+        is_self_mentioned = self._message_mentions_self(
+            raw,
+            include_at_all=not ignore_at_all,
+        )
         is_reply_to_self = self._reply_targets_self(raw)
         is_reaction_only = self._is_reaction_only(raw)
         original_text = message.message_str or ""
@@ -1293,11 +1358,11 @@ class WhatsAppPlatformAdapter(Platform):
             link_preview_single_url=bool(self.config.get("link_preview_single_url", True)),
             typing_indicator=bool(self.config.get("typing_indicator", True)),
             ack_done_emoji=str(self.config.get("pre_ack_done_emoji", "✅") or "✅"),
-            unsupported_streaming_strategy=str(
-                (getattr(self, "_platform_settings", {}) or {}).get("unsupported_streaming_strategy") or ""
-            ),
             streaming_edit_throttle=float(self.config.get("streaming_edit_throttle") or 1.0),
         )
+        # Match aiocqhttp's security boundary: platform group roles remain in
+        # raw_message.sender.role, while AstrBot promotes only IDs configured in
+        # its global admins_id list to event.role == "admin".
         sender_allowed = await self._is_sender_allowed(raw, is_private)
         pre_ack_enabled = bool(self.config.get("pre_ack_emoji", True))
         pre_ack_private = bool(self.config.get("pre_ack_private", True))
@@ -1310,6 +1375,12 @@ class WhatsAppPlatformAdapter(Platform):
             logger.info("忽略未授權發送者: session=%s sender=%s",
                           message.session_id, raw.get("senderJid"))
             return
+        # Keep protocol wake semantics independent from the optional reaction
+        # acknowledgement. AstrBot's core uses these flags in the same way as
+        # the QQ adapter, including when pre-ack is disabled.
+        if is_self_mentioned or is_reply_to_self:
+            event.is_at_or_wake_command = True
+            event.is_wake = True
         if pre_ack_enabled and not is_reaction_only:
             if is_private:
                 should_ack = pre_ack_private
@@ -1368,72 +1439,206 @@ class WhatsAppPlatformAdapter(Platform):
         return cleaned.strip()
 
     def _qq_style_message_str(self, data: dict[str, Any], text: str) -> str:
-        """按 QQ 适配器语义生成 message_str，同时保留 WhatsApp 正文顺序。"""
-        value = str(text or "")
+        """Build the same plain-text mention view as aiocqhttp."""
+
+        parts: list[str] = []
+        first_self_processed = False
+        self_id = self._numeric_whatsapp_id(
+            str(data.get("selfJid") or data.get("selfLid") or ""),
+        )
+        for component in self._ordered_text_components(data, text):
+            if isinstance(component, Plain):
+                parts.append(str(component.text or ""))
+                continue
+            if not isinstance(component, At):
+                continue
+            mention_id = str(getattr(component, "qq", "") or "")
+            if isinstance(component, AtAll) or mention_id.lower() == "all":
+                # aiocqhttp keeps At(qq="all") in the component chain for
+                # wake checks but omits it from message_str.
+                continue
+            if mention_id == self_id and not first_self_processed:
+                first_self_processed = True
+                parts.append(" ")
+                continue
+            display_name = str(getattr(component, "name", "") or mention_id)
+            parts.append(f" @{display_name}({mention_id}) ")
+        visible = "".join(parts).strip()
+        native_event = (data.get("extras") or {}).get("event")
+        if isinstance(native_event, dict):
+            # The Gateway's short text is only a fallback.  Expose the full
+            # native event metadata in the same plain-text view used by
+            # QQ-oriented plugins and the model.
+            visible = self._native_event_text(native_event)
+        # A failed download must remain visible to plugins and the model even
+        # when the WhatsApp media message also has a caption.  The component
+        # chain already carries the same placeholder; mirror it in
+        # ``message_str`` because many QQ-oriented plugins inspect only that
+        # plain-text projection.
+        unavailable: list[str] = []
+        for media in data.get("media") or []:
+            if not isinstance(media, dict) or media.get("path") or media.get("url"):
+                continue
+            marker = f"<media:{media.get('type') or 'unknown'} unavailable>"
+            if marker not in visible and marker not in unavailable:
+                unavailable.append(marker)
+        return " ".join(part for part in (visible, *unavailable) if part).strip()
+
+    def _mention_entries(self, data: dict[str, Any]) -> list[dict[str, Any]]:
         mentioned_jids = data.get("mentionedJids") or []
         if not isinstance(mentioned_jids, (list, tuple, set)):
-            return value.strip()
+            return []
         mentioned_names = data.get("mentionedNames") or {}
         if not isinstance(mentioned_names, dict):
             mentioned_names = {}
-        self_id = str(data.get("selfJid") or "")
-        self_lid = str(data.get("selfLid") or "")
-        first_self_processed = False
-        missing_mentions: list[str] = []
-
+        raw_self_jid = str(data.get("selfJid") or "")
+        raw_self_lid = str(data.get("selfLid") or "")
+        standard_self_id = self._numeric_whatsapp_id(raw_self_jid or raw_self_lid)
+        identity_cache = self._identity_mappings()
+        entries: list[dict[str, Any]] = []
+        if data.get("mentionAll"):
+            entries.append(
+                {
+                    "jid": "all",
+                    "id": "all",
+                    "name": "全体成员",
+                    "is_self": False,
+                    "is_all": True,
+                    "tokens": {"all"},
+                }
+            )
         for raw_jid in mentioned_jids:
-            mentioned = str(raw_jid or "")
-            if not mentioned:
+            jid = str(raw_jid or "")
+            if not jid:
                 continue
-            is_self = self._is_self_mention(mentioned, self_id, self_lid)
-            display_id = self._numeric_whatsapp_id(mentioned) or mentioned
-            display_name = str(mentioned_names.get(mentioned) or display_id)
-            if is_self and not first_self_processed:
-                replacement = " "
-                first_self_processed = True
-            else:
-                replacement = f" @{display_name}({display_id}) "
-
+            is_self = self._is_self_mention(jid, raw_self_jid, raw_self_lid)
+            mapped_pn = identity_cache.pn_for_lid(jid) if _is_lid_jid(jid) else ""
+            mapped_lid = identity_cache.lid_for_pn(jid) if _is_pn_jid(jid) else ""
+            standard_id = standard_self_id if is_self else self._numeric_whatsapp_id(mapped_pn or jid)
+            if not standard_id:
+                standard_id = self._whatsapp_user_id(jid)
+            display_name = str(
+                mentioned_names.get(jid)
+                or (mentioned_names.get(mapped_pn) if mapped_pn else "")
+                or (mentioned_names.get(mapped_lid) if mapped_lid else "")
+                or standard_id
+            )
             tokens = {
-                mentioned.split("@", 1)[0].split(":", 1)[0],
+                self._whatsapp_user_id(jid),
+                standard_id,
+                display_name.lstrip("@"),
             }
+            for alias in (mapped_pn, mapped_lid):
+                if alias:
+                    tokens.add(self._whatsapp_user_id(alias))
             if is_self:
-                for own_jid in (self_id, self_lid):
-                    token = own_jid.split("@", 1)[0].split(":", 1)[0]
-                    if token:
-                        tokens.add(token)
+                tokens.update(
+                    self._whatsapp_user_id(value)
+                    for value in (raw_self_jid, raw_self_lid)
+                    if value
+                )
             tokens.discard("")
-            if not tokens:
-                if replacement.strip():
-                    missing_mentions.append(replacement.strip())
-                continue
-            pattern = r"[ \t]*(?<![\w@])@(?:" + "|".join(
-                re.escape(token) for token in sorted(tokens, key=len, reverse=True)
-            ) + r")(?![\w@])[ \t]*"
-            value, count = re.subn(pattern, lambda _match: replacement, value, count=1)
-            if count == 0 and replacement.strip():
-                missing_mentions.append(replacement.strip())
+            entries.append(
+                {
+                    "jid": jid,
+                    "id": standard_id,
+                    "name": display_name,
+                    "is_self": is_self,
+                    "is_all": False,
+                    "tokens": tokens,
+                }
+            )
+        return entries
 
-        if missing_mentions:
-            value = " ".join([*missing_mentions, value])
-        return value.strip()
+    def _ordered_text_components(
+        self,
+        data: dict[str, Any],
+        text: str,
+    ) -> list[Any]:
+        """Split visible WhatsApp mention tokens without moving their position."""
+
+        value = str(text or "")
+        entries = self._mention_entries(data)
+        if not entries:
+            return [Plain(text=value)] if value else []
+
+        token_entries: dict[str, list[tuple[int, dict[str, Any]]]] = {}
+        for index, entry in enumerate(entries):
+            for token in entry["tokens"]:
+                token_entries.setdefault(str(token).casefold(), []).append((index, entry))
+        tokens = sorted(
+            {token for entry in entries for token in entry["tokens"] if token},
+            key=lambda token: len(str(token)),
+            reverse=True,
+        )
+        if not tokens:
+            mentions = [self._mention_component(entry) for entry in entries]
+            return [*mentions, *([Plain(text=value)] if value else [])]
+
+        pattern = re.compile(
+            r"[ \t]*(?<![\w@])@(?P<token>"
+            + "|".join(re.escape(str(token)) for token in tokens)
+            + r")(?![\w@])[ \t]*",
+            re.IGNORECASE,
+        )
+        result: list[Any] = []
+        used: set[int] = set()
+        cursor = 0
+        for match in pattern.finditer(value):
+            plain = value[cursor : match.start()]
+            if plain:
+                result.append(Plain(text=plain))
+            candidates = token_entries.get(match.group("token").casefold()) or []
+            if candidates:
+                index, entry = next(
+                    ((idx, item) for idx, item in candidates if idx not in used),
+                    candidates[0],
+                )
+                used.add(index)
+                result.append(self._mention_component(entry))
+            cursor = match.end()
+        tail = value[cursor:]
+        if tail:
+            result.append(Plain(text=tail))
+
+        missing = [
+            self._mention_component(entry)
+            for index, entry in enumerate(entries)
+            if index not in used
+        ]
+        return [*missing, *result]
+
+    @staticmethod
+    def _mention_component(entry: dict[str, Any]) -> Any:
+        if entry.get("is_all"):
+            return AtAll(name=str(entry.get("name") or "全体成员"))
+        return At(qq=entry["id"], name=entry["name"])
 
     def _message_chain(self, data: dict[str, Any], text: str) -> list[Any]:
         chain: list[Any] = []
-        self_id = str(data.get("selfJid") or "whatsapp")
-        self_lid = str(data.get("selfLid") or "")
-        mentioned_names = data.get("mentionedNames") or {}
-        if not isinstance(mentioned_names, dict):
-            mentioned_names = {}
+        raw_self_jid = str(data.get("selfJid") or "")
+        raw_self_lid = str(data.get("selfLid") or "")
+        standard_self_id = self._numeric_whatsapp_id(raw_self_jid or raw_self_lid) or "whatsapp"
         quoted_data = data.get("quoted")
         if quoted_data:
+            quoted_data = dict(quoted_data)
+            quoted_data.setdefault("selfJid", raw_self_jid)
+            quoted_data.setdefault("selfLid", raw_self_lid)
             quoted_text = str(quoted_data.get("text") or "")
             if quoted_text and bool(self.config.get("parse_inbound_formatting", True)):
                 quoted_text = format_markdown_from_whatsapp(quoted_text)
             quoted_chain = self._quoted_media_chain(quoted_data, quoted_text=quoted_text)
-            quoted_sender = str(quoted_data.get("participant") or "")
-            quoted_sender_id = self._numeric_whatsapp_id(quoted_sender) if quoted_sender else "0"
+            quoted_sender = str(
+                quoted_data.get("participantPn")
+                or quoted_data.get("participant")
+                or ""
+            )
+            if self._is_self_mention(quoted_sender, raw_self_jid, raw_self_lid):
+                quoted_sender_id = standard_self_id
+            else:
+                quoted_sender_id = self._numeric_whatsapp_id(quoted_sender) if quoted_sender else "0"
             quoted_sender_name = str(quoted_data.get("participantName") or quoted_sender)
+            quoted_message_str = self._qq_style_message_str(quoted_data, quoted_text)
             try:
                 quoted_timestamp = int(float(quoted_data.get("timestamp") or 0))
             except (TypeError, ValueError):
@@ -1444,31 +1649,28 @@ class WhatsAppPlatformAdapter(Platform):
                 sender_id=quoted_sender_id,
                 sender_nickname=quoted_sender_name,
                 time=quoted_timestamp,
-                message_str=quoted_text,
-                text=quoted_text,
+                message_str=quoted_message_str,
+                text=quoted_message_str,
                 qq=quoted_sender_id,
             ))
-        for mentioned_jid in data.get("mentionedJids") or []:
-            mentioned = str(mentioned_jid or "")
-            if not mentioned:
-                continue
-            at_id = self_id if self._is_self_mention(mentioned, self_id, self_lid) else mentioned
-            display_name = str(mentioned_names.get(mentioned) or mentioned)
-            logger.info(
-                "WhatsApp @提及映射: 提及=%s 昵称=%s at_id=%s self_id=%s self_lid=%s",
-                mentioned,
-                display_name,
-                at_id,
-                self_id,
-                self_lid,
-            )
-            chain.append(At(qq=at_id, name=display_name))
         extras = data.get("extras") or {}
         reaction = extras.get("reaction")
-        display_text = text or (self._reaction_message_text(reaction) if reaction else "")
-        if display_text:
-            chain.append(Plain(text=display_text))
         location = extras.get("location")
+        contact = extras.get("contact")
+        button_response = extras.get("buttonResponse")
+        list_response = extras.get("listResponse")
+        poll = extras.get("poll")
+        native_event = extras.get("event")
+        has_structured_summary = any(
+            (location, contact, button_response, list_response, poll, native_event)
+        )
+        display_text = text or (self._reaction_message_text(reaction) if reaction else "")
+        if display_text and not has_structured_summary:
+            chain.extend(self._ordered_text_components(data, display_text))
+        elif data.get("mentionedJids"):
+            # Structured messages rarely carry mentions, but retain any real
+            # mention metadata rather than discarding it with the summary.
+            chain.extend(self._ordered_text_components(data, ""))
         if location:
             chain.append(Location(
                 lat=float(location.get("latitude") or 0),
@@ -1476,7 +1678,6 @@ class WhatsAppPlatformAdapter(Platform):
                 title=str(location.get("name") or ""),
                 content=str(location.get("address") or ""),
             ))
-        contact = extras.get("contact")
         if contact:
             name = str(contact.get("displayName") or "")
             vcard = str(contact.get("vcard") or "")
@@ -1484,18 +1685,15 @@ class WhatsAppPlatformAdapter(Platform):
             label = name or (phones[0] if phones else "Contact")
             detail = f"{label}: {', '.join(phones)}" if phones else label
             chain.append(Plain(text=f"📇 {detail}"))
-        button_response = extras.get("buttonResponse")
         if button_response:
             selected = str(button_response.get("selectedDisplayText") or button_response.get("selectedButtonId") or "")
             if selected:
                 chain.append(Plain(text=f"[Button] {selected}"))
-        list_response = extras.get("listResponse")
         if list_response:
             title = str(list_response.get("title") or "")
             row_id = str(list_response.get("singleSelectReply") or "")
             if title or row_id:
                 chain.append(Plain(text=f"[List] {title or row_id}"))
-        poll = extras.get("poll")
         if poll:
             name = str(poll.get("name") or "Poll")
             options = poll.get("options") or []
@@ -1508,15 +1706,21 @@ class WhatsAppPlatformAdapter(Platform):
             else:
                 detail = f"[Poll] {detail}"
             chain.append(Plain(text=detail))
+        if isinstance(native_event, dict):
+            chain.append(Plain(text=self._native_event_text(native_event)))
         for media in data.get("media") or []:
             media_type = media.get("type")
             path = media.get("path") or media.get("url") or ""
             if not path:
+                chain.append(Plain(text=f"<media:{media_type or 'unknown'} unavailable>"))
                 continue
             if media_type == "image":
                 chain.append(Image(file=path, path=path))
             elif media_type == "sticker":
-                chain.append(Plain(text="[Sticker]"))
+                # A sticker is still image content for AstrBot/LLM consumers;
+                # the generated filename retains "sticker" so outbound echo
+                # can recover native sticker transport.
+                chain.append(Image(file=path, path=path))
             elif media_type == "audio":
                 chain.append(Record(file=path))
             elif media_type == "video":
@@ -1537,6 +1741,49 @@ class WhatsAppPlatformAdapter(Platform):
             chain.append(Plain(text=""))
         return chain
 
+    @staticmethod
+    def _native_event_text(event: dict[str, Any]) -> str:
+        def timestamp_text(value: Any) -> str:
+            try:
+                seconds = float(value)
+                if not seconds:
+                    return ""
+                return (
+                    datetime.fromtimestamp(seconds, timezone.utc)
+                    .isoformat(timespec="seconds")
+                    .replace("+00:00", "Z")
+                )
+            except (OSError, OverflowError, TypeError, ValueError):
+                return ""
+
+        state = "Cancelled" if bool(event.get("isCanceled")) else "Event"
+        parts = [f"[{state}] {str(event.get('name') or 'WhatsApp event').strip()}"]
+        start = timestamp_text(event.get("startTime"))
+        end = timestamp_text(event.get("endTime"))
+        if start:
+            parts.append(f"{start} → {end}" if end else start)
+        location = event.get("location") or {}
+        if isinstance(location, dict):
+            place = " — ".join(
+                value
+                for value in (
+                    str(location.get("name") or "").strip(),
+                    str(location.get("address") or "").strip(),
+                )
+                if value
+            )
+            if place:
+                parts.append(place)
+        description = str(event.get("description") or "").strip()
+        if description:
+            parts.append(description)
+        join_link = str(event.get("joinLink") or "").strip()
+        if join_link:
+            parts.append(join_link)
+        if bool(event.get("extraGuestsAllowed")):
+            parts.append("extra guests allowed")
+        return " | ".join(parts)
+
     def _quoted_media_chain(
         self,
         quoted_data: dict[str, Any],
@@ -1547,16 +1794,17 @@ class WhatsAppPlatformAdapter(Platform):
         if quoted_text is None:
             quoted_text = str(quoted_data.get("text") or "")
         if quoted_text and not quoted_text.startswith("<media:"):
-            chain.append(Plain(text=quoted_text))
+            chain.extend(self._ordered_text_components(quoted_data, quoted_text))
         for media in quoted_data.get("media") or []:
             media_type = media.get("type")
             path = media.get("path") or media.get("url") or ""
             if not path:
+                chain.append(Plain(text=f"<media:{media_type or 'unknown'} unavailable>"))
                 continue
             if media_type == "image":
                 chain.append(Image(file=path, path=path))
             elif media_type == "sticker":
-                chain.append(Plain(text="[Sticker]"))
+                chain.append(Image(file=path, path=path))
             elif media_type == "audio":
                 chain.append(Record(file=path))
             elif media_type == "video":
@@ -1564,6 +1812,78 @@ class WhatsAppPlatformAdapter(Platform):
             elif media_type == "document":
                 chain.append(File(name=str(media.get("fileName") or Path(path).name), file=path))
         return chain
+
+    @staticmethod
+    def _onebot_message_projection(chain: list[Any]) -> list[dict[str, Any]]:
+        """Return a minimal truthful OneBot-shaped view for QQ-oriented plugins."""
+
+        projected: list[dict[str, Any]] = []
+        for component in chain:
+            if isinstance(component, Plain):
+                projected.append(
+                    {"type": "text", "data": {"text": str(component.text or "")}},
+                )
+            elif isinstance(component, At):
+                data = {"qq": str(getattr(component, "qq", "") or "")}
+                name = str(getattr(component, "name", "") or "")
+                if name:
+                    data["name"] = name
+                projected.append({"type": "at", "data": data})
+            elif isinstance(component, Reply):
+                projected.append(
+                    {
+                        "type": "reply",
+                        "data": {"id": str(getattr(component, "id", "") or "")},
+                    },
+                )
+            elif isinstance(component, Image):
+                value = str(
+                    getattr(component, "path", "")
+                    or getattr(component, "file", "")
+                    or getattr(component, "url", "")
+                    or ""
+                )
+                projected.append({"type": "image", "data": {"file": value}})
+            elif isinstance(component, Record):
+                value = str(
+                    getattr(component, "path", "")
+                    or getattr(component, "file", "")
+                    or getattr(component, "url", "")
+                    or ""
+                )
+                projected.append({"type": "record", "data": {"file": value}})
+            elif isinstance(component, Video):
+                value = str(
+                    getattr(component, "path", "")
+                    or getattr(component, "file", "")
+                    or getattr(component, "url", "")
+                    or ""
+                )
+                projected.append({"type": "video", "data": {"file": value}})
+            elif isinstance(component, File):
+                projected.append(
+                    {
+                        "type": "file",
+                        "data": {
+                            "name": str(getattr(component, "name", "") or ""),
+                            "file": str(getattr(component, "file_", "") or ""),
+                            "url": str(getattr(component, "url", "") or ""),
+                        },
+                    },
+                )
+            elif isinstance(component, Location):
+                projected.append(
+                    {
+                        "type": "location",
+                        "data": {
+                            "lat": float(getattr(component, "lat", 0) or 0),
+                            "lon": float(getattr(component, "lon", 0) or 0),
+                            "title": str(getattr(component, "title", "") or ""),
+                            "content": str(getattr(component, "content", "") or ""),
+                        },
+                    },
+                )
+        return projected
 
     def _same_whatsapp_user(self, left: str, right: str) -> bool:
         return self._whatsapp_user_id(left) == self._whatsapp_user_id(right)
@@ -1578,6 +1898,7 @@ class WhatsAppPlatformAdapter(Platform):
         sender_jid = str(raw.get("senderJid") or "")
         sender_pn = str(raw.get("senderPn") or "")
         sender_phone = str(raw.get("senderPhone") or "")
+        identity_cache = self._identity_mappings()
 
         candidates = set()
         for v in (chat_jid, sender_jid, sender_pn, sender_phone):
@@ -1588,8 +1909,7 @@ class WhatsAppPlatformAdapter(Platform):
             text = str(value or "").strip()
             if text == "*":
                 return "*"
-            digits = re.sub(r"\D", "", text)
-            return f"+{digits}" if digits else text
+            return _phone_from_identity(text) or text
 
         def _allowed_by(value: str, allow_list: list) -> bool:
             if not allow_list:
@@ -1620,16 +1940,16 @@ class WhatsAppPlatformAdapter(Platform):
                 return True
             # lid→PN 緩存兜底
             for c in candidates:
-                if c.endswith("@lid"):
-                    pn = _LID_PN_CACHE.get(c)
+                if _is_lid_jid(c):
+                    pn = identity_cache.pn_for_lid(c)
                     if pn and _allowed_by(pn, allow_from):
                         return True
             # 主動向 Gateway 查詢 lid 映射（等 3 秒）
-            if sender_jid.endswith("@lid") and not sender_phone and not sender_pn:
+            if _is_lid_jid(sender_jid) and not sender_phone and not sender_pn:
                 try:
                     pn = await asyncio.wait_for(self.client.resolve_lid(sender_jid), timeout=4)
                     if pn and _allowed_by(pn, allow_from):
-                        _cache_lid_mapping(sender_jid, pn)
+                        _cache_lid_mapping(sender_jid, pn, identity_cache)
                         _save_lid_mapping(self._auth_dir(), sender_jid, pn)
                         return True
                 except Exception:
@@ -1649,19 +1969,31 @@ class WhatsAppPlatformAdapter(Platform):
             group_allow_from = self._coerce_str_list(self.config.get("allow_from"))
         if any(_allowed_by(c, group_allow_from) for c in candidates):
             return True
+        for c in candidates:
+            if _is_lid_jid(c):
+                pn = identity_cache.pn_for_lid(c)
+                if pn and _allowed_by(pn, group_allow_from):
+                    return True
         # lid 兜底查詢（同上）
-        if sender_jid.endswith("@lid") and not sender_phone and not sender_pn:
+        if _is_lid_jid(sender_jid) and not sender_phone and not sender_pn:
             try:
                 pn = await asyncio.wait_for(self.client.resolve_lid(sender_jid), timeout=4)
                 if pn and _allowed_by(pn, group_allow_from):
-                    _cache_lid_mapping(sender_jid, pn)
+                    _cache_lid_mapping(sender_jid, pn, identity_cache)
                     _save_lid_mapping(self._auth_dir(), sender_jid, pn)
                     return True
             except Exception:
                 pass
         return False
 
-    def _message_mentions_self(self, data: dict[str, Any]) -> bool:
+    def _message_mentions_self(
+        self,
+        data: Mapping[str, Any],
+        *,
+        include_at_all: bool = True,
+    ) -> bool:
+        if include_at_all and data.get("mentionAll"):
+            return True
         self_id = str(data.get("selfJid") or "")
         self_lid = str(data.get("selfLid") or "")
         if any(
@@ -1711,7 +2043,7 @@ class WhatsAppPlatformAdapter(Platform):
             logger.warning("WhatsApp 预回复表情发送失败: target=%s error=%s", event.target_jid, exc)
 
     def _whatsapp_user_id(self, jid: str) -> str:
-        return str(jid or "").split(":", 1)[0].split("@", 1)[0]
+        return _identity_user(jid)
 
     def _numeric_whatsapp_id(self, jid: str) -> str:
         digits = "".join(ch for ch in self._whatsapp_user_id(jid) if ch.isdigit())

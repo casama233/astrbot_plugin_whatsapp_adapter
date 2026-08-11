@@ -13,6 +13,7 @@ from typing import Any
 
 from astrbot import logger
 from astrbot.api import AstrBotConfig
+from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, register
 from astrbot.api.web import json_response
 
@@ -39,6 +40,12 @@ from .whatsapp_config_policy import (
     adopt_legacy_gateway_defaults,
     set_runtime_plugin_defaults,
     set_runtime_wake_prefixes,
+)
+from .whatsapp_ai_tools import (
+    WhatsAppToolRejected,
+    create_event,
+    create_poll,
+    share_contact,
 )
 
 PLUGIN_NAME = "astrbot_plugin_whatsapp_adapter"
@@ -159,6 +166,91 @@ class WhatsAppAdapterPlugin(Star):
     @property
     def _base_url(self) -> str:
         return f"http://{self.config['gateway_host']}:{int(self.config['gateway_port'])}"
+
+    @filter.llm_tool(name="whatsapp_create_poll")
+    async def whatsapp_create_poll(
+        self,
+        event: AstrMessageEvent,
+        question: str,
+        options: list[str],
+        selectable_count: int = 1,
+    ) -> str:
+        """在当前 WhatsApp 会话发送原生投票；不得用于其他平台或指定其他收件人。
+
+        Args:
+            question(string): 投票问题，最多 255 个字符。
+            options(array[string]): 2 到 12 个不重复的投票选项。
+            selectable_count(number): 每人可选数量；1 为单选，0 为多选。
+        """
+        try:
+            await create_poll(event, question, options, selectable_count)
+        except WhatsAppToolRejected as exc:
+            return f"拒绝发送 WhatsApp 投票：{exc}"
+        return "已在当前 WhatsApp 会话发送原生投票。"
+
+    @filter.llm_tool(name="whatsapp_share_contact")
+    async def whatsapp_share_contact(
+        self,
+        event: AstrMessageEvent,
+        display_name: str,
+        phone_number: str,
+        organization: str = "",
+    ) -> str:
+        """在当前 WhatsApp 会话分享一个原生联系人名片；不会更改收件会话。
+
+        Args:
+            display_name(string): 联系人的显示姓名。
+            phone_number(string): 含国家或地区代码的电话号码，例如 +85212345678。
+            organization(string): 可选的公司或组织名称。
+        """
+        try:
+            await share_contact(
+                event,
+                display_name,
+                phone_number,
+                organization,
+            )
+        except WhatsAppToolRejected as exc:
+            return f"拒绝分享 WhatsApp 联系人：{exc}"
+        return "已在当前 WhatsApp 会话分享原生联系人名片。"
+
+    @filter.llm_tool(name="whatsapp_create_event")
+    async def whatsapp_create_event(
+        self,
+        event: AstrMessageEvent,
+        name: str,
+        start_time: str,
+        end_time: str = "",
+        description: str = "",
+        location_name: str = "",
+        location_address: str = "",
+        extra_guests_allowed: bool = False,
+    ) -> str:
+        """在当前 WhatsApp 会话建立原生活动；时间必须包含明确时区。
+
+        Args:
+            name(string): 活动名称。
+            start_time(string): 含时区的 ISO 8601 开始时间，例如 2026-08-15T09:00:00+08:00。
+            end_time(string): 可选的含时区 ISO 8601 结束时间，必须晚于开始时间。
+            description(string): 可选的活动说明。
+            location_name(string): 可选的地点名称。
+            location_address(string): 可选的地点地址。
+            extra_guests_allowed(boolean): 是否允许参与者携带额外来宾。
+        """
+        try:
+            await create_event(
+                event,
+                name,
+                start_time,
+                end_time,
+                description,
+                location_name,
+                location_address,
+                extra_guests_allowed,
+            )
+        except WhatsAppToolRejected as exc:
+            return f"拒绝建立 WhatsApp 活动：{exc}"
+        return "已在当前 WhatsApp 会话建立原生活动。"
 
     async def page_runtime(self):
         try:

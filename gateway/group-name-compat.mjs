@@ -7,6 +7,101 @@ function replaceRequired(source, pattern, replacement, label) {
   return source.replace(pattern, replacement);
 }
 
+const GROUP_METADATA_HELPERS = `function cacheGroupMetadata(metadata, complete = Array.isArray(metadata?.participants)) {
+  const jid = String(metadata?.id || "");
+  if (!jid) return metadata || null;
+  const previous = groupMetadataCache.get(jid) || {};
+  const incoming = { ...(metadata || {}) };
+  if (!complete) delete incoming.participants;
+  const merged = { ...(previous.metadata || {}), ...incoming, id: jid };
+  groupMetadataCache.set(jid, {
+    metadata: merged,
+    cachedAt: complete ? Date.now() : (previous.cachedAt || 0),
+    complete: Boolean(complete || previous.complete),
+  });
+  while (groupMetadataCache.size > maxGroupMetadataCacheSize) {
+    groupMetadataCache.delete(groupMetadataCache.keys().next().value);
+  }
+  return merged;
+}
+
+async function rememberGroupParticipants(
+  chatJid,
+  expectedGeneration = socketGeneration,
+  metadataSocket = socket,
+) {
+  if (!metadataSocket?.groupMetadata || !String(chatJid || "").endsWith("@g.us")) return null;
+  try {
+    const fetched = await metadataSocket.groupMetadata(chatJid);
+    if (expectedGeneration !== socketGeneration || metadataSocket !== socket) return null;
+    const metadata = cacheGroupMetadata(fetched, true);
+    rememberGroupOwnerIdentity(metadata);
+    for (const participant of metadata?.participants || []) {
+      rememberGroupParticipantIdentity(participant, chatJid);
+    }
+    return metadata;
+  } catch (error) {
+    log.debug({ error, chatJid }, "failed to refresh group mention directory");
+    const cached = groupMetadataCache.get(String(chatJid || ""));
+    return cached?.complete ? cached.metadata : null;
+  }
+}
+
+async function groupMetadataForMessage(
+  chatJid,
+  expectedGeneration = socketGeneration,
+  metadataSocket = socket,
+) {
+  const cached = groupMetadataCache.get(String(chatJid || ""));
+  if (cached?.complete && Date.now() - cached.cachedAt < groupMetadataCacheTtlMs) {
+    return cached.metadata;
+  }
+
+  let timer;
+  try {
+    return await Promise.race([
+      rememberGroupParticipants(chatJid, expectedGeneration, metadataSocket),
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve(cached?.complete ? cached.metadata : null), 2500);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function mentionTokensFromText`;
+
+const GROUP_BROADCAST_ENRICHMENT = `  const groupMetadata = isGroup ? await groupMetadataPromise : null;
+  if (isStaleSocketEvent()) return;
+  const groupName = String(groupMetadata?.subject || "").trim();
+  const groupParticipants = Array.isArray(groupMetadata?.participants) ? groupMetadata.participants : [];
+  const ownerIdentity = rememberGroupOwnerIdentity(groupMetadata);
+  const groupOwner = normalizeJid(
+    ownerIdentity?.pnJid
+    || resolveLidToPn(ownerIdentity?.lidJid || ownerIdentity?.jid)
+    || ownerIdentity?.jid
+    || "",
+  );
+  const groupAdmins = groupParticipants
+    .filter((participant) => participant?.admin === "admin" || participant?.admin === "superadmin")
+    .map((participant) => {
+      const identity = rememberGroupParticipantIdentity(participant, chatJid);
+      return normalizeJid(identity?.pnJid || identity?.jid || "");
+    })
+    .filter(Boolean);
+  const senderGroupParticipant = groupParticipants.find((participant) =>
+    sameGroupParticipant(participant, senderJid),
+  );
+  const senderUserId = normalizeJid(senderPn || resolveLidToPn(senderJid) || senderJid);
+  const senderRole = senderGroupParticipant?.admin === "superadmin" || (groupOwner && senderUserId === groupOwner)
+    ? "owner"
+    : senderGroupParticipant?.admin === "admin"
+      ? "admin"
+      : "member";
+  broadcast({
+    type: "message",`;
+
 export function patchGatewayGroupNames(source) {
   if (source.includes(`const ${PATCH_MARKER} = true;`)) {
     return { content: source, changed: false };
@@ -19,60 +114,46 @@ export function patchGatewayGroupNames(source) {
     `const ${PATCH_MARKER} = true;\n\nconst host = process.env.WA_GATEWAY_HOST`,
     "Gateway configuration anchor",
   );
-
   content = replaceRequired(
     content,
     /const knownContacts = new Map\(\);/,
     `const knownContacts = new Map();\n\nconst groupMetadataCache = new Map();\nconst groupMetadataCacheTtlMs = 5 * 60 * 1000;\nconst maxGroupMetadataCacheSize = 1000;`,
     "contact cache anchor",
   );
-
   content = replaceRequired(
     content,
-    /async function rememberGroupParticipants\(chatJid\) \{[\s\S]*?\n\}\n\nfunction mentionTokensFromText/,
-    `function cacheGroupMetadata(metadata) {\n  const jid = String(metadata?.id || \"\");\n  if (!jid) return metadata || null;\n  const previous = groupMetadataCache.get(jid)?.metadata || {};\n  const merged = { ...previous, ...metadata, id: jid };\n  groupMetadataCache.set(jid, { metadata: merged, cachedAt: Date.now() });\n  while (groupMetadataCache.size > maxGroupMetadataCacheSize) {\n    groupMetadataCache.delete(groupMetadataCache.keys().next().value);\n  }\n  return merged;\n}\n\nasync function rememberGroupParticipants(chatJid) {\n  if (!socket?.groupMetadata || !String(chatJid || \"\").endsWith(\"@g.us\")) return null;\n  try {\n    const metadata = cacheGroupMetadata(await socket.groupMetadata(chatJid));\n    for (const participant of metadata?.participants || []) {\n      const jid = participant?.id || participant?.jid;\n      rememberMentionIdentity(jid);\n      if (jid && String(jid).endsWith(\"@lid\")) {\n        const resolved = resolveLidToPn(jid);\n        if (resolved) rememberLidPnMapping(jid, resolved);\n      }\n    }\n    return metadata;\n  } catch (error) {\n    log.debug({ error, chatJid }, \"failed to refresh group mention directory\");\n    return groupMetadataCache.get(String(chatJid || \"\"))?.metadata || null;\n  }\n}\n\nasync function groupMetadataForMessage(chatJid) {\n  const cached = groupMetadataCache.get(String(chatJid || \"\"));\n  if (cached && Date.now() - cached.cachedAt < groupMetadataCacheTtlMs) {\n    rememberGroupParticipants(chatJid).catch(() => {});\n    return cached.metadata;\n  }\n\n  let timer;\n  try {\n    return await Promise.race([\n      rememberGroupParticipants(chatJid),\n      new Promise((resolve) => {\n        timer = setTimeout(() => resolve(cached?.metadata || null), 2500);\n      }),\n    ]);\n  } finally {\n    if (timer) clearTimeout(timer);\n  }\n}\n\nfunction mentionTokensFromText`,
+    /async function rememberGroupParticipants\([\s\S]*?\) \{[\s\S]*?\n\}\n\nfunction mentionTokensFromText/,
+    GROUP_METADATA_HELPERS,
     "group metadata helper",
   );
-
   content = replaceRequired(
     content,
-    /const senderJid = primary\.key\.participant \|\| chatJid;\n  rememberMentionIdentity\(senderJid, primary\.pushName\);/,
-    `const senderJid = primary.key.participant || chatJid;\n  const isGroup = chatJid.endsWith(\"@g.us\");\n  const groupMetadataPromise = isGroup\n    ? groupMetadataForMessage(chatJid)\n    : Promise.resolve(null);\n  rememberMentionIdentity(senderJid, primary.pushName);`,
-    "incoming sender anchor",
+    /(  const isGroup = chatJid\.endsWith\("@g\.us"\);\n)(  const senderJid =)/,
+    `$1  const groupMetadataPromise = groupMetadataForMessage(\n    chatJid,\n    expectedGeneration,\n    eventSocket,\n  );\n$2`,
+    "incoming group anchor",
   );
-
   content = replaceRequired(
     content,
-    /\n  rememberGroupParticipants\(chatJid\)\.catch\(\(\) => \{\}\);/,
+    /\n  rememberGroupParticipants\(chatJid(?:, expectedGeneration, eventSocket)?\)\.catch\(\(\) => \{\}\);/,
     "",
     "legacy participant refresh call",
   );
-
   content = replaceRequired(
     content,
-    /\n  const isGroup = chatJid\.endsWith\("@g\.us"\);\n  if \(!configured\)/,
-    `\n  if (!configured)`,
-    "duplicate group declaration",
-  );
-
-  content = replaceRequired(
-    content,
-    /  socket\.ev\.on\("contacts\.upsert", \(contacts\) => \{/,
-    `  socket.ev.on(\"groups.update\", (groups) => {\n    for (const update of groups || []) cacheGroupMetadata(update);\n  });\n  socket.ev.on(\"contacts.upsert\", (contacts) => {`,
+    /  (socket(?:ForGeneration)?)\.ev\.on\("contacts\.upsert", \(contacts\) => \{/,
+    `  $1.ev.on("groups.update", (groups) => {\n    if (generation !== socketGeneration) return;\n    for (const update of groups || []) cacheGroupMetadata(update, false);\n  });\n  $1.ev.on("group-participants.update", (update) => {\n    if (generation !== socketGeneration) return;\n    const jid = String(update?.id || "");\n    if (jid) {\n      groupMetadataCache.delete(jid);\n      mentionDirectoriesByChat.delete(jid);\n    }\n  });\n  $1.ev.on("contacts.upsert", (contacts) => {`,
     "group update listener anchor",
   );
-
   content = replaceRequired(
     content,
     /  broadcast\(\{\n    type: "message",/,
-    `  const groupMetadata = isGroup ? await groupMetadataPromise : null;\n  const groupName = String(groupMetadata?.subject || \"\").trim();\n  broadcast({\n    type: \"message\",`,
+    GROUP_BROADCAST_ENRICHMENT,
     "message broadcast anchor",
   );
-
   content = replaceRequired(
     content,
     /(    albumMessageIds: albumItems\.length > 1 \? albumItems\.map\(\(albumItem\) => albumItem\.key\.id\) : undefined,\n    chatJid,\n)(    senderJid,)/,
-    `$1    groupName,\n    group_name: groupName,\n    groupSubject: groupName,\n$2`,
+    `$1    groupName,\n    group_name: groupName,\n    groupSubject: groupName,\n    groupOwner,\n    groupAdmins,\n    senderRole,\n$2`,
     "message group fields anchor",
   );
 

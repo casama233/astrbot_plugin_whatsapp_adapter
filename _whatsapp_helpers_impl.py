@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -14,9 +15,11 @@ from astrbot.api.platform import At
 
 from .whatsapp_client import WhatsAppGatewayClient
 from .whatsapp_components import WhatsAppButtons, WhatsAppEdit, WhatsAppList, WhatsAppPoll
+from .whatsapp_identity import is_lid_jid, is_pn_jid, normalize_user_jid
 
 __all__ = [
     "MentionRef",
+    "QuoteState",
     "chunk_text",
     "flush_pending_text",
     "format_markdown_from_whatsapp",
@@ -44,6 +47,29 @@ class MentionRef:
 
     jid: str
     text: str
+
+
+@dataclass(slots=True)
+class QuoteState:
+    """Ensure an AstrBot ``Reply`` is attached to one physical send only."""
+
+    message_id: str | None = None
+    participant: str | None = None
+    consumed: bool = False
+    sent_count: int = 0
+
+    def kwargs(self) -> dict[str, str]:
+        if self.consumed or not self.message_id:
+            return {}
+        payload = {"quoted_message_id": self.message_id}
+        if self.participant:
+            payload["quoted_participant"] = self.participant
+        return payload
+
+    def consume(self) -> None:
+        self.sent_count += 1
+        if self.message_id:
+            self.consumed = True
 
 
 def _placeholder(index: int, kind: str = "PROTECTED") -> str:
@@ -560,7 +586,10 @@ def normalize_media_value(value: str | None) -> str:
 
 
 def mention_text_from_at(component: At) -> str:
-    value = str(getattr(component, "name", "") or getattr(component, "qq", "") or "")
+    name = str(getattr(component, "name", "") or "").strip()
+    if name:
+        return f"@{name.lstrip('@')}"
+    value = str(getattr(component, "qq", "") or "")
     value = value.split("@", 1)[0].split(":", 1)[0]
     return f"@{value}"
 
@@ -569,14 +598,13 @@ def mention_jid_from_at(component: At) -> str | None:
     value = str(getattr(component, "qq", "") or getattr(component, "name", "") or "").strip()
     if not value:
         return None
+    if value.lower().lstrip("@") == "all":
+        # Baileys exposes WhatsApp's native mention-all bit separately from
+        # ordinary JIDs.  The Gateway recognizes this reserved transport token.
+        return "all"
     if "@" in value:
-        if value.endswith("@lid"):
-            from .whatsapp_adapter import _LID_PN_CACHE
-
-            pn = _LID_PN_CACHE.get(value)
-            if pn:
-                return pn
-            logger.warning("WhatsApp @提及 lid 未缓存，使用原始 JID: %s", value)
+        if is_lid_jid(value) or is_pn_jid(value):
+            return normalize_user_jid(value)
         return value
     digits = "".join(char for char in value if char.isdigit())
     if digits:
@@ -634,22 +662,25 @@ async def flush_pending_text(
     quoted_message_id: str | None = None,
     quoted_participant: str | None = None,
     source_format: SourceFormat = "markdown",
+    quote_state: QuoteState | None = None,
 ) -> tuple[None, list[MentionRef]]:
     if not pending:
         return None, list(mentions or [])  # type: ignore[list-item]
     rendered = format_whatsapp_markdown(pending, source_format=source_format)
     if not has_visible_whatsapp_content(rendered):
         return None, []
+    state = quote_state or QuoteState(quoted_message_id, quoted_participant)
     for chunk in split_whatsapp_text(rendered, text_chunk_limit):
         chunk_mentions = await mentions_for_text(client, target, chunk, mentions or [])
+        quote_kwargs = state.kwargs()
         await client.send_text(
             target,
             chunk,
-            quoted_message_id=quoted_message_id,
-            quoted_participant=quoted_participant,
             link_preview=should_link_preview(chunk, link_preview_single_url),
             mentions=chunk_mentions,
+            **quote_kwargs,
         )
+        state.consume()
     return None, []
 
 
@@ -756,21 +787,17 @@ async def process_message_chain(
     quoted_message_id: str | None = None,
     quoted_participant: str | None = None,
     resolve_media_func: MediaResolver | None = None,
+    quote_state: QuoteState | None = None,
 ) -> tuple[str | None, list[MentionRef]]:
     """累積相鄰 Plain/At 的原始 Markdown，在真正發送前只轉換一次。"""
     pending_raw: str | None = None
     pending_mentions: list[MentionRef] = []
+    state = quote_state or QuoteState(quoted_message_id, quoted_participant)
     flush_kwargs: dict[str, Any] = {
         "link_preview_single_url": link_preview_single_url,
         "text_chunk_limit": text_chunk_limit,
-        "quoted_message_id": quoted_message_id,
-        "quoted_participant": quoted_participant,
+        "quote_state": state,
     }
-    send_kwargs: dict[str, Any] = {}
-    if quoted_message_id:
-        send_kwargs["quoted_message_id"] = quoted_message_id
-    if quoted_participant:
-        send_kwargs["quoted_participant"] = quoted_participant
 
     async def flush() -> None:
         nonlocal pending_raw, pending_mentions
@@ -782,25 +809,40 @@ async def process_message_chain(
             **flush_kwargs,
         )
 
-    async def prepare_caption() -> str | None:
+    def append_unavailable(label: str) -> None:
+        nonlocal pending_raw
+        separator = "" if not pending_raw or pending_raw[-1:].isspace() else " "
+        pending_raw = (pending_raw or "") + separator + f"[{label} unavailable]"
+
+    async def prepare_caption() -> tuple[str | None, list[str]]:
         if not pending_raw:
-            return None
-        chunks = split_whatsapp_text(format_whatsapp_markdown(pending_raw), text_chunk_limit)
+            return None, []
+        rendered = format_whatsapp_markdown(pending_raw)
+        chunks = [
+            chunk
+            for chunk in split_whatsapp_text(rendered, text_chunk_limit)
+            if has_visible_whatsapp_content(chunk)
+        ]
         if not chunks:
-            return None
+            return None, []
         for chunk in chunks[:-1]:
             chunk_mentions = await mentions_for_text(
                 client, target, chunk, pending_mentions,
             )
+            quote_kwargs = state.kwargs()
             await client.send_text(
                 target,
                 chunk,
-                quoted_message_id=quoted_message_id,
-                quoted_participant=quoted_participant,
                 link_preview=should_link_preview(chunk, link_preview_single_url),
                 mentions=chunk_mentions,
+                **quote_kwargs,
             )
-        return chunks[-1]
+            state.consume()
+        caption = chunks[-1]
+        caption_mentions = await mentions_for_text(
+            client, target, caption, pending_mentions,
+        )
+        return caption, caption_mentions
 
     for component in chain:
         if isinstance(component, Reply):
@@ -831,19 +873,29 @@ async def process_message_chain(
                 )
             except Exception as exc:
                 logger.warning("WhatsApp 消息链跳过图片: %s", exc)
+                append_unavailable("Image")
                 continue
             if not media_path:
+                append_unavailable("Image")
                 continue
             media_kind = media_kind_from_component(component, "image")
             if media_kind == "sticker" and use_caption and pending_raw:
                 await flush()
+            caption, caption_mentions = (
+                await prepare_caption()
+                if use_caption and media_kind != "sticker"
+                else (None, [])
+            )
+            quote_kwargs = state.kwargs()
             await client.send_media(
                 target,
                 media_kind,
                 media_path,
-                None if media_kind == "sticker" else await prepare_caption() if use_caption else None,
-                **send_kwargs,
+                caption,
+                mentions=caption_mentions,
+                **quote_kwargs,
             )
+            state.consume()
             pending_raw = None
             pending_mentions = []
         elif isinstance(component, Record):
@@ -858,9 +910,20 @@ async def process_message_chain(
                 )
             except Exception as exc:
                 logger.warning("WhatsApp 消息链跳过音频: %s", exc)
+                append_unavailable("Audio")
                 continue
             if media_path:
-                await client.send_media(target, "audio", media_path, None, **send_kwargs)
+                quote_kwargs = state.kwargs()
+                await client.send_media(
+                    target,
+                    "audio",
+                    media_path,
+                    None,
+                    **quote_kwargs,
+                )
+                state.consume()
+            else:
+                append_unavailable("Audio")
         elif isinstance(component, Video):
             if not use_caption:
                 await flush()
@@ -874,17 +937,26 @@ async def process_message_chain(
                 )
             except Exception as exc:
                 logger.warning("WhatsApp 消息链跳过视频: %s", exc)
+                append_unavailable("Video")
                 continue
             if media_path:
+                caption, caption_mentions = (
+                    await prepare_caption() if use_caption else (None, [])
+                )
+                quote_kwargs = state.kwargs()
                 await client.send_media(
                     target,
                     "video",
                     media_path,
-                    await prepare_caption() if use_caption else None,
-                    **send_kwargs,
+                    caption,
+                    mentions=caption_mentions,
+                    **quote_kwargs,
                 )
-            pending_raw = None
-            pending_mentions = []
+                state.consume()
+                pending_raw = None
+                pending_mentions = []
+            else:
+                append_unavailable("Video")
         elif isinstance(component, File):
             if not use_caption:
                 await flush()
@@ -898,30 +970,49 @@ async def process_message_chain(
                 )
             except Exception as exc:
                 logger.warning("WhatsApp 消息链跳过文档: %s", exc)
+                append_unavailable("File")
                 continue
             if resolved:
+                caption, caption_mentions = (
+                    await prepare_caption() if use_caption else (None, [])
+                )
+                quote_kwargs = state.kwargs()
                 await client.send_media(
                     target,
                     "document",
                     resolved,
-                    await prepare_caption() if use_caption else None,
-                    **send_kwargs,
+                    caption,
+                    mentions=caption_mentions,
+                    file_name=str(getattr(component, "name", "") or ""),
+                    **quote_kwargs,
                 )
-            pending_raw = None
-            pending_mentions = []
+                state.consume()
+                pending_raw = None
+                pending_mentions = []
+            else:
+                append_unavailable("File")
         elif isinstance(component, Location):
             await flush()
+            quote_kwargs = state.kwargs()
             await client.send_location(
                 target,
                 float(getattr(component, "lat", 0) or 0),
                 float(getattr(component, "lon", 0) or 0),
                 str(getattr(component, "title", "") or ""),
                 str(getattr(component, "content", "") or ""),
-                **send_kwargs,
+                **quote_kwargs,
             )
+            state.consume()
         elif isinstance(component, (WhatsAppButtons, WhatsAppList, WhatsAppPoll, WhatsAppEdit)):
             await flush()
-            await send_whatsapp_component(client, target, component, **send_kwargs)
+            if isinstance(component, WhatsAppEdit):
+                await send_whatsapp_component(client, target, component)
+            else:
+                quote_kwargs = state.kwargs()
+                await send_whatsapp_component(client, target, component, **quote_kwargs)
+            # An edit is still a successful transport operation even though it
+            # does not create a new message or carry Reply metadata.
+            state.consume()
         else:
             nested = _iter_nested_components(component)
             if nested:
@@ -936,11 +1027,23 @@ async def process_message_chain(
                     quoted_message_id=quoted_message_id,
                     quoted_participant=quoted_participant,
                     resolve_media_func=resolve_media_func,
+                    quote_state=state,
                 )
                 pending_raw = nested_pending
                 pending_mentions = nested_mentions
             else:
-                logger.debug("WhatsApp 消息链跳过不支持组件: %s", component.__class__.__name__)
+                fallback = _component_text_fallback(component)
+                if fallback:
+                    pending_raw = (pending_raw or "") + fallback
+                    logger.warning(
+                        "WhatsApp 消息组件无原生等价，已降级为文本: %s",
+                        component.__class__.__name__,
+                    )
+                else:
+                    logger.warning(
+                        "WhatsApp 消息链不支持组件，已忽略: %s",
+                        component.__class__.__name__,
+                    )
 
     return pending_raw, pending_mentions
 
@@ -950,6 +1053,9 @@ def _iter_nested_components(component: Any) -> list[Any]:
     chain = getattr(component, "chain", None)
     if chain:
         nested.extend(list(chain))
+    content = getattr(component, "content", None)
+    if isinstance(content, (list, tuple)):
+        nested.extend(list(content))
     for attr in ("nodes", "node", "messages"):
         value = getattr(component, attr, None)
         if not value:
@@ -966,3 +1072,53 @@ def _iter_nested_components(component: Any) -> list[Any]:
             elif item_message:
                 nested.append(item_message)
     return nested
+
+
+def _component_text_fallback(component: Any) -> str:
+    """Preserve useful content for standard components WhatsApp cannot send."""
+
+    class_name = component.__class__.__name__
+    if class_name in {"Unknown"}:
+        return str(getattr(component, "text", "") or "")
+    if class_name == "Face":
+        return f"[Face:{getattr(component, 'id', '')}]"
+    if class_name in {"RPS", "Dice", "Shake"}:
+        return f"[{class_name}]"
+    if class_name == "Poke":
+        target = (
+            getattr(component, "id", None)
+            or getattr(component, "qq", None)
+            or ""
+        )
+        return f"[Poke{f':{target}' if target else ''}]"
+    if class_name == "Share":
+        values = [
+            getattr(component, "title", ""),
+            getattr(component, "content", ""),
+            getattr(component, "url", ""),
+        ]
+        return " — ".join(str(value) for value in values if value)
+    if class_name == "Music":
+        values = [
+            getattr(component, "title", ""),
+            getattr(component, "content", ""),
+            getattr(component, "audio", "") or getattr(component, "url", ""),
+        ]
+        detail = " — ".join(str(value) for value in values if value)
+        return f"🎵 {detail}" if detail else "🎵"
+    if class_name == "Contact":
+        target = getattr(component, "id", None) or ""
+        return f"[Contact{f':{target}' if target else ''}]"
+    if class_name == "Json":
+        try:
+            return json.dumps(
+                getattr(component, "data", {}),
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        except (TypeError, ValueError):
+            return "[JSON]"
+    if class_name == "Forward":
+        target = getattr(component, "id", None) or ""
+        return f"[Forward{f':{target}' if target else ''}]"
+    return ""
