@@ -6,6 +6,9 @@ from astrbot.api.platform import Group as _Group
 from astrbot.api.platform import MessageMember as _MessageMember
 
 from .group_name_compat import current_event_group as _current_event_group
+from .whatsapp_streaming_concurrency import (
+    response_presence_leases as _response_presence_leases,
+)
 
 _impl_path = _Path(__file__).with_name("_whatsapp_event_impl.py")
 exec(compile(_impl_path.read_text(encoding="utf-8"), str(_impl_path), "exec"), globals(), globals())
@@ -82,4 +85,42 @@ async def _get_group_compat(self, group_id=None, **kwargs):
     return _group_from_gateway(group_jid, dict(info or {}))
 
 
+_original_send = WhatsAppMessageEvent.send
+_original_send_streaming = WhatsAppMessageEvent.send_streaming
+_original_stop_typing = WhatsAppMessageEvent.stop_typing
+
+
+def _acquire_response_presence(self) -> None:
+    _response_presence_leases.acquire(self.client, self.target_jid)
+
+
+def _release_response_presence(self) -> None:
+    _response_presence_leases.release(self.client, self.target_jid)
+
+
+async def _send_with_response_presence(self, *args, **kwargs):
+    _acquire_response_presence(self)
+    try:
+        return await _original_send(self, *args, **kwargs)
+    finally:
+        _release_response_presence(self)
+
+
+async def _send_streaming_with_response_presence(self, *args, **kwargs):
+    _acquire_response_presence(self)
+    try:
+        return await _original_send_streaming(self, *args, **kwargs)
+    finally:
+        _release_response_presence(self)
+
+
+async def _stop_typing_when_chat_idle(self) -> None:
+    if not _response_presence_leases.should_pause(self.client, self.target_jid):
+        return
+    await _original_stop_typing(self)
+
+
 WhatsAppMessageEvent.get_group = _get_group_compat
+WhatsAppMessageEvent.send = _send_with_response_presence
+WhatsAppMessageEvent.send_streaming = _send_streaming_with_response_presence
+WhatsAppMessageEvent.stop_typing = _stop_typing_when_chat_idle
