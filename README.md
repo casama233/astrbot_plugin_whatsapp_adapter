@@ -1,12 +1,12 @@
 # AstrBot WhatsApp Adapter
 
-基于 WhatsApp Web/Baileys 的 AstrBot 消息平台适配器。采用本地 Gateway 架构：Python 插件负责平台适配、事件转换和 WebUI 管理页，Node.js Gateway 负责 WhatsApp Web 连接、二维码登录、重连、媒体下载和消息投递。
+基于 WhatsApp Web/Baileys 的 AstrBot 消息平台适配器。采用本地 Gateway 架构：Python 插件负责平台适配、事件转换和 WebUI 管理页，Node.js Gateway 负责 WhatsApp Web 连接、二维码／手机号配对登录、重连、媒体下载和消息投递。
 
 支持**流式输出**（streaming）、**交互式按钮/列表/投票**、**预回应表情**、**打字指示**、**Markdown 格式互转**和**相册去抖**；指令与唤醒前缀直接沿用 AstrBot Core。
 
 ## 功能特性
 
-- 插件管理页内扫码登录 WhatsApp Web
+- 插件管理页内扫码或使用手机号配对码登录 WhatsApp Web
 - 私聊 & 群聊消息接入
 - 私聊访问控制：`allowlist` / `open` / `disabled`
 - 群聊访问控制：群 JID allowlist + 群成员 sender allowlist
@@ -85,7 +85,7 @@ pip install -r requirements.txt
 3. 保持 `auto_start_gateway=true`
 4. 在 WhatsApp 平台实例中填写 `allow_from`、`dm_policy` 等账号访问控制项
 5. 打开 `WhatsApp 登录` / `whatsapp-login` Page
-6. 使用 WhatsApp 手机端「已连接的设备」扫描二维码
+6. 使用 WhatsApp 手机端「已连接的设备」扫描二维码；也可在管理页输入含地区代码的手机号，再在手机端选择「使用手机号连接设备」并输入配对码
 7. 连接成功后启用平台实例
 
 ## 配置说明
@@ -110,6 +110,19 @@ pip install -r requirements.txt
 | `node_executable` | string | `node` | Node.js 可执行文件路径 |
 | `auth_dir` | string | `""` | WhatsApp 登录态目录，留空自动选择插件数据目录 |
 | `log_level` | string | `info` | Gateway 日志级别 |
+
+### 网络代理
+
+无法直连 WhatsApp Web 时，可在 AstrBot／容器环境设置 `HTTPS_PROXY`（优先）或
+`HTTP_PROXY`，小写的 `https_proxy`／`http_proxy` 也受支持。`NO_PROXY`／
+`no_proxy` 支持 `*`、域名、域后缀和可选端口；WebSocket 与媒体请求会分别判断
+是否绕过代理。仅支持 `http://` 或 `https://` 代理 URL，Gateway 日志不会输出
+用户名、密码、路径或查询参数。
+
+```bash
+HTTPS_PROXY=http://host.docker.internal:7897
+NO_PROXY=localhost,127.0.0.1
+```
 
 ### 插件全局消息默认
 
@@ -237,6 +250,7 @@ WhatsAppEdit(message_id="xxx", text="新的内容")
 - Gateway 运行状态 & 健康状态
 - 当前 WhatsApp 账号 JID
 - 二维码展示（扫码登录）
+- 手机号配对码登录（仅未登录 session，可复制且不会写入日志）
 - 手动刷新状态
 - 重启 WhatsApp Web 连接
 - 登出并重新扫码
@@ -261,6 +275,7 @@ Python 插件通过 HTTP 与 Gateway（`127.0.0.1:18789`）通信：
 | GET | `/qr` | 获取二维码 |
 | GET | `/events` | SSE 事件流 |
 | POST | `/config` | 推送访问控制配置 |
+| POST | `/pair-code` | 为未注册登录 session 生成手机号配对码（7–15 位国际号码、限流） |
 | POST | `/group/info` | 获取指定 WhatsApp 群的名称、群主、管理员与成员资料 |
 | POST | `/restart` | 重启 Baileys socket |
 | POST | `/logout` | 登出并清除认证 |
@@ -276,6 +291,9 @@ Python 插件通过 HTTP 与 Gateway（`127.0.0.1:18789`）通信：
 | POST | `/send/contact` | 分享联系人名片 |
 | POST | `/send/event` | 建立活动 |
 | POST | `/mentions/resolve` | 解析 @提及为 JID |
+
+管理页调用的是受 AstrBot Dashboard 鉴权保护的同名插件 API；Gateway HTTP 仍应
+保持默认的 `127.0.0.1` 本地绑定，不应直接暴露到公网。
 
 ## 数据目录
 
