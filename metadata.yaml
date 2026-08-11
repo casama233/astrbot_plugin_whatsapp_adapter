@@ -7,8 +7,6 @@ author: casama233
 repo: https://github.com/casama233/astrbot_plugin_whatsapp_adapter
 social_link: https://github.com/casama233
 astrbot_version: ">=4.24.2,<5"
-support_platforms:
-  - whatsapp
 category: 三方集成
 tags:
   - whatsapp
