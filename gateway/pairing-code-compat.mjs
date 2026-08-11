@@ -1,4 +1,8 @@
-const PAIRING_LOGIN_STATES = new Set(["starting", "qr_pending"]);
+const PAIRING_LOGIN_STATES = new Set([
+  "starting",
+  "qr_pending",
+  "pair_code_pending",
+]);
 
 /**
  * Validate and normalize a phone number for Baileys requestPairingCode().

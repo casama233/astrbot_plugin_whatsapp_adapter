@@ -59,6 +59,13 @@ test("reports registered, login-state, and unsupported conditions precisely", ()
     }).ok,
     true,
   );
+  assert.equal(
+    pairingCodeAvailability({
+      socket: supportedSocket,
+      connectionStatus: "pair_code_pending",
+    }).ok,
+    true,
+  );
 });
 
 
