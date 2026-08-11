@@ -2,7 +2,7 @@
 
 ## 一句话说明
 
-WhatsApp Web 平台适配器插件。通过本地 Node.js Gateway 接入 WhatsApp（Baileys），支持扫码登录、私聊/群聊、媒体收发、交互组件（按钮/列表/投票）、流式输出和访问控制；指令唤醒沿用 AstrBot Core。
+WhatsApp Web 平台适配器插件。通过本地 Node.js Gateway 接入 WhatsApp（Baileys），支持扫码登录、私聊/群聊、媒体收发、交互组件（按钮/列表/投票/活动）、流式输出、访问控制，以及只绑定当前会话的投票／联系人／活动 AI 原生工具；指令唤醒沿用 AstrBot Core。
 
 ## 架构
 
@@ -117,6 +117,18 @@ WhatsAppPoll(name="你喜欢的颜色？", options=["红", "蓝", "绿"], select
 WhatsAppEdit(message_id="xxx", text="新内容")
 ```
 
+## AI 原生工具
+
+模型可在当前 WhatsApp 会话调用以下 AstrBot LLM 工具：
+
+- `whatsapp_create_poll`：原生投票（2–12 个不重复选项）
+- `whatsapp_share_contact`：原生联系人名片
+- `whatsapp_create_event`：含时区、地点与可选结束时间的原生活动
+
+工具不暴露目标 JID 参数，并会核对当前事件的 `target_jid` 与入站 `chatJid`；
+模型无法借此指定其他收件人。号码、选项、时间与文字长度会在 Python 和 Gateway
+两层校验，只有 Gateway 确认成功后才更新 AstrBot 的发送状态。
+
 ## 流式输出
 
 适配器声明 `support_streaming_message=True`，支持 `send_streaming`。工作原理：
@@ -135,6 +147,8 @@ astrbot_plugin_whatsapp_adapter/
 ├── whatsapp_adapter.py         # 平台适配器核心
 ├── whatsapp_client.py          # Gateway HTTP 客户端
 ├── whatsapp_event.py           # 消息事件（含流式输出）
+├── whatsapp_ai_tools.py        # 当前会话原生投票／联系人／活动工具
+├── whatsapp_identity.py        # PN／LID／Hosted／多账号身份归一化
 ├── whatsapp_components.py      # 自定义消息组件
 ├── whatsapp_helpers.py         # 辅助函数
 ├── gateway/
@@ -153,6 +167,7 @@ Gateway 默认监听 `127.0.0.1:18789`：
 | GET | `/qr` | 二维码 |
 | GET | `/events` | SSE 事件流 |
 | POST | `/config` | 推送配置 |
+| POST | `/group/info` | 获取群名称、群主、管理员与成员资料 |
 | POST | `/restart` | 重启 socket |
 | POST | `/logout` | 登出 |
 | POST | `/session/reset` | 重建登录 session 并生成新二维码 |
@@ -164,6 +179,8 @@ Gateway 默认监听 `127.0.0.1:18789`：
 | POST | `/send/buttons` | 发送按钮 |
 | POST | `/send/list` | 发送列表 |
 | POST | `/send/poll` | 发送投票 |
+| POST | `/send/contact` | 分享联系人名片 |
+| POST | `/send/event` | 建立活动 |
 | POST | `/mentions/resolve` | 解析 @提及 |
 
 插件管理页另提供 `/update/status`、`/update/check` 与 `/update/install` 三个受

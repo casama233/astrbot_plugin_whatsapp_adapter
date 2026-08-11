@@ -10,9 +10,10 @@
 - 私聊 & 群聊消息接入
 - 私聊访问控制：`allowlist` / `open` / `disabled`
 - 群聊访问控制：群 JID allowlist + 群成员 sender allowlist
-- 入站文本、图片、音频、视频、文档、贴纸、位置、联系人、按钮回应、列表回应、投票
+- 入站文本、图片、音频、视频、文档、贴纸、位置、联系人、按钮回应、列表回应、投票、活动
 - 出站文本（自动 Markdown ➜ WhatsApp 格式转换，长文本分片）、图片、音频、视频、文档、贴纸
 - 出站交互组件：`WhatsAppButtons`、`WhatsAppList`、`WhatsAppPoll`、`WhatsAppEdit`（消息编辑）
+- 当前会话专用的 AI 原生工具：投票、联系人名片、活动；工具不能指定其他收件人
 - **流式输出**（streaming）：首次回复作为新消息发送，后续更新通过编辑同一消息逐步追加（带节流）
 - **预回应表情**（pre-ack）：被 @ 或回复时先发一个 emoji 反应，降低 LLM 响应延迟感知
 - **打字指示**：回复期间显示 `composing`，发送完成后停止输入，并按在线状态开关恢复在线或离线
@@ -35,6 +36,8 @@ astrbot_plugin_whatsapp_adapter/
 ├── whatsapp_adapter.py          # 平台适配器（Platform 子类），核心消息收发逻辑
 ├── whatsapp_client.py           # Gateway HTTP 客户端 + 子进程管理
 ├── whatsapp_event.py            # 消息事件（AstrMessageEvent 子类），流式输出
+├── whatsapp_ai_tools.py         # 当前会话原生投票／联系人／活动工具
+├── whatsapp_identity.py         # PN／LID／Hosted／多账号身份归一化
 ├── whatsapp_components.py       # 自定义 WhatsApp 消息组件
 ├── whatsapp_helpers.py          # 共享工具函数
 ├── metadata.yaml                # 插件元数据
@@ -176,6 +179,18 @@ WhatsAppPoll(name="你喜欢的颜色？", options=["红", "蓝", "绿"], select
 WhatsAppEdit(message_id="xxx", text="新的内容")
 ```
 
+## AI 原生工具
+
+插件向 AstrBot 注册三个 LLM 工具，模型可在当前 WhatsApp 对话直接调用：
+
+- `whatsapp_create_poll`：发送 2–12 个选项的原生投票
+- `whatsapp_share_contact`：分享经过格式验证的联系人名片
+- `whatsapp_create_event`：建立含明确时区、地点和结束时间的原生活动
+
+这些工具没有目标 JID 参数，并会同时核对事件平台、当前 `target_jid` 与入站
+`chatJid`，因此不能由模型改发到其他会话。输入会在 Python 与 Gateway 两层验证；
+传输未成功时不会记录为已发送，也不会错误更新完成 reaction。
+
 ## 流式输出
 
 适配器注册时声明了 `support_streaming_message=True`。当 AstrBot 调用 `send_streaming` 时：
@@ -246,6 +261,7 @@ Python 插件通过 HTTP 与 Gateway（`127.0.0.1:18789`）通信：
 | GET | `/qr` | 获取二维码 |
 | GET | `/events` | SSE 事件流 |
 | POST | `/config` | 推送访问控制配置 |
+| POST | `/group/info` | 获取指定 WhatsApp 群的名称、群主、管理员与成员资料 |
 | POST | `/restart` | 重启 Baileys socket |
 | POST | `/logout` | 登出并清除认证 |
 | POST | `/session/reset` | 隔离失效认证并建立全新扫码 session |
@@ -257,6 +273,8 @@ Python 插件通过 HTTP 与 Gateway（`127.0.0.1:18789`）通信：
 | POST | `/send/buttons` | 发送交互按钮 |
 | POST | `/send/list` | 发送列表选择 |
 | POST | `/send/poll` | 发送投票 |
+| POST | `/send/contact` | 分享联系人名片 |
+| POST | `/send/event` | 建立活动 |
 | POST | `/mentions/resolve` | 解析 @提及为 JID |
 
 ## 数据目录

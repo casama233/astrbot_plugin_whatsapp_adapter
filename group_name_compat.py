@@ -31,8 +31,29 @@ def apply_group_name(message: Any, data: dict[str, Any] | None) -> Any:
 
     group_name = extract_group_name(data)
     group = getattr(message, "group", None)
-    if group is not None and group_name:
-        group.group_name = group_name
+    if group is not None:
+        if group_name:
+            group.group_name = group_name
+        if isinstance(data, dict):
+            owner = str(data.get("groupOwner") or "").strip()
+            admins = data.get("groupAdmins") or []
+            if owner:
+                group.group_owner = owner
+            effective_owner = owner or str(
+                getattr(group, "group_owner", "") or "",
+            ).strip()
+            if isinstance(admins, (list, tuple, set)):
+                normalized_admins: list[str] = []
+                for item in admins:
+                    admin_id = str(item).strip()
+                    if (
+                        not admin_id
+                        or admin_id == effective_owner
+                        or admin_id in normalized_admins
+                    ):
+                        continue
+                    normalized_admins.append(admin_id)
+                group.group_admins = normalized_admins
 
     raw_message = getattr(message, "raw_message", None)
     if isinstance(raw_message, dict) and group_name:
