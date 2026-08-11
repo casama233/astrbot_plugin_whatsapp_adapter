@@ -56,8 +56,9 @@ function albumMentionAll(items) {
 }`;
 
 const ALBUM_SCHEDULER = `function albumBufferKey(item, expectedGeneration = socketGeneration) {
-  const chatJid = item.key.remoteJid;
-  const senderJid = item.key.participant || item.key.participantAlt || (item.key.fromMe ? selfJid : null) || chatJid;
+  const key = item?.key || {};
+  const chatJid = String(key.remoteJid || "");
+  const senderJid = String(key.participant || key.participantAlt || (key.fromMe ? selfJid : null) || chatJid);
   return \`${"${expectedGeneration}:${chatJid}:${senderJid}"}\`;
 }
 
