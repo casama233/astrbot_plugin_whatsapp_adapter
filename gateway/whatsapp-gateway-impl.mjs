@@ -55,6 +55,11 @@ import {
   buildPollContent,
   eventDetailsFromMessage,
 } from "./native-tools.mjs";
+import {
+  createPairingCodePolicy,
+  normalizePairingPhone,
+  pairingCodeAvailability,
+} from "./pairing-code-compat.mjs";
 
 const host = process.env.WA_GATEWAY_HOST || "127.0.0.1";
 const port = Number.parseInt(process.env.WA_GATEWAY_PORT || "18789", 10);
@@ -69,6 +74,7 @@ const sseClients = new Set();
 const seenIncomingMessages = new Map();
 const maxSeenIncomingMessages = 2000;
 const albumBuffers = new Map();
+const pairingCodePolicy = createPairingCodePolicy({ cooldownMs: 30_000 });
 
 let socket = null;
 let currentAuthDir = authDir;
@@ -2178,6 +2184,109 @@ const server = createServer(async (req, res) => {
         ? await requestLogoutAndReset(reason)
         : await requestSessionReset(reason);
       sendJson(res, 200, result);
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/pair-code") {
+      const body = await readJson(req);
+      let phone;
+      try {
+        phone = normalizePairingPhone(body.phone);
+      } catch {
+        sendJson(res, 400, {
+          ok: false,
+          error: "phone must contain 7 to 15 digits with a country code and no formatting",
+        });
+        return;
+      }
+
+      const initialAvailability = pairingCodeAvailability({
+        socket,
+        ready,
+        registered: Boolean(socket?.authState?.creds?.registered),
+        connectionStatus,
+      });
+      if (!initialAvailability.ok) {
+        sendJson(res, initialAvailability.status, {
+          ok: false,
+          error: initialAvailability.error,
+        });
+        return;
+      }
+      if (socket?.ws?.isOpen !== true) {
+        sendJson(res, 503, {
+          ok: false,
+          error: "WhatsApp login transport is not ready yet.",
+        });
+        return;
+      }
+
+      const lease = pairingCodePolicy.begin();
+      if (!lease.ok) {
+        sendJson(res, lease.status, {
+          ok: false,
+          error: lease.error,
+          ...(lease.retryAfterMs ? { retryAfterMs: lease.retryAfterMs } : {}),
+        });
+        return;
+      }
+
+      try {
+        const result = await enqueueSocketTransition("pair_code", async () => {
+          const pairingSocket = socket;
+          const availability = pairingCodeAvailability({
+            socket: pairingSocket,
+            ready,
+            registered: Boolean(pairingSocket?.authState?.creds?.registered),
+            connectionStatus,
+          });
+          if (!availability.ok) return availability;
+          if (pairingSocket?.ws?.isOpen !== true) {
+            return {
+              ok: false,
+              status: 503,
+              error: "WhatsApp login transport is not ready yet.",
+            };
+          }
+
+          try {
+            const code = String(await pairingSocket.requestPairingCode(phone));
+            if (pairingSocket !== socket || !/^[A-Za-z0-9]{8}$/.test(code)) {
+              return {
+                ok: false,
+                status: 502,
+                error: "WhatsApp did not return a usable pairing code.",
+              };
+            }
+            latestQr = null;
+            latestQrDataUrl = null;
+            connectionStatus = "pair_code_pending";
+            broadcast({ type: "status", status: connectionStatus, ready: false });
+            log.info({ sessionId: currentSessionId }, "phone pairing code generated securely");
+            return { ok: true, status: 200, code };
+          } catch (error) {
+            log.warn(
+              {
+                errorName: String(error?.name || "Error"),
+                statusCode: error?.output?.statusCode || error?.statusCode || null,
+              },
+              "phone pairing code request failed",
+            );
+            return {
+              ok: false,
+              status: 502,
+              error: "WhatsApp rejected the pairing code request.",
+            };
+          }
+        });
+
+        if (!result.ok) {
+          sendJson(res, result.status, { ok: false, error: result.error });
+          return;
+        }
+        sendJson(res, 200, { ok: true, code: result.code });
+      } finally {
+        lease.finish();
+      }
       return;
     }
     if (!socket || !ready) {
