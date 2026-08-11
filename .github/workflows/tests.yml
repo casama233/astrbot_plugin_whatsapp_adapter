@@ -19,24 +19,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
+      - name: Validate AstrBot release contract
+        run: python scripts/release_contract.py validate-repo
       - name: Compile Python
-        run: >-
-          python -m compileall -q
-          main.py
-          plugin_updater.py
-          whatsapp_adapter.py
-          _whatsapp_adapter_impl.py
-          whatsapp_commands.py
-          whatsapp_config_policy.py
-          whatsapp_helpers.py
-          _whatsapp_helpers_impl.py
-          whatsapp_chunking.py
-          whatsapp_event.py
-          _whatsapp_event_impl.py
-          whatsapp_ai_tools.py
-          whatsapp_identity.py
-          group_name_compat.py
-          tests
+        run: python -m compileall -q .
       - name: Python tests
         run: python -m unittest discover -v tests
       - name: Install Node dependencies
