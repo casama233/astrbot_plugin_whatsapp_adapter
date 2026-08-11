@@ -2,7 +2,7 @@
 
 ## 一句话说明
 
-WhatsApp Web 平台适配器插件。通过本地 Node.js Gateway 接入 WhatsApp（Baileys），支持扫码登录、私聊/群聊、媒体收发、交互组件（按钮/列表/投票/活动）、流式输出、访问控制，以及只绑定当前会话的投票／联系人／活动 AI 原生工具；指令唤醒沿用 AstrBot Core。
+WhatsApp Web 平台适配器插件。通过本地 Node.js Gateway 接入 WhatsApp（Baileys），支持扫码／手机号配对登录、私聊/群聊、媒体收发、交互组件（按钮/列表/投票/活动）、流式输出、访问控制，以及只绑定当前会话的投票／联系人／活动 AI 原生工具；指令唤醒沿用 AstrBot Core。
 
 ## 架构
 
@@ -33,7 +33,10 @@ AstrBot Cloud 会安装 Python 依赖；Node.js 20+ 与 npm 仍需由宿主环�
 2. 添加 `whatsapp` 平台适配器
 3. 在 WhatsApp 平台实例中填写 `allow_from`、`dm_policy` 等账号访问控制
 4. 打开插件详情页 → `WhatsApp 登录` Page
-5. 手机 WhatsApp → 已连接的设备 → 扫描二维码
+5. 手机 WhatsApp → 已连接的设备 → 扫描二维码；或在管理页输入含地区代码的手机号，再于手机端选择「使用手机号连接设备」并输入配对码
+
+配对码入口只在尚未登录时显示。Gateway 只接受未注册且正在等待登录的 session，
+并使用严格号码校验、请求串行化和 30 秒冷却；手机号与一次性配对码不会写入日志。
 
 ## 配置说明
 
@@ -58,6 +61,13 @@ AstrBot Cloud 会安装 Python 依赖；Node.js 20+ 与 npm 仍需由宿主环�
 | `default_streaming_edit_throttle` | `1.0` | 流式编辑最小间隔 |
 
 Gateway 的 `gateway_host`、`gateway_port`、`auto_start_gateway`、`node_executable`、`auth_dir`、`log_level` 只在插件页设置，避免登录页与平台实例连接到不同 Gateway。
+
+### 网络代理
+
+无法直连 WhatsApp Web 时，在 AstrBot／容器环境设置 `HTTPS_PROXY`（优先）或
+`HTTP_PROXY`；小写变量同样有效。`NO_PROXY`／`no_proxy` 支持 `*`、域名、域后缀
+和可选端口，并分别作用于 WhatsApp WebSocket 与媒体请求。代理 URL 仅支持
+`http://`／`https://`，日志只会输出脱敏后的协议、主机与启用状态。
 
 ### 平台实例配置
 
@@ -167,6 +177,7 @@ Gateway 默认监听 `127.0.0.1:18789`：
 | GET | `/qr` | 二维码 |
 | GET | `/events` | SSE 事件流 |
 | POST | `/config` | 推送配置 |
+| POST | `/pair-code` | 为未注册 session 生成手机号配对码（严格校验与限流） |
 | POST | `/group/info` | 获取群名称、群主、管理员与成员资料 |
 | POST | `/restart` | 重启 socket |
 | POST | `/logout` | 登出 |
@@ -183,8 +194,9 @@ Gateway 默认监听 `127.0.0.1:18789`：
 | POST | `/send/event` | 建立活动 |
 | POST | `/mentions/resolve` | 解析 @提及 |
 
-插件管理页另提供 `/update/status`、`/update/check` 与 `/update/install` 三个受
-Dashboard 登录保护的页面 API。它们直接读取本仓库稳定 GitHub Release，不经过
+插件管理页另提供受 Dashboard 登录保护的 `/pair-code`，以及 `/update/status`、
+`/update/check` 与 `/update/install` 页面 API。Gateway 应保持默认 `127.0.0.1`
+绑定，不应直接暴露到公网。更新 API 直接读取本仓库稳定 GitHub Release，不经过
 插件市场缓存；安装采用暂存验证、依赖预装、原子切换和重载失败自动回滚。更新
 过程不会删除 `plugin_data` 中的认证目录。
 
