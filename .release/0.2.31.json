@@ -1,0 +1,15 @@
+{
+  "version": "0.2.31",
+  "previous_version": "0.2.30",
+  "date": "2026-08-11",
+  "commit_subject": "align WhatsApp behavior with QQ and AngelHeart",
+  "notes": [
+    "全面对齐 QQ 适配器的数字身份、提及顺序、引用、群资料及可信 OneBot raw 事件语义，同时兼容 PN、LID、Hosted 与多设备 JID。",
+    "修复 AstrBot 4.x 流式回复未触发发送后钩子的问题，使天使之心能在真实投递后及时取消安抚任务并释放会话锁；同时修复主动消息旧聚合延迟、缺少消息 ID 时重复发送及流式 Markdown 尾部残留。",
+    "Gateway 支持过期媒体重新上传、失败文件清理及重连 generation 隔离，避免贴图下载失败、磁盘残留、迟到事件重复路由或污染新连接。",
+    "新增只绑定当前 WhatsApp 会话的原生投票、联系人名片与活动 AI 工具，并完整解析入站原生活动；模型不能指定其他收件人。",
+    "登录管理页新增安全的手机号配对码方式，仅允许未注册登录 session，并提供号码校验、串行化、冷却及敏感信息日志保护；感谢 @cdxiaodong 的 #6 贡献。",
+    "Gateway 新增 HTTPS_PROXY、HTTP_PROXY 与 NO_PROXY 支持，WebSocket／媒体可分别绕过代理，依赖与 lockfile 完整纳入且日志不会泄露代理凭证；感谢 @cdxiaodong 的 #7 贡献。",
+    "补齐包装消息、编辑缓存、原生 mention-all、媒体 mentions、文件名、链接预览、Location 与标准组件降级等通用兼容行为。"
+  ]
+}

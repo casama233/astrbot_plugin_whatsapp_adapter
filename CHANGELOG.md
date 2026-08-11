@@ -7,29 +7,6 @@
 - 修正流式 Markdown 尾端殘留格式符，同時保留後續可閉合的格式標記，並支援 Location 原生傳送。
 - 相容 AstrBot 4.27+ 的指令處理器匯入位置。
 
-## Unreleased
-
-### Fixed
-
-- 全面对齐 AstrBot 4.27.2 QQ 适配器的通用事件语义：`self_id`、发送者、`At.qq` 与 `Reply.sender_id` 使用同一数字 ID 空间，入站 `Plain/At` 保留原始顺序，群内 @机器人／引用机器人即使关闭预回应也能正常唤醒。
-- `raw_message` 新增可信的 OneBot 兼容投影（`sub_type`、`raw_message`、`message` 段、`font`、真实群角色），并可按需取得群主、管理员与成员资料，提升直接读取 QQ raw 事件的现有插件兼容性。
-- Gateway 会解包 disappearing、view-once、document-with-caption、edited 等 Baileys 包装消息；Location／联系人／按钮／清单／投票不再重复，媒体下载失败保留占位，Sticker 保留为标准图片内容。
-- 媒体 caption 现在携带真正的 WhatsApp mentions，`AtAll` 使用原生 mention-all；文件保留名称，关闭链接预览会实际传到 Baileys，Node 与无原生等价的标准组件会递归发送或降级成可读文本而非静默丢失。
-- 一个 `Reply` 只附着在 MessageChain 首个成功物理发送上；底层发送失败不再被 AstrBot 记为成功或错误显示完成 ✅，流式 `Reply` 也不会切断文本状态。
-- 入站 `@` 提及现在会从 Gateway 联系人与群成员缓存携带昵称并写入 AstrBot `At.name`；`message_str` 与 QQ 适配器一致地隐藏首个 `@机器人`、把其他提及表示为 `@昵称(ID)`，并从 Plain 文本移除重复的可见 `@JID`。
-- 普通与流式出站消息都会在 `At` 后补分隔空格；新增 AstrBot 标准 `Location` 组件的 WhatsApp 原生出站支持。
-- 已知 LID→手机号映射现在会持续用于后续入站消息，避免同一成员在手机号 ID 与 LID 间跳变；消息时间、常用 OneBot raw 别名及引用消息的发送者昵称/时间也会完整填入。
-- 群主与群管理员身份只保留在 QQ 相容的 raw 事件中，不再越权提升 AstrBot 管理员权限；完整 WAMessage 及多层包装文档的原始文件名、MIME 与声明大小不再丢失，入站大小预检重新生效。
-- PN、LID、Hosted LID 与多设备 JID 会统一到稳定的数字 ID；每个 WhatsApp 账号使用独立映射缓存，并跟随 Gateway 当前认证会话自动刷新，避免多账号串号及 `:device` 后缀泄漏到插件事件。
-- Gateway 编辑消息会更新原消息缓存，后续显式引用可取得最终文本；`send_by_session` 支持数字群会话与一次性 `Reply`，无可发送内容或传输失败时会明确报错。
-- 恢复 AstrBot 4.x 流式发送后遗漏的 `OnAfterMessageSentEvent`，并按 Core 实际控制流自动停用兼容层；天使之心可在真实投递后及时取消安抚任务及释放会话锁，插件主动消息也不再被旧有 2.2 秒聚合延迟。
-- 新增只绑定当前 WhatsApp 会话的原生投票、联系人名片与活动 LLM 工具，模型不能指定任意收件人；Python 与 Gateway 双层验证选项、号码、时区及活动期限，入站原生活动也会完整投影时间、地点与状态。
-- Gateway 对外状态不再暴露自身多设备 `:device` 后缀；入站媒体下载失败会记录可诊断的错误文字，并在有 caption 时仍把不可用占位同时投影到组件链与 `message_str`。
-- 过期媒体 URL 会通过产生该消息的 Baileys socket 请求重上传，失败或超限下载会清理部分文件；重连会移除旧 socket 监听器并以 generation 隔离迟到事件，避免重复路由、跨账号缓存污染及磁盘残留。
-- Markdown 流式清洗不再为未闭合的 `**`、`__`、`~~` 生成临时尾符，并会移除行尾孤立的单个格式控制符，避免 WhatsApp edit 乱序或畸形模型输出在最终消息末尾残留 `~*`。
-- 登录管理页新增手机号配对码作为 QR 的安全替代：只允许未注册且正在等待登录的 session，请求采用 7–15 位国际号码校验、串行化与 30 秒冷却，手机号及一次性配对码不会写入日志。感谢 @cdxiaodong 在 #6 提出的功能方向。
-- Gateway 新增 `HTTPS_PROXY`／`HTTP_PROXY`（含小写变量）代理支持，并让 WebSocket 与媒体请求分别遵守 `NO_PROXY`；依赖、lockfile 与回归测试完整纳入，日志只记录脱敏元数据且继续阻断机器人出站消息回显。感谢 @cdxiaodong 在 #7 提出的代理场景。
-
 ## [0.2.29] - 2026-08-01
 
 - 管理頁新增獨立 GitHub Release 更新卡片，可自動或手動檢查新版本並查看更新說明，不再依賴官方插件市場的同步與快取。
