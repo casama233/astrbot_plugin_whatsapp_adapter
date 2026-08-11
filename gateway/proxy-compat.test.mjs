@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { HttpsProxyAgent } from "https-proxy-agent";
@@ -185,4 +186,16 @@ test("agent construction failures return only sanitized failure metadata", () =>
   assert.equal(result.metadata.reason, "agent_creation_failed");
   assert.equal(result.metadata.proxy.authenticated, true);
   assert.doesNotMatch(JSON.stringify(result.metadata), /alice|secret|path|token|value|hash/);
+});
+
+
+test("Gateway consumes only the credential-safe proxy compatibility layer", async () => {
+  const source = await readFile(
+    new URL("./whatsapp-gateway-impl.mjs", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /buildWhatsAppProxyConfig\(\)/);
+  assert.match(source, /\.\.\.whatsappProxySocketOptions/);
+  assert.doesNotMatch(source, /process\.env\.(?:HTTPS_PROXY|HTTP_PROXY)/);
+  assert.doesNotMatch(source, /log\.(?:info|warn|error)\(\s*\{\s*proxyUrl/);
 });
