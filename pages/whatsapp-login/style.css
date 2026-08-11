@@ -333,6 +333,129 @@ h1 {
   display: none;
 }
 
+/* ─── Phone pairing code ─── */
+.pair-code-panel[hidden],
+.pair-code-result[hidden] {
+  display: none;
+}
+
+.pair-code-panel {
+  margin-top: 1rem;
+}
+
+.pair-code-divider {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.85rem;
+  color: var(--text-faint);
+  font-size: 0.74rem;
+}
+
+.pair-code-divider::before,
+.pair-code-divider::after {
+  content: "";
+  height: 1px;
+  flex: 1;
+  background: var(--surface-border);
+}
+
+.pair-code-form {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.pair-code-form label {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.pair-code-controls {
+  display: flex;
+  gap: 0.55rem;
+  align-items: stretch;
+}
+
+.pair-code-input {
+  min-width: 0;
+  flex: 1;
+  border: 1px solid var(--surface-border);
+  border-radius: 999px;
+  padding: 0.55rem 0.85rem;
+  background: rgba(0, 0, 0, 0.16);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.82rem;
+  outline: none;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.pair-code-input::placeholder {
+  color: var(--text-faint);
+}
+
+.pair-code-input:focus {
+  border-color: rgba(37, 211, 102, 0.55);
+  box-shadow: 0 0 0 3px var(--green-dim);
+}
+
+.pair-code-input:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.pair-code-status {
+  min-height: 1.2rem;
+  color: var(--text-faint);
+  font-size: 0.76rem;
+}
+
+.pair-code-status.pending { color: var(--yellow); }
+.pair-code-status.success { color: var(--green); }
+.pair-code-status.error { color: var(--red); }
+
+.pair-code-result {
+  margin-top: 0.8rem;
+  padding: 0.85rem;
+  border: 1px solid rgba(37, 211, 102, 0.24);
+  border-radius: var(--radius-sm);
+  background: var(--green-dim);
+}
+
+.pair-code-result-title {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.pair-code-value-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin: 0.55rem 0;
+}
+
+.pair-code-value {
+  color: var(--green);
+  font-size: clamp(1.45rem, 5vw, 2rem);
+  font-weight: 800;
+  letter-spacing: 0.18em;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.pair-code-value:focus-visible {
+  border-radius: 4px;
+  outline: 2px solid var(--green);
+  outline-offset: 3px;
+}
+
+.pair-code-expiry {
+  margin-top: 0.25rem;
+}
+
 /* ─── Info List ─── */
 .info-list {
   display: grid;
@@ -637,6 +760,14 @@ h1 {
   .card-footer {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .pair-code-controls {
+    flex-direction: column;
+  }
+
+  .pair-code-controls .btn {
+    justify-content: center;
   }
 
   .update-card {

@@ -236,6 +236,8 @@ class WhatsAppConfigPolicyTests(unittest.TestCase):
         self.assertIn("set_runtime_plugin_defaults", main)
         self.assertIn('f"/{PLUGIN_NAME}/update/check"', main)
         self.assertIn('f"/{PLUGIN_NAME}/update/install"', main)
+        self.assertIn('f"/{PLUGIN_NAME}/pair-code"', main)
+        self.assertIn("self.page_client.pair_code(phone)", main)
         self.assertIn("atomic_swap_plugin", main)
         self.assertIn("restore_plugin_backup", main)
         self.assertIn("api.github.com/repos/{PLUGIN_REPOSITORY}/releases", updater)
@@ -245,7 +247,7 @@ class WhatsAppConfigPolicyTests(unittest.TestCase):
         self.assertIn("version: 0.2.30", metadata)
         self.assertIn('astrbot_version: ">=4.24.2,<5"', metadata)
         self.assertIn("category: 三方集成", metadata)
-        self.assertIn("from astrbot.api.web import json_response", main)
+        self.assertIn("from astrbot.api.web import json_response, request", main)
 
 
 if __name__ == "__main__":

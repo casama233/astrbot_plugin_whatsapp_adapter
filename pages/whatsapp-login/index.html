@@ -85,6 +85,46 @@
               刷新二维码
             </button>
           </div>
+
+          <section id="pairCodePanel" class="pair-code-panel" aria-labelledby="pairCodeTitle" hidden>
+            <div class="pair-code-divider"><span>或使用手机号码配对</span></div>
+            <form id="pairCodeForm" class="pair-code-form" novalidate>
+              <label id="pairCodeTitle" for="pairPhone">国际手机号码</label>
+              <div class="pair-code-controls">
+                <input
+                  id="pairPhone"
+                  class="pair-code-input"
+                  type="tel"
+                  inputmode="tel"
+                  autocomplete="off"
+                  autocapitalize="none"
+                  spellcheck="false"
+                  maxlength="24"
+                  placeholder="例如 +852 9123 4567"
+                  aria-describedby="pairCodeHelp pairCodeStatus"
+                  required
+                />
+                <button id="requestPairCode" class="btn btn-success" type="submit">获取配对码</button>
+              </div>
+              <p id="pairCodeHelp" class="hint">
+                请输入含国家或地区代码的号码；仅用于本次配对请求，不会在此页面保存。
+              </p>
+              <p id="pairCodeStatus" class="pair-code-status" role="status" aria-live="polite"></p>
+            </form>
+
+            <div id="pairCodeResult" class="pair-code-result" role="region" aria-labelledby="pairCodeResultTitle" hidden>
+              <p id="pairCodeResultTitle" class="pair-code-result-title">在 WhatsApp 手机端输入此配对码</p>
+              <div class="pair-code-value-row">
+                <output id="pairCodeValue" class="pair-code-value mono" tabindex="-1"></output>
+                <button id="copyPairCode" class="btn btn-ghost btn-xs" type="button" aria-label="复制 WhatsApp 配对码">
+                  复制
+                </button>
+              </div>
+              <p class="pair-code-expiry hint">
+                配对码会在短时间内失效；失效后可在冷却结束时重新获取。重置会话、重启连接或登出时，本页面会立即清除显示。
+              </p>
+            </div>
+          </section>
         </article>
 
         <!-- Session & Config Card -->
