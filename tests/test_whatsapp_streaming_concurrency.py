@@ -25,6 +25,14 @@ class ResponsePresenceLeaseTests(unittest.TestCase):
         self.assertEqual(self.leases.release(self.client, target), 0)
         self.assertEqual(self.leases.count(self.client, target), 0)
 
+    def test_empty_and_unknown_leases_keep_legacy_pause_semantics(self) -> None:
+        target = "123@s.whatsapp.net"
+
+        self.assertEqual(self.leases.count(self.client, target), 0)
+        self.assertTrue(self.leases.should_pause(self.client, target))
+        self.assertEqual(self.leases.release(self.client, target), 0)
+        self.assertEqual(self.leases.count(self.client, target), 0)
+
     def test_different_chats_do_not_share_presence_state(self) -> None:
         first = "111@s.whatsapp.net"
         second = "222@s.whatsapp.net"
