@@ -60,6 +60,7 @@ import {
   normalizePairingPhone,
   pairingCodeAvailability,
 } from "./pairing-code-compat.mjs";
+import { buildWhatsAppProxyConfig } from "./proxy-compat.mjs";
 
 const host = process.env.WA_GATEWAY_HOST || "127.0.0.1";
 const port = Number.parseInt(process.env.WA_GATEWAY_PORT || "18789", 10);
@@ -75,6 +76,21 @@ const seenIncomingMessages = new Map();
 const maxSeenIncomingMessages = 2000;
 const albumBuffers = new Map();
 const pairingCodePolicy = createPairingCodePolicy({ cooldownMs: 30_000 });
+const {
+  socketOptions: whatsappProxySocketOptions,
+  metadata: whatsappProxyMetadata,
+} = buildWhatsAppProxyConfig();
+
+if (whatsappProxyMetadata.configured) {
+  if (whatsappProxyMetadata.active) {
+    log.info({ proxy: whatsappProxyMetadata }, "WhatsApp proxy enabled");
+  } else {
+    log.warn(
+      { proxy: whatsappProxyMetadata },
+      "WhatsApp proxy configuration is inactive",
+    );
+  }
+}
 
 let socket = null;
 let currentAuthDir = authDir;
@@ -1715,6 +1731,7 @@ async function startSocket(opts = {}) {
     markOnlineOnConnect: Boolean(runtimeConfig.markOnline),
     browser: Browsers.macOS("Chrome"),
     syncFullHistory: false,
+    ...whatsappProxySocketOptions,
   });
   socket = socketForGeneration;
 

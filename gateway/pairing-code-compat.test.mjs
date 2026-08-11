@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
@@ -109,4 +110,17 @@ test("blocks concurrent and cooldown pairing requests without retaining secrets"
   assert.equal(nextLease.ok, true);
   assert.doesNotMatch(JSON.stringify(policy), /phone|code|8613800138000|AB12-CD34/i);
   nextLease.finish();
+});
+
+
+test("Gateway route keeps pairing credentials out of logs", async () => {
+  const source = await readFile(
+    new URL("./whatsapp-gateway-impl.mjs", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /normalizePairingPhone\(body\.phone\)/);
+  assert.match(source, /pairingCodePolicy\.begin\(\)/);
+  assert.match(source, /registered: Boolean\(pairingSocket\?\.authState\?\.creds\?\.registered\)/);
+  assert.doesNotMatch(source, /log\.(?:info|warn|error)\(\s*\{\s*phone\s*,\s*code/);
+  assert.doesNotMatch(source, /log\.(?:info|warn|error)\(\s*\{[^}]*phone/);
 });
