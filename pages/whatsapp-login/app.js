@@ -37,11 +37,19 @@ const els = {
   qrWrap: document.getElementById("qrWrap"),
   qrHint: document.getElementById("qrHint"),
   qrPhase: document.getElementById("qrPhase"),
+  pairCodePanel: document.getElementById("pairCodePanel"),
+  pairCodeForm: document.getElementById("pairCodeForm"),
+  pairPhone: document.getElementById("pairPhone"),
+  pairCodeStatus: document.getElementById("pairCodeStatus"),
+  pairCodeResult: document.getElementById("pairCodeResult"),
+  pairCodeValue: document.getElementById("pairCodeValue"),
   // Log
   eventLog: document.getElementById("eventLog"),
   // Buttons
   refreshBtn: document.getElementById("refresh"),
   refreshQrBtn: document.getElementById("refreshQr"),
+  requestPairCodeBtn: document.getElementById("requestPairCode"),
+  copyPairCodeBtn: document.getElementById("copyPairCode"),
   restartBtn: document.getElementById("restart"),
   logoutBtn: document.getElementById("logout"),
   checkUpdateBtn: document.getElementById("checkUpdate"),
@@ -62,6 +70,10 @@ let updateInfo = null;
 let updatePollTimer = null;
 let updateStartedHere = false;
 let updatePollAttempts = 0;
+let pairCodeRequestPending = false;
+let pairCodeRequestToken = 0;
+let pairCodeCooldownUntil = 0;
+let pairCodeCooldownTimer = null;
 
 // ─── Helpers ───
 function fmtTime() {
@@ -101,6 +113,81 @@ function clearChildren(el) {
   while (el.firstChild) el.firstChild.remove();
 }
 
+// Pairing credentials are intentionally kept only in the visible form/result.
+// They are never added to the event log or persisted in browser storage.
+const PAIR_CODE_COOLDOWN_MS = 30_000;
+
+function setPairCodeStatus(message = "", state = "") {
+  if (!els.pairCodeStatus) return;
+  els.pairCodeStatus.textContent = message;
+  els.pairCodeStatus.className = "pair-code-status";
+  if (state) els.pairCodeStatus.classList.add(state);
+}
+
+function updatePairCodeControls() {
+  if (!els.requestPairCodeBtn || !els.pairPhone) return;
+  const remaining = Math.max(0, pairCodeCooldownUntil - Date.now());
+  const coolingDown = remaining > 0;
+  const unavailable = Boolean(els.pairCodePanel?.hidden);
+  els.requestPairCodeBtn.disabled = unavailable || pairCodeRequestPending || coolingDown;
+  els.pairPhone.disabled = unavailable || pairCodeRequestPending || coolingDown;
+  els.requestPairCodeBtn.textContent = pairCodeRequestPending
+    ? "正在获取…"
+    : coolingDown
+      ? `请稍候 ${Math.ceil(remaining / 1000)}s`
+      : "获取配对码";
+}
+
+function stopPairCodeCooldown() {
+  if (pairCodeCooldownTimer) clearInterval(pairCodeCooldownTimer);
+  pairCodeCooldownTimer = null;
+}
+
+function startPairCodeCooldown() {
+  stopPairCodeCooldown();
+  pairCodeCooldownUntil = Date.now() + PAIR_CODE_COOLDOWN_MS;
+  updatePairCodeControls();
+  pairCodeCooldownTimer = setInterval(() => {
+    updatePairCodeControls();
+    if (Date.now() >= pairCodeCooldownUntil) {
+      stopPairCodeCooldown();
+      pairCodeCooldownUntil = 0;
+      updatePairCodeControls();
+    }
+  }, 1000);
+}
+
+function clearPairCode({ hide = false } = {}) {
+  pairCodeRequestToken += 1;
+  pairCodeRequestPending = false;
+  pairCodeCooldownUntil = 0;
+  stopPairCodeCooldown();
+  if (els.pairPhone) els.pairPhone.value = "";
+  if (els.pairCodeValue) els.pairCodeValue.textContent = "";
+  if (els.pairCodeResult) els.pairCodeResult.hidden = true;
+  setPairCodeStatus();
+  if (hide && els.pairCodePanel) els.pairCodePanel.hidden = true;
+  updatePairCodeControls();
+}
+
+function setPairCodeAvailable(available) {
+  if (!els.pairCodePanel) return;
+  if (!available) {
+    clearPairCode({ hide: true });
+    return;
+  }
+  els.pairCodePanel.hidden = false;
+  updatePairCodeControls();
+}
+
+function normalizePairingPhone(value) {
+  const raw = String(value || "").trim();
+  if (!raw || !/^\+?[0-9\s().-]+$/.test(raw)) return "";
+  const digits = raw.replace(/\D/g, "");
+  if (!/^[1-9][0-9]{6,14}$/.test(digits)) return "";
+  return digits;
+}
+
 // ─── Log ───
 function log(level, msg) {
   const empty = els.eventLog.querySelector(".log-empty");
@@ -131,6 +218,7 @@ function renderDashboard(data) {
   currentConnectionStatus = status;
   const isReady = data.ready || status === "connected";
   const isStarting = ["starting", "pairing", "pairing_restart", "resetting", "qr_pending"].includes(status) || data.hasQr;
+  setPairCodeAvailable(!isReady);
   const isError = !isReady && !isStarting;
 
   els.metricStatusText.textContent = isReady ? "已连接" : isStarting ? "等待连接" : "断开";
@@ -398,6 +486,7 @@ function renderQr(data) {
     retryBtn.textContent = "重试";
     retryBtn.addEventListener("click", () => {
       loggedOutSince = 0;
+      clearPairCode({ hide: true });
       bridge.apiPost("session/reset", {}).then(() => {
         log("info", "已建立全新登录 session，正在等待二维码...");
         setTimeout(() => refresh().catch(() => {}), 1500);
@@ -509,6 +598,7 @@ els.refreshBtn.addEventListener("click", handleRefresh);
 els.refreshQrBtn?.addEventListener("click", async () => {
   if (["logged_out", "session_invalid", "qr_expired", "error"].includes(currentConnectionStatus)) {
     log("warn", "登录状态已失效，正在建立全新登录 session...");
+    clearPairCode({ hide: true });
     try {
       await bridge.apiPost("session/reset", {});
     } catch (err) {
@@ -520,7 +610,72 @@ els.refreshQrBtn?.addEventListener("click", async () => {
   handleRefresh();
 });
 
+els.pairCodeForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (pairCodeRequestPending || Date.now() < pairCodeCooldownUntil || els.pairCodePanel.hidden) return;
+
+  const phone = normalizePairingPhone(els.pairPhone.value);
+  if (!phone) {
+    setPairCodeStatus("请输入含国家或地区代码的有效国际手机号码。", "error");
+    els.pairPhone.focus();
+    return;
+  }
+
+  const requestToken = ++pairCodeRequestToken;
+  pairCodeRequestPending = true;
+  if (els.pairCodeValue) els.pairCodeValue.textContent = "";
+  if (els.pairCodeResult) els.pairCodeResult.hidden = true;
+  setPairCodeStatus("正在向 WhatsApp 申请配对码…", "pending");
+  startPairCodeCooldown();
+  updatePairCodeControls();
+
+  try {
+    const request = bridge.apiPost("pair-code", { phone });
+    // Remove the full number from the form as soon as the request has been handed off.
+    els.pairPhone.value = "";
+    const result = await request;
+    if (requestToken !== pairCodeRequestToken || els.pairCodePanel.hidden) return;
+
+    const code = String(result?.code || result?.pairingCode || "").trim();
+    if (!code || code.length > 32 || /[\r\n]/.test(code)) {
+      throw new Error("Invalid pairing-code response");
+    }
+    els.pairCodeValue.textContent = code;
+    els.pairCodeResult.hidden = false;
+    setPairCodeStatus("配对码已生成，请尽快在手机端完成连接。", "success");
+    els.pairCodeValue.focus();
+    log("info", "已生成新的手机配对码（敏感内容未记录）");
+  } catch (_) {
+    if (requestToken !== pairCodeRequestToken || els.pairCodePanel.hidden) return;
+    setPairCodeStatus("未能获取配对码，请确认号码与 Gateway 状态后重试。", "error");
+    log("error", "配对码请求失败（敏感内容未记录）");
+  } finally {
+    if (requestToken === pairCodeRequestToken) {
+      pairCodeRequestPending = false;
+      updatePairCodeControls();
+    }
+  }
+});
+
+els.pairPhone?.addEventListener("input", () => {
+  if (els.pairCodeValue) els.pairCodeValue.textContent = "";
+  if (els.pairCodeResult) els.pairCodeResult.hidden = true;
+  setPairCodeStatus();
+});
+
+els.copyPairCodeBtn?.addEventListener("click", async () => {
+  const code = els.pairCodeValue?.textContent || "";
+  if (!code) return;
+  try {
+    await navigator.clipboard.writeText(code);
+    setPairCodeStatus("配对码已复制。", "success");
+  } catch (_) {
+    setPairCodeStatus("无法自动复制，请手动选择配对码。", "error");
+  }
+});
+
 els.restartBtn.addEventListener("click", async () => {
+  clearPairCode({ hide: true });
   log("warn", "正在重启连接...");
   try {
     const res = await bridge.apiPost("restart", {});
@@ -534,6 +689,7 @@ els.restartBtn.addEventListener("click", async () => {
 els.logoutBtn.addEventListener("click", async () => {
   const confirmed = window.confirm("确定要登出当前 WhatsApp Web 会话并重新扫码吗？");
   if (!confirmed) return;
+  clearPairCode({ hide: true });
   log("warn", "正在登出...");
   try {
     const res = await bridge.apiPost("logout", {});

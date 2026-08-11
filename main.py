@@ -15,7 +15,7 @@ from astrbot import logger
 from astrbot.api import AstrBotConfig
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, register
-from astrbot.api.web import json_response
+from astrbot.api.web import json_response, request
 
 try:
     from astrbot.core.utils.astrbot_path import (
@@ -35,7 +35,11 @@ from .plugin_updater import (
     restore_plugin_backup,
 )
 from .whatsapp_adapter import BASE_GATEWAY_CONFIG
-from .whatsapp_client import GatewayProcess, WhatsAppGatewayClient
+from .whatsapp_client import (
+    GatewayProcess,
+    WhatsAppGatewayClient,
+    WhatsAppGatewayError,
+)
 from .whatsapp_config_policy import (
     adopt_legacy_gateway_defaults,
     set_runtime_plugin_defaults,
@@ -60,6 +64,12 @@ _UPDATE_BUSY_PHASES = {
     "installing",
     "reloading",
     "rolling_back",
+}
+_PAIR_CODE_ERROR_MESSAGES = {
+    409: "当前 WhatsApp 已登录，无需再生成配对码。",
+    429: "配对码请求过于频繁，请稍后再试。",
+    501: "当前 Gateway 运行环境不支持手机号配对码。",
+    503: "WhatsApp 登录连接尚未准备好，请等待二维码出现或重建登录会话。",
 }
 
 
@@ -109,6 +119,12 @@ class WhatsAppAdapterPlugin(Star):
             self.page_qr,
             ["GET"],
             "WhatsApp login QR",
+        )
+        context.register_web_api(
+            f"/{PLUGIN_NAME}/pair-code",
+            self.page_pair_code,
+            ["POST"],
+            "Generate a WhatsApp phone pairing code through the authenticated Dashboard API",
         )
         context.register_web_api(
             f"/{PLUGIN_NAME}/restart",
@@ -303,6 +319,66 @@ class WhatsAppAdapterPlugin(Star):
             logger.warning("WhatsApp 管理页 QR 获取失败: %s", exc)
             return json_response(
                 {"ok": False, "error": str(exc), "baseUrl": self._base_url},
+                status_code=503,
+            )
+
+    async def page_pair_code(self):
+        """Generate a pairing code without logging the phone number or code."""
+        try:
+            payload = await request.json(default={})
+            if not isinstance(payload, dict):
+                return json_response(
+                    {"ok": False, "error": "请求数据必须是 JSON 对象。"},
+                    status_code=400,
+                )
+            phone = payload.get("phone")
+            if not isinstance(phone, str) or not re.fullmatch(
+                r"\+?[1-9][0-9]{6,14}",
+                phone,
+            ):
+                return json_response(
+                    {
+                        "ok": False,
+                        "error": "手机号必须包含国家或地区代码，并使用 7 到 15 位数字。",
+                    },
+                    status_code=400,
+                )
+
+            await self._ensure_page_gateway()
+            result = await self.page_client.pair_code(phone)
+            code = result.get("code")
+            if not isinstance(code, str) or not re.fullmatch(
+                r"[A-Za-z0-9-]{4,32}",
+                code,
+            ):
+                logger.warning("WhatsApp Gateway returned an invalid pairing-code response")
+                return json_response(
+                    {"ok": False, "error": "Gateway 未返回有效配对码。"},
+                    status_code=502,
+                )
+            logger.info("WhatsApp 手机号配对码已安全生成")
+            return json_response({"ok": True, "code": code})
+        except WhatsAppGatewayError as exc:
+            gateway_status = int(exc.status_code or 0)
+            status_code = gateway_status if gateway_status in _PAIR_CODE_ERROR_MESSAGES else 502
+            logger.warning(
+                "WhatsApp 手机号配对码生成失败: gateway_status=%s",
+                gateway_status or "unknown",
+            )
+            return json_response(
+                {
+                    "ok": False,
+                    "error": _PAIR_CODE_ERROR_MESSAGES.get(
+                        status_code,
+                        "Gateway 暂时无法生成配对码，请稍后重试。",
+                    ),
+                },
+                status_code=status_code,
+            )
+        except Exception:
+            logger.warning("WhatsApp 手机号配对码请求处理失败")
+            return json_response(
+                {"ok": False, "error": "配对码请求处理失败，请稍后重试。"},
                 status_code=503,
             )
 

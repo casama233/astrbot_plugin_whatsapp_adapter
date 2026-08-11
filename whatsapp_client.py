@@ -12,7 +12,9 @@ import aiohttp
 
 
 class WhatsAppGatewayError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 _NODE_DEPENDENCY_INSTALL_LOCK = asyncio.Lock()
@@ -62,6 +64,9 @@ class WhatsAppGatewayClient:
 
     async def qr(self) -> dict[str, Any]:
         return await self._request("GET", "/qr")
+
+    async def pair_code(self, phone: str) -> dict[str, Any]:
+        return await self._request("POST", "/pair-code", json_data={"phone": phone})
 
     async def configure(self, config: dict[str, Any]) -> dict[str, Any]:
         return await self._request("POST", "/config", json_data=config)
@@ -340,7 +345,10 @@ class WhatsAppGatewayClient:
         ) as response:
             text = await response.text()
             if response.status >= 400:
-                raise WhatsAppGatewayError(f"Gateway {method} {path} failed: {response.status} {text}")
+                raise WhatsAppGatewayError(
+                    f"Gateway {method} {path} failed: {response.status} {text}",
+                    status_code=response.status,
+                )
             if not text:
                 return {}
             try:
