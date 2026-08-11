@@ -4,6 +4,7 @@ import importlib.util
 import json
 from pathlib import Path
 import shutil
+import sys
 import tempfile
 import unittest
 import zipfile
@@ -16,10 +17,21 @@ SPEC = importlib.util.spec_from_file_location(
 )
 assert SPEC and SPEC.loader
 release_contract = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = release_contract
 SPEC.loader.exec_module(release_contract)
 
 
+def _next_patch(version: str) -> str:
+    major, minor, patch = release_contract.parse_semver(version)
+    return f"{major}.{minor}.{patch + 1}"
+
+
 class ReleaseContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.current_version = release_contract.validate_repo(ROOT).version
+        cls.next_version = _next_patch(cls.current_version)
+
     def _copy_repo_contract_files(self, target: Path) -> None:
         for name in (
             "metadata.yaml",
@@ -31,13 +43,24 @@ class ReleaseContractTests(unittest.TestCase):
             shutil.copy2(ROOT / name, target / name)
         (target / ".release").mkdir()
 
+    def _marker_payload(self, **overrides) -> dict:
+        payload = {
+            "version": self.next_version,
+            "previous_version": self.current_version,
+            "date": "2026-08-11",
+            "commit_subject": "harden release workflow",
+            "notes": ["Validate the release contract."],
+        }
+        payload.update(overrides)
+        return payload
+
     def test_current_repository_contract_is_consistent(self) -> None:
         contract = release_contract.validate_repo(ROOT)
-        self.assertEqual(contract.version, "0.2.31")
+        self.assertEqual(contract.version, self.current_version)
         self.assertEqual(contract.metadata["name"], "astrbot_plugin_whatsapp_adapter")
         self.assertNotIn("support_platforms", contract.metadata)
 
-    def test_semver_rejects_same_downgrade_prerelease_and_leading_zero(self) -> None:
+    def test_semver_rejects_prerelease_v_prefix_and_leading_zero(self) -> None:
         self.assertEqual(release_contract.parse_semver("1.2.3"), (1, 2, 3))
         for value in ("1.2", "v1.2.3", "1.2.3-beta.1", "01.2.3"):
             with self.subTest(value=value):
@@ -48,25 +71,15 @@ class ReleaseContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self._copy_repo_contract_files(root)
-            marker = root / ".release" / "0.2.32.json"
+            marker = root / ".release" / f"{self.next_version}.json"
+            marker.write_text(json.dumps(self._marker_payload()), encoding="utf-8")
+            spec = release_contract.load_marker(marker, root)
+            self.assertEqual(spec["version"], self.next_version)
+
             marker.write_text(
-                json.dumps(
-                    {
-                        "version": "0.2.32",
-                        "previous_version": "0.2.31",
-                        "date": "2026-08-11",
-                        "commit_subject": "harden release workflow",
-                        "notes": ["Validate the release contract."],
-                    }
-                ),
+                json.dumps(self._marker_payload(version=self.current_version)),
                 encoding="utf-8",
             )
-            spec = release_contract.load_marker(marker, root)
-            self.assertEqual(spec["version"], "0.2.32")
-
-            bad = json.loads(marker.read_text(encoding="utf-8"))
-            bad["version"] = "0.2.31"
-            marker.write_text(json.dumps(bad), encoding="utf-8")
             with self.assertRaises(release_contract.ReleaseContractError):
                 release_contract.load_marker(marker, root)
 
@@ -74,18 +87,9 @@ class ReleaseContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self._copy_repo_contract_files(root)
-            marker = root / ".release" / "0.2.32.json"
+            marker = root / ".release" / f"{self.next_version}.json"
             marker.write_text(
-                json.dumps(
-                    {
-                        "version": "0.2.32",
-                        "previous_version": "0.2.31",
-                        "date": "2026-08-11",
-                        "commit_subject": "release",
-                        "notes": ["note"],
-                        "typo_field": True,
-                    }
-                ),
+                json.dumps(self._marker_payload(typo_field=True)),
                 encoding="utf-8",
             )
             with self.assertRaises(release_contract.ReleaseContractError):
@@ -95,24 +99,21 @@ class ReleaseContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self._copy_repo_contract_files(root)
-            marker = root / ".release" / "v0.2.32.json"
+            marker = root / ".release" / f"v{self.next_version}.json"
             marker.write_text(
                 json.dumps(
-                    {
-                        "version": "0.2.32",
-                        "previous_version": "0.2.31",
-                        "date": "2026-08-11",
-                        "commit_subject": "release contract",
-                        "notes": ["Keep all version sources synchronized."],
-                    }
+                    self._marker_payload(
+                        commit_subject="release contract",
+                        notes=["Keep all version sources synchronized."],
+                    )
                 ),
                 encoding="utf-8",
             )
             release_contract.apply_marker(marker, root)
             self.assertFalse(marker.exists())
-            self.assertEqual(release_contract.validate_repo(root).version, "0.2.32")
+            self.assertEqual(release_contract.validate_repo(root).version, self.next_version)
             self.assertIn(
-                "## [0.2.32] - 2026-08-11",
+                f"## [{self.next_version}] - 2026-08-11",
                 (root / "CHANGELOG.md").read_text(encoding="utf-8"),
             )
 
@@ -124,18 +125,17 @@ class ReleaseContractTests(unittest.TestCase):
             with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
                 for name in ("metadata.yaml", "main.py", "package.json", "package-lock.json"):
                     archive.write(ROOT / name, prefix + name)
-            result = release_contract.validate_archive(archive_path, "0.2.31")
-            self.assertEqual(result["version"], "0.2.31")
+            result = release_contract.validate_archive(archive_path, self.current_version)
+            self.assertEqual(result["version"], self.current_version)
             self.assertLessEqual(result["size"], release_contract.ASTRBOT_MARKET_MAX_ZIP_BYTES)
 
     def test_archive_rejects_development_junk_and_wrong_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            archive_path = tmp_path / "bad.zip"
+            archive_path = Path(tmp) / "bad.zip"
             with zipfile.ZipFile(archive_path, "w") as archive:
                 archive.writestr("wrong-root/tests/test.py", "pass")
             with self.assertRaises(release_contract.ReleaseContractError):
-                release_contract.validate_archive(archive_path, "0.2.31")
+                release_contract.validate_archive(archive_path, self.current_version)
 
 
 if __name__ == "__main__":
