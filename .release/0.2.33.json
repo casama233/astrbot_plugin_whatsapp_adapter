@@ -1,0 +1,11 @@
+{
+  "version": "0.2.33",
+  "previous_version": "0.2.32",
+  "date": "2026-08-12",
+  "commit_subject": "Fix sandboxed plugin page confirmations",
+  "notes": [
+    "修复 AstrBot Plugin Page 受限 iframe 中原生 confirm 无法弹出，导致「立即更新」点击后没有反应的问题。",
+    "将插件更新改为 10 秒内二次点击确认，保留误触保护且不依赖 allow-modals。",
+    "同步修复「登出并重新扫码」的确认流程，并增加沙箱环境回归测试。"
+  ]
+}
