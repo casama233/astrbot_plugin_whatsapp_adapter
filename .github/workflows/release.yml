@@ -5,6 +5,21 @@ on:
     branches: [main]
     paths:
       - ".release/*.json"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Preflight validates without publishing; publish is allowed only from main"
+        type: choice
+        options:
+          - preflight
+          - publish
+        default: preflight
+        required: true
+      marker:
+        description: "Optional .release/<version>.json path; blank auto-detects the only marker"
+        type: string
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -30,115 +45,91 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Read release specification
+      - name: Resolve release mode and marker
+        env:
+          REQUESTED_MODE: ${{ github.event.inputs.mode || 'publish' }}
+          REQUESTED_MARKER: ${{ github.event.inputs.marker || '' }}
         shell: bash
         run: |
           set -euo pipefail
-          python - <<'PY'
-          import json
-          import os
-          import re
-          from pathlib import Path
 
-          markers = sorted(Path(".release").glob("*.json"))
-          if len(markers) != 1:
-              raise SystemExit(f"expected exactly one release marker, found {len(markers)}")
+          publish=false
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            publish=true
+          elif [[ "$REQUESTED_MODE" == "publish" ]]; then
+            if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+              echo "manual publish is only allowed from the main branch" >&2
+              exit 1
+            fi
+            publish=true
+          fi
+          echo "PUBLISH_RELEASE=$publish" >> "$GITHUB_ENV"
 
-          marker = markers[0]
-          spec = json.loads(marker.read_text(encoding="utf-8"))
-          required = ("version", "previous_version", "date", "commit_subject", "notes")
-          missing = [key for key in required if not spec.get(key)]
-          if missing:
-              raise SystemExit(f"release marker is missing: {', '.join(missing)}")
+          marker="$REQUESTED_MARKER"
+          if [[ -z "$marker" ]]; then
+            mapfile -t markers < <(find .release -maxdepth 1 -type f -name '*.json' -print | sort)
+            if [[ "${#markers[@]}" -ne 1 ]]; then
+              echo "expected exactly one release marker, found ${#markers[@]}" >&2
+              exit 1
+            fi
+            marker="${markers[0]}"
+          fi
+          if [[ "$marker" != .release/*.json || ! -f "$marker" ]]; then
+            echo "release marker must be an existing .release/*.json file" >&2
+            exit 1
+          fi
 
-          version = str(spec["version"])
-          previous = str(spec["previous_version"])
-          release_date = str(spec["date"])
-          subject = str(spec["commit_subject"]).strip()
-          notes = [str(item).strip() for item in spec["notes"] if str(item).strip()]
-          if not re.fullmatch(r"\d+\.\d+\.\d+", version):
-              raise SystemExit(f"invalid version: {version}")
-          if not re.fullmatch(r"\d+\.\d+\.\d+", previous):
-              raise SystemExit(f"invalid previous version: {previous}")
-          if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", release_date):
-              raise SystemExit(f"invalid release date: {release_date}")
-          if not notes:
-              raise SystemExit("release notes must not be empty")
+          python scripts/release_contract.py validate-marker "$marker" \
+            --github-env "$GITHUB_ENV" \
+            --output-dir "$RUNNER_TEMP"
 
-          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
-              env.write(f"RELEASE_VERSION={version}\n")
-              env.write(f"PREVIOUS_VERSION={previous}\n")
-              env.write(f"RELEASE_DATE={release_date}\n")
-              env.write(f"RELEASE_MARKER={marker.as_posix()}\n")
-
-          Path("/tmp/release-subject.txt").write_text(subject, encoding="utf-8")
-          bullet_text = "\n".join(f"- {item}" for item in notes)
-          Path("/tmp/release-notes.md").write_text(
-              f"## 更新內容\n\n{bullet_text}\n",
-              encoding="utf-8",
-          )
-          Path("/tmp/changelog-section.md").write_text(
-              f"## [{version}] - {release_date}\n\n{bullet_text}\n\n",
-              encoding="utf-8",
-          )
-          PY
-
-      - name: Update version and changelog
+      - name: Inspect remote main state
+        if: env.PUBLISH_RELEASE == 'true'
         shell: bash
         run: |
           set -euo pipefail
-          npm version "$RELEASE_VERSION" --no-git-tag-version --allow-same-version
-          python - <<'PY'
-          import os
-          from pathlib import Path
+          git fetch origin main --tags --force
+          remote_version=$(git show origin/main:metadata.yaml | sed -n 's/^version: //p')
+          if [[ -z "$remote_version" ]]; then
+            echo "cannot resolve metadata version from origin/main" >&2
+            exit 1
+          fi
 
-          old = os.environ["PREVIOUS_VERSION"]
-          new = os.environ["RELEASE_VERSION"]
+          if [[ "$remote_version" == "$RELEASE_VERSION" ]]; then
+            subject=$(git log -1 --format=%s origin/main)
+            if [[ "$subject" != "Release v${RELEASE_VERSION}:"* ]]; then
+              echo "origin/main already has target version but is not the expected release commit" >&2
+              exit 1
+            fi
+            if git ls-tree -r --name-only origin/main .release | grep -Eq '^\.release/.*\.json$'; then
+              echo "target release commit unexpectedly still contains a release marker" >&2
+              exit 1
+            fi
+            git checkout --detach origin/main
+            python scripts/release_contract.py validate-repo --expected-version "$RELEASE_VERSION"
+            echo "RESUME_RELEASE=true" >> "$GITHUB_ENV"
+            echo "Resuming release publication from existing release commit $subject"
+          elif [[ "$remote_version" == "$PREVIOUS_VERSION" ]]; then
+            if [[ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]]; then
+              echo "origin/main moved after this release run started; refusing a stale publish" >&2
+              exit 1
+            fi
+            echo "RESUME_RELEASE=false" >> "$GITHUB_ENV"
+          else
+            echo "stale release marker: origin/main is $remote_version, expected $PREVIOUS_VERSION or $RELEASE_VERSION" >&2
+            exit 1
+          fi
 
-          def replace_exact(path: str, before: str, after: str, expected: int) -> None:
-              file = Path(path)
-              text = file.read_text(encoding="utf-8")
-              count = text.count(before)
-              if count != expected:
-                  raise SystemExit(
-                      f"{path}: expected {expected} occurrence(s) of {before!r}, found {count}"
-                  )
-              file.write_text(text.replace(before, after), encoding="utf-8")
-
-          replace_exact("main.py", f'"{old}"', f'"{new}"', 1)
-          replace_exact("metadata.yaml", f"version: {old}", f"version: {new}", 1)
-          replace_exact("tests/test_whatsapp_config_policy.py", old, new, 2)
-
-          changelog = Path("CHANGELOG.md")
-          text = changelog.read_text(encoding="utf-8")
-          heading = "# Changelog\n\n"
-          if not text.startswith(heading):
-              raise SystemExit("CHANGELOG.md heading is not in the expected format")
-          if f"## [{new}]" in text:
-              raise SystemExit(f"CHANGELOG.md already contains {new}")
-          section = Path("/tmp/changelog-section.md").read_text(encoding="utf-8")
-          changelog.write_text(heading + section + text[len(heading):], encoding="utf-8")
-          Path(os.environ["RELEASE_MARKER"]).unlink()
-          PY
+      - name: Apply release specification
+        if: env.RESUME_RELEASE != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/release_contract.py apply-marker "$RELEASE_MARKER"
+          python scripts/release_contract.py validate-repo --expected-version "$RELEASE_VERSION"
 
       - name: Compile Python
-        run: >-
-          python -m compileall -q
-          main.py
-          plugin_updater.py
-          whatsapp_adapter.py
-          _whatsapp_adapter_impl.py
-          whatsapp_commands.py
-          whatsapp_config_policy.py
-          whatsapp_helpers.py
-          _whatsapp_helpers_impl.py
-          whatsapp_chunking.py
-          whatsapp_event.py
-          _whatsapp_event_impl.py
-          whatsapp_ai_tools.py
-          whatsapp_identity.py
-          group_name_compat.py
-          tests
+        run: python -m compileall -q .
 
       - name: Python tests
         run: python -m unittest discover -v tests
@@ -149,30 +140,70 @@ jobs:
       - name: Node tests
         run: node --test gateway/*.test.mjs scripts/*.test.mjs
 
-      - name: Commit release
+      - name: Commit release candidate
+        if: env.RESUME_RELEASE != 'true'
         shell: bash
         run: |
           set -euo pipefail
-          subject=$(cat /tmp/release-subject.txt)
+          subject=$(cat "$RELEASE_SUBJECT_FILE")
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add CHANGELOG.md main.py metadata.yaml package.json package-lock.json tests/test_whatsapp_config_policy.py .release
+          git add CHANGELOG.md main.py metadata.yaml package.json package-lock.json
+          git add -A -- "$RELEASE_MARKER"
           git commit -m "Release v${RELEASE_VERSION}: ${subject}"
-          git push origin HEAD:main
+          if ! git diff --quiet || ! git diff --cached --quiet; then
+            echo "release candidate left unexpected uncommitted changes" >&2
+            git status --short
+            exit 1
+          fi
 
       - name: Build AstrBot plugin ZIP
         shell: bash
         run: |
           set -euo pipefail
           asset="astrbot_plugin_whatsapp_adapter-v${RELEASE_VERSION}.zip"
+          asset_path="$RUNNER_TEMP/$asset"
+          checksum_path="$asset_path.sha256"
           git archive \
             --format=zip \
             --prefix="astrbot_plugin_whatsapp_adapter/" \
-            --output="/tmp/${asset}" \
+            --output="$asset_path" \
             HEAD
-          echo "RELEASE_ASSET=/tmp/${asset}" >> "$GITHUB_ENV"
+          (
+            cd "$RUNNER_TEMP"
+            sha256sum "$asset" > "$asset.sha256"
+          )
+          echo "RELEASE_ASSET=$asset_path" >> "$GITHUB_ENV"
+          echo "RELEASE_ASSET_NAME=$asset" >> "$GITHUB_ENV"
+          echo "RELEASE_CHECKSUM=$checksum_path" >> "$GITHUB_ENV"
+          echo "RELEASE_CHECKSUM_NAME=$asset.sha256" >> "$GITHUB_ENV"
 
-      - name: Publish GitHub Release
+      - name: Validate AstrBot release artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/release_contract.py validate-archive "$RELEASE_ASSET" \
+            --expected-version "$RELEASE_VERSION"
+          (
+            cd "$RUNNER_TEMP"
+            sha256sum -c "$RELEASE_CHECKSUM_NAME"
+          )
+
+      - name: Preflight summary
+        if: env.PUBLISH_RELEASE != 'true'
+        run: |
+          echo "Release v${RELEASE_VERSION} passed full preflight."
+          echo "No commit, tag, or GitHub Release was pushed."
+
+      - name: Push release commit
+        if: env.PUBLISH_RELEASE == 'true' && env.RESUME_RELEASE != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git push origin HEAD:main
+
+      - name: Publish or resume GitHub Release
+        if: env.PUBLISH_RELEASE == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -180,12 +211,61 @@ jobs:
           set -euo pipefail
           tag="v${RELEASE_VERSION}"
           target=$(git rev-parse HEAD)
+
+          git fetch origin main --tags --force
+          if [[ "$(git rev-parse origin/main)" != "$target" ]]; then
+            echo "origin/main no longer points at the validated release commit" >&2
+            exit 1
+          fi
+
+          tag_exists=false
+          if git show-ref --verify --quiet "refs/tags/$tag"; then
+            tag_exists=true
+            tag_target=$(git rev-list -n 1 "$tag")
+            if [[ "$tag_target" != "$target" ]]; then
+              echo "existing tag $tag points to $tag_target, expected $target" >&2
+              exit 1
+            fi
+          fi
+
           if gh release view "$tag" >/dev/null 2>&1; then
-            gh release upload "$tag" "$RELEASE_ASSET" --clobber
+            if [[ "$tag_exists" != true ]]; then
+              echo "GitHub Release $tag exists but its tag was not found after fetching tags" >&2
+              exit 1
+            fi
+            gh release edit "$tag" \
+              --title "$tag" \
+              --notes-file "$RELEASE_NOTES_FILE"
+            gh release upload "$tag" \
+              "$RELEASE_ASSET" \
+              "$RELEASE_CHECKSUM" \
+              --clobber
+          elif [[ "$tag_exists" == true ]]; then
+            gh release create "$tag" \
+              --verify-tag \
+              --title "$tag" \
+              --notes-file "$RELEASE_NOTES_FILE" \
+              "$RELEASE_ASSET" \
+              "$RELEASE_CHECKSUM"
           else
             gh release create "$tag" \
               --target "$target" \
               --title "$tag" \
-              --notes-file /tmp/release-notes.md \
-              "$RELEASE_ASSET"
+              --notes-file "$RELEASE_NOTES_FILE" \
+              "$RELEASE_ASSET" \
+              "$RELEASE_CHECKSUM"
           fi
+
+          git fetch origin "refs/tags/$tag:refs/tags/$tag" --force
+          if [[ "$(git rev-list -n 1 "$tag")" != "$target" ]]; then
+            echo "published tag does not resolve to the validated release commit" >&2
+            exit 1
+          fi
+          state=$(gh release view "$tag" --json isDraft,isPrerelease --jq '[.isDraft,.isPrerelease] | @tsv')
+          if [[ "$state" != $'false\tfalse' ]]; then
+            echo "published release is unexpectedly draft or prerelease: $state" >&2
+            exit 1
+          fi
+          assets=$(gh release view "$tag" --json assets --jq '.assets[].name')
+          grep -Fxq "$RELEASE_ASSET_NAME" <<<"$assets"
+          grep -Fxq "$RELEASE_CHECKSUM_NAME" <<<"$assets"
