@@ -7,6 +7,54 @@ function replaceRequired(source, pattern, replacement, label) {
   return source.replace(pattern, replacement);
 }
 
+const ALBUM_HELPERS = `function isAlbumCandidate(item) {
+  if (!item?.message) return false;
+  if (mediaKind(item.message) !== "image") return false;
+  if (extrasFromMessage(item.message)) return false;
+  const contextInfo = contextInfoFromMessage(item.message);
+  if (contextInfo?.stanzaId || contextInfo?.quotedMessage) return false;
+
+  // Captioned media is safe to coalesce for direct chats when it is part of a
+  // short image burst. Keep groups conservative: consecutive captioned images
+  // from one group member are more likely to be separate conversational turns.
+  const hasCaption = Boolean(textFromMessage(item.message));
+  const chatJid = String(item.key?.remoteJid || "");
+  if (hasCaption && chatJid.endsWith("@g.us")) return false;
+  return true;
+}
+
+function albumMediaMetadata(item, albumCount) {
+  if (albumCount <= 1) return {};
+  return {
+    caption: textFromMessage(item.message) || "",
+    mentionedJids: mentionedJidsForAstrBot(item.message),
+    mentionedNames: mentionedNamesForAstrBot(item.message),
+    mentionAll: mentionAllFromMessage(item.message),
+  };
+}
+
+function albumMentionedJids(items) {
+  const result = [];
+  for (const item of items || []) {
+    for (const jid of mentionedJidsForAstrBot(item.message)) {
+      if (jid && !result.includes(jid)) result.push(jid);
+    }
+  }
+  return result;
+}
+
+function albumMentionedNames(items) {
+  const result = {};
+  for (const item of items || []) {
+    Object.assign(result, mentionedNamesForAstrBot(item.message));
+  }
+  return result;
+}
+
+function albumMentionAll(items) {
+  return (items || []).some((item) => mentionAllFromMessage(item.message));
+}`;
+
 const ALBUM_SCHEDULER = `function albumBufferKey(item, expectedGeneration = socketGeneration) {
   const chatJid = item.key.remoteJid;
   const senderJid = item.key.participant || item.key.participantAlt || (item.key.fromMe ? selfJid : null) || chatJid;
@@ -78,9 +126,9 @@ const ROUTE_ALBUM_BLOCK = `  const debounceMs = Number(runtimeConfig.mediaAlbumD
   const bufferKey = albumBufferKey(item, expectedGeneration);
 
   // An image burst is deliberately delayed for a short debounce window.  If
-  // the same sender follows it with text, a captioned image, a reply, or any
-  // other semantic message, flush the pending pictures first so the delayed
-  // album cannot overtake the newer message in AstrBot's event queue.
+  // the same sender follows it with text, a reply, non-image media, or another
+  // semantic message, flush the pending pictures first so the delayed album
+  // cannot overtake the newer message in AstrBot's event queue.
   if (debounceMs > 0 && albumBuffers.has(bufferKey) && !albumCandidate) {
     await flushAlbumBuffer(bufferKey, expectedGeneration, eventSocket);
     if (expectedGeneration !== socketGeneration || eventSocket !== socket) return;
@@ -106,6 +154,12 @@ export function patchGatewayPrivateMediaBursts(source) {
   );
   content = replaceRequired(
     content,
+    /function isAlbumCandidate\(item\) \{[\s\S]*?\n}\n\nfunction getEphemeralExpiration/,
+    `${ALBUM_HELPERS}\n\nfunction getEphemeralExpiration`,
+    "album candidate helper",
+  );
+  content = replaceRequired(
+    content,
     /function scheduleAlbumItem\([\s\S]*?\n}\n\nasync function routeIncomingMessage/,
     `${ALBUM_SCHEDULER}\n\nasync function routeIncomingMessage`,
     "album scheduler",
@@ -115,6 +169,24 @@ export function patchGatewayPrivateMediaBursts(source) {
     /  const debounceMs = Number\(runtimeConfig\.mediaAlbumDebounceMs \|\| 0\);\n  if \(debounceMs > 0 && isAlbumCandidate\(item\)\) \{\n    scheduleAlbumItem\(item, expectedGeneration, eventSocket\);\n    return;\n  \}\n  await handleIncomingMessage\(item, \{\}, expectedGeneration, eventSocket\);/,
     ROUTE_ALBUM_BLOCK,
     "incoming album routing block",
+  );
+  content = replaceRequired(
+    content,
+    /(      media\.push\(\{\n        type: kind,\n        \.\.\.\(await saveInboundMedia\(albumItem, kind, albumItem\.key\.id, eventSocket\)\),\n)(      \}\);)/,
+    `$1        ...albumMediaMetadata(albumItem, albumItems.length),\n$2`,
+    "successful album media metadata",
+  );
+  content = replaceRequired(
+    content,
+    /      media\.push\(\{ type: kind, error: String\(error\?\.message \|\| error\) \}\);/,
+    `      media.push({\n        type: kind,\n        error: String(error?.message || error),\n        ...albumMediaMetadata(albumItem, albumItems.length),\n      });`,
+    "failed album media metadata",
+  );
+  content = replaceRequired(
+    content,
+    /    mentionedJids: mentionedJidsForAstrBot\(primary\.message\),\n    mentionedNames: mentionedNamesForAstrBot\(primary\.message\),\n    mentionAll: mentionAllFromMessage\(primary\.message\),/,
+    `    mentionedJids: albumItems.length > 1 ? albumMentionedJids(albumItems) : mentionedJidsForAstrBot(primary.message),\n    mentionedNames: albumItems.length > 1 ? albumMentionedNames(albumItems) : mentionedNamesForAstrBot(primary.message),\n    mentionAll: albumItems.length > 1 ? albumMentionAll(albumItems) : mentionAllFromMessage(primary.message),`,
+    "album mention aggregation",
   );
 
   return { content, changed: true };
