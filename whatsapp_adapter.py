@@ -15,10 +15,10 @@ _install_album_caption_compat(WhatsAppPlatformAdapter)
 _original_convert_message = WhatsAppPlatformAdapter.convert_message
 
 
-async def _convert_message_with_compat(self, data):
+async def _convert_message_with_group_name(self, data):
     message = await _original_convert_message(self, data)
     message = _apply_group_name(message, data)
     return _apply_album_caption_message(self, message, data)
 
 
-WhatsAppPlatformAdapter.convert_message = _convert_message_with_compat
+WhatsAppPlatformAdapter.convert_message = _convert_message_with_group_name
