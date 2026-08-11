@@ -4,10 +4,13 @@ data/ export-ignore
 .gitignore export-ignore
 .gitattributes export-ignore
 .github/ export-ignore
+.release/ export-ignore
 npm-debug.log* export-ignore
 yarn-debug.log* export-ignore
 yarn-error.log* export-ignore
 .pre-commit-config.yaml export-ignore
 tests/ export-ignore
+RELEASING.md export-ignore
 gateway/*.test.mjs export-ignore
 scripts/*.test.mjs export-ignore
+scripts/release_contract.py export-ignore
