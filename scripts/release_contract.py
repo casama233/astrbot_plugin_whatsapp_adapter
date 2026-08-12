@@ -91,11 +91,15 @@ def _read_json(path: Path) -> dict:
 
 
 def _extract_main_identity(text: str) -> tuple[str, str]:
-    version_match = MAIN_VERSION_RE.search(text)
-    name_match = MAIN_NAME_RE.search(text)
+    # Git may check text files out with CRLF on Windows. The release contract
+    # validates declarations, not host-specific newline encoding, so normalize
+    # line endings while preserving the strict exactly-once identity checks.
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    version_match = MAIN_VERSION_RE.search(normalized)
+    name_match = MAIN_NAME_RE.search(normalized)
     if not version_match or not name_match:
         raise ReleaseContractError("main.py must declare PLUGIN_NAME and PLUGIN_VERSION once")
-    if len(MAIN_VERSION_RE.findall(text)) != 1 or len(MAIN_NAME_RE.findall(text)) != 1:
+    if len(MAIN_VERSION_RE.findall(normalized)) != 1 or len(MAIN_NAME_RE.findall(normalized)) != 1:
         raise ReleaseContractError("main.py contains ambiguous plugin identity declarations")
     return name_match.group(1), version_match.group(1)
 

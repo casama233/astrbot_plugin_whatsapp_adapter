@@ -1,3 +1,5 @@
+import { createTwoStepGate } from "./two-step-action.js";
+
 const bridge = window.AstrBotPluginPage;
 
 // ─── DOM refs ───
@@ -69,11 +71,21 @@ let refreshPromise = null;
 let updateInfo = null;
 let updatePollTimer = null;
 let updateStartedHere = false;
-let updatePollAttempts = 0;
+let updatePollStartedAt = 0;
 let pairCodeRequestPending = false;
 let pairCodeRequestToken = 0;
 let pairCodeCooldownUntil = 0;
 let pairCodeCooldownTimer = null;
+
+const CONFIRM_WINDOW_MS = 10_000;
+const UPDATE_POLL_MAX_MS = 30 * 60 * 1000;
+const updateConfirmGate = createTwoStepGate({ windowMs: CONFIRM_WINDOW_MS });
+const logoutConfirmGate = createTwoStepGate({ windowMs: CONFIRM_WINDOW_MS });
+let updateConfirmTimer = null;
+let logoutConfirmTimer = null;
+const logoutOriginalNodes = els.logoutBtn
+  ? [...els.logoutBtn.childNodes].map((node) => node.cloneNode(true))
+  : [];
 
 // ─── Helpers ───
 function fmtTime() {
@@ -111,6 +123,17 @@ function setTag(el, state, label) {
 
 function clearChildren(el) {
   while (el.firstChild) el.firstChild.remove();
+}
+
+function restoreLogoutButton() {
+  if (!els.logoutBtn) return;
+  if (logoutOriginalNodes.length) {
+    els.logoutBtn.replaceChildren(
+      ...logoutOriginalNodes.map((node) => node.cloneNode(true)),
+    );
+  } else {
+    els.logoutBtn.textContent = "登出并重新扫码";
+  }
 }
 
 // Pairing credentials are intentionally kept only in the visible form/result.
@@ -286,16 +309,18 @@ function renderRuntime(runtime) {
 // ─── Independent GitHub Release updater ───
 const updatePhaseLabels = {
   idle: "未检查",
-  queued: "已排队",
+  queued: "已锁定",
   checking: "检查中",
   available: "可更新",
   up_to_date: "已是最新",
   check_failed: "检查失败",
-  downloading: "下载中",
+  downloading: "下载校验",
   validating: "验证中",
   installing_dependencies: "准备依赖",
-  installing: "安装中",
+  quiescing: "停止旧运行时",
+  installing: "切换版本",
   reloading: "重载中",
+  health_checking: "健康检查",
   rolling_back: "回滚中",
   completed: "已完成",
   failed: "更新失败",
@@ -323,11 +348,46 @@ function renderUpdate(data) {
   els.releaseNotesWrap.hidden = !notes;
   els.checkUpdateBtn.disabled = isBusy;
   els.installUpdateBtn.disabled = isBusy || !data.updateAvailable;
-  els.installUpdateBtn.textContent = isBusy ? "更新处理中…" : "立即更新";
+  if (!updateConfirmGate.isArmed()) {
+    els.installUpdateBtn.textContent = isBusy ? "更新处理中…" : "立即更新";
+  }
+}
+
+function disarmUpdateConfirmation({ rerender = true } = {}) {
+  updateConfirmGate.disarm();
+  if (updateConfirmTimer) clearTimeout(updateConfirmTimer);
+  updateConfirmTimer = null;
+  if (rerender && updateInfo) renderUpdate(updateInfo);
+}
+
+function armUpdateConfirmation() {
+  if (updateConfirmTimer) clearTimeout(updateConfirmTimer);
+  const version = updateInfo?.latestVersion ? `v${String(updateInfo.latestVersion).replace(/^v/, "")}` : "该版本";
+  els.installUpdateBtn.textContent = `再次点击确认更新 ${version}`;
+  els.updateMessage.textContent = `已锁定 ${version} 的 Release artifact；请在 10 秒内再次点击。第二次点击只会安装这一候选。`;
+  updateConfirmTimer = setTimeout(() => {
+    updateConfirmGate.disarm();
+    updateConfirmTimer = null;
+    if (updateInfo) renderUpdate(updateInfo);
+  }, CONFIRM_WINDOW_MS);
+}
+
+function disarmLogoutConfirmation() {
+  logoutConfirmGate.disarm();
+  if (logoutConfirmTimer) clearTimeout(logoutConfirmTimer);
+  logoutConfirmTimer = null;
+  if (els.logoutBtn && !els.logoutBtn.disabled) restoreLogoutButton();
+}
+
+function armLogoutConfirmation() {
+  if (logoutConfirmTimer) clearTimeout(logoutConfirmTimer);
+  els.logoutBtn.textContent = "再次点击确认登出";
+  logoutConfirmTimer = setTimeout(disarmLogoutConfirmation, CONFIRM_WINDOW_MS);
 }
 
 async function checkUpdate({ quiet = false } = {}) {
-  if (!quiet) log("info", "正在直接检查 GitHub Release…");
+  disarmUpdateConfirmation({ rerender: false });
+  if (!quiet) log("info", "正在检查 GitHub Release 与正式 artifact digest…");
   els.checkUpdateBtn.disabled = true;
   try {
     const data = await bridge.apiPost("update/check", {});
@@ -355,11 +415,11 @@ function stopUpdatePolling() {
 function pollUpdateStatus() {
   stopUpdatePolling();
   updatePollTimer = setTimeout(async () => {
-    updatePollAttempts += 1;
-    if (updatePollAttempts > 120) {
+    if (!updatePollStartedAt) updatePollStartedAt = Date.now();
+    if (Date.now() - updatePollStartedAt > UPDATE_POLL_MAX_MS) {
       updateStartedHere = false;
-      els.updateMessage.textContent = "更新状态确认超时，请重新载入页面查看最终版本。";
-      log("error", "更新状态确认超时");
+      els.updateMessage.textContent = "前端已停止长时间轮询；后端 transaction 可能仍在运行，重新载入页面可继续读取持久状态。";
+      log("warn", "更新状态轮询已超过 30 分钟并停止，但未把后端任务判定为失败");
       return;
     }
     try {
@@ -393,7 +453,7 @@ async function initializeUpdate() {
     const state = await bridge.apiGet("update/status");
     renderUpdate(state);
     if (state.busy) {
-      updatePollAttempts = 0;
+      updatePollStartedAt = Number(state.startedAt || 0) * 1000 || Date.now();
       pollUpdateStatus();
       return;
     }
@@ -687,8 +747,13 @@ els.restartBtn.addEventListener("click", async () => {
 });
 
 els.logoutBtn.addEventListener("click", async () => {
-  const confirmed = window.confirm("确定要登出当前 WhatsApp Web 会话并重新扫码吗？");
-  if (!confirmed) return;
+  if (logoutConfirmGate.activate() === "armed") {
+    armLogoutConfirmation();
+    return;
+  }
+  if (logoutConfirmTimer) clearTimeout(logoutConfirmTimer);
+  logoutConfirmTimer = null;
+  restoreLogoutButton();
   clearPairCode({ hide: true });
   log("warn", "正在登出...");
   try {
@@ -706,27 +771,38 @@ els.checkUpdateBtn?.addEventListener("click", () => {
 
 els.installUpdateBtn?.addEventListener("click", async () => {
   if (!updateInfo?.updateAvailable || updateInfo.busy) return;
-  const current = updateInfo.currentVersion || "当前版本";
-  const latest = updateInfo.latestVersion || "最新版";
-  const confirmed = window.confirm(
-    `确定要从 v${String(current).replace(/^v/, "")} 更新到 v${String(latest).replace(/^v/, "")} 吗？\n\n` +
-    "系统会先验证压缩包和依赖，再原子切换；重载失败会自动回滚。WhatsApp 登录凭证不会被删除。",
-  );
-  if (!confirmed) return;
+  const release = updateInfo.release || {};
+  const candidateToken = String(release.candidateToken || "").trim();
+  const latest = String(updateInfo.latestVersion || release.version || "").replace(/^v/, "");
+  if (!candidateToken || !latest) {
+    log("error", "当前更新候选缺少 identity token，正在重新检查 Release");
+    await checkUpdate();
+    return;
+  }
+
+  if (updateConfirmGate.activate() === "armed") {
+    armUpdateConfirmation();
+    return;
+  }
+  if (updateConfirmTimer) clearTimeout(updateConfirmTimer);
+  updateConfirmTimer = null;
 
   updateStartedHere = true;
-  updatePollAttempts = 0;
+  updatePollStartedAt = Date.now();
   els.installUpdateBtn.disabled = true;
   els.checkUpdateBtn.disabled = true;
-  log("warn", `开始安装 v${String(latest).replace(/^v/, "")}…`);
+  log("warn", `开始安装已确认的 v${latest} Release artifact…`);
   try {
-    const data = await bridge.apiPost("update/install", {});
+    const data = await bridge.apiPost("update/install", {
+      candidateToken,
+      expectedVersion: latest,
+    });
     renderUpdate(data);
-    log("info", data.message || "更新任务已启动");
+    log("info", data.message || "更新 transaction 已启动");
   } catch (err) {
     // A route interruption can happen exactly when the plugin reloads. Poll the
-    // persisted state before deciding whether the update actually failed.
-    log("warn", `更新请求已中断，正在确认最终状态: ${err}`);
+    // durable transaction state before deciding whether the update failed.
+    log("warn", `更新请求已中断，正在确认持久 transaction 状态: ${err}`);
   }
   pollUpdateStatus();
 });
