@@ -139,6 +139,18 @@ WhatsAppEdit(message_id="xxx", text="新内容")
 模型无法借此指定其他收件人。号码、选项、时间与文字长度会在 Python 和 Gateway
 两层校验，只有 Gateway 确认成功后才更新 AstrBot 的发送状态。
 
+## UMO 与 ID 归一化
+
+适配器只把数字公开 ID 放进 AstrBot UMO，WhatsApp JID 仅用于运输：
+
+- 私聊：`实例ID:FriendMessage:用户ID`
+- 普通群会话：`实例ID:GroupMessage:群ID`
+- 开启全局 `unique_session`：`实例ID:GroupMessage:用户ID_群ID`
+
+PN、LID、Hosted domain、设备后缀和 `@g.us` 不会进入新 UMO；同一个已解析
+联系人无论以 PN 还是 LID 到达，都会归入同一个数字私聊会话。旧 JID session
+仍可用于主动发送，适配器会在运输边界解析成正确 JID。
+
 ## 流式输出
 
 适配器声明 `support_streaming_message=True`，支持 `send_streaming`。工作原理：

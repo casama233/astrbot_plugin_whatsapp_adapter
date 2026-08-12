@@ -23,7 +23,7 @@
 - **链接预览控制**：仅单 URL 消息启用预览卡片
 - **已读回执 & 在线状态**
 - **入站表情回应事件**（可选）：将用户 emoji reaction 转为 AstrBot 事件
-- **LID → PN 归一化**：稳定私聊会话 ID
+- **统一 UMO 身份**：PN／LID／Hosted／设备 JID 统一为 QQ 风格数字会话 ID
 - **健康检查 & 自动重连**
 - **热重载**：修改配置无需重启 AstrBot
 - Gateway 默认绑定 `127.0.0.1`，适合本地优先部署
@@ -163,6 +163,23 @@ NO_PROXY=localhost,127.0.0.1
 - 出站文字切片、图片/视频/音频/文档大小限制为内部常量，不接受插件或平台配置覆盖。
 - 指令前缀、指令启用状态和命令匹配由 AstrBot Core 的 `wake_prefix`、CommandFilter 和插件启用状态统一处理。旧版非 `/` 的 WhatsApp 专用前缀会兼容一个版本并输出迁移提示。
 - Gateway 健康检查间隔保持内部安全默认值。
+
+### UMO 与公开 ID 规范
+
+WhatsApp 的 PN、LID、Hosted domain、设备后缀和群 `@g.us` 都属于运输层，保留在
+`raw_message` 与事件的 `target_jid` 中，不再写入 AstrBot 的 UMO。适配器按 QQ
+适配器的会话规则生成公开 ID：
+
+| 场景 | `session_id` | UMO 示例 |
+|---|---|---|
+| 私聊 | 对方数字用户 ID | `实例ID:FriendMessage:用户ID` |
+| 群聊，会话隔离关闭 | 数字群 ID | `实例ID:GroupMessage:群ID` |
+| 群聊，会话隔离开启 | `用户ID_群ID` | `实例ID:GroupMessage:用户ID_群ID` |
+
+`sender.user_id`、`self_id`、`group_id` 和常用 OneBot 投影字段使用同一套数字
+规则。主动发送仍兼容旧版 `@lid`、`@s.whatsapp.net`、`@g.us` 和
+`用户ID_群JID` session，便于已有定时任务平滑过渡；新事件只产生规范格式。
+多个 WhatsApp 账号依靠 UMO 的“平台实例 ID”部分隔离，不能共用相同实例 ID。
 
 ## 自定义消息组件
 
