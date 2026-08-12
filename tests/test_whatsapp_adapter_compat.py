@@ -272,7 +272,8 @@ class WhatsAppAdapterCompatibilityTests(unittest.TestCase):
 
         chain = message.message
         self.assertIsInstance(chain[0], _Reply)
-        self.assertEqual(chain[0].sender_id, "999")
+        self.assertEqual(chain[0].sender_id, "")
+        self.assertEqual(chain[0].qq, "999")
         self.assertEqual(
             [type(item) for item in chain[1:]],
             [_Plain, _At, _Plain, _At, _Plain],
@@ -536,6 +537,79 @@ class WhatsAppAdapterCompatibilityTests(unittest.TestCase):
                 self.assertNotIn("unsupported_streaming_strategy", event.__dict__)
                 self.assertTrue(any(isinstance(item, _AtAll) for item in message.message))
 
+    def test_quoting_bot_without_explicit_mention_does_not_wake_or_ack(self) -> None:
+        class FakeEvent:
+            def __init__(self, **kwargs) -> None:
+                self.__dict__.update(kwargs)
+                self.is_at_or_wake_command = False
+                self.is_wake = False
+                self._pre_acked = False
+                self.reactions = []
+
+            async def react(self, emoji: str) -> None:
+                self.reactions.append(emoji)
+
+        async def allowed(_raw, _is_private) -> bool:
+            return True
+
+        adapter = object.__new__(self.module.WhatsAppPlatformAdapter)
+        adapter.config = {
+            "parse_inbound_formatting": False,
+            "ignore_self_messages": False,
+            "pre_ack_emoji": True,
+            "pre_ack_public": "mentions",
+            "pre_ack_emojis": "👀",
+            "text_chunk_limit": 4000,
+            "media_caption_mode": "separate",
+            "link_preview_single_url": True,
+            "typing_indicator": False,
+            "pre_ack_done_emoji": "✅",
+            "streaming_edit_throttle": 1.0,
+        }
+        adapter._platform_settings = {"ignore_at_all": False}
+        adapter._legacy_command_prefix = ""
+        adapter._registered_commands = []
+        adapter.client = object()
+        adapter._is_sender_allowed = allowed
+        adapter._message_matches_known_command = lambda _text: False
+        committed = []
+        adapter.commit_event = committed.append
+        message = asyncio.run(
+            adapter.convert_message(
+                {
+                    "chatJid": "120363000000000001@g.us",
+                    "senderJid": "111@s.whatsapp.net",
+                    "senderPn": "111@s.whatsapp.net",
+                    "senderName": "Alice",
+                    "selfJid": "999@s.whatsapp.net",
+                    "messageId": "quote-only",
+                    "text": "follow-up without at",
+                    "mentionedJids": [],
+                    "quoted": {
+                        "stanzaId": "bot-answer",
+                        "participant": "999@s.whatsapp.net",
+                        "participantName": "Bot",
+                        "text": "previous answer",
+                    },
+                },
+            ),
+        )
+
+        quoted = message.message[0]
+        self.assertIsInstance(quoted, _Reply)
+        self.assertEqual(quoted.sender_id, "")
+        self.assertEqual(quoted.qq, "999")
+        self.assertFalse(any(isinstance(item, _At) for item in message.message))
+
+        with patch.object(self.module, "WhatsAppMessageEvent", FakeEvent):
+            asyncio.run(adapter.handle_msg(message))
+
+        self.assertEqual(len(committed), 1)
+        event = committed[0]
+        self.assertFalse(event.is_wake)
+        self.assertFalse(event.is_at_or_wake_command)
+        self.assertEqual(event.reactions, [])
+
     def test_send_by_group_sessions_recovers_target_and_reports_success(self) -> None:
         adapter = object.__new__(self.module.WhatsAppPlatformAdapter)
         adapter.config = {
@@ -793,7 +867,8 @@ class WhatsAppAdapterCompatibilityTests(unittest.TestCase):
         message = asyncio.run(adapter.convert_message(data))
         self.assertEqual(message.self_id, "85264362105")
         self.assertEqual(message.sender.user_id, "111")
-        self.assertEqual(message.message[0].sender_id, "85264362105")
+        self.assertEqual(message.message[0].sender_id, "")
+        self.assertEqual(message.message[0].qq, "85264362105")
         self.assertEqual(
             [item.qq for item in message.message if isinstance(item, _At)],
             ["85264362105", "222"],

@@ -177,8 +177,14 @@ def _protect_inline_code(value: str, *, streaming: bool) -> tuple[str, list[str]
             search_from = candidate_end
 
         if closing_start < 0:
-            # 不完整輸入亦保守地保護至結尾並補上閉合符，避免 code 內的
-            # Markdown 標記被誤轉；流式和最終輸出都保持 WhatsApp 可解析。
+            if not streaming:
+                # 最終文本中的單獨反引號通常來自顏文字或自然語言，不能
+                # 把後續整段誤包成 code；保留字面符號並繼續轉換後方 Markdown。
+                output.append(value[index:run_end])
+                index = run_end
+                continue
+            # 流式輸入仍可能在後續 token 收到閉合符，暫時保護至結尾；
+            # 最終 publish 會使用 ``streaming=False`` 重新判斷並修正顯示。
             content = value[run_end:]
             index = len(value)
         else:
