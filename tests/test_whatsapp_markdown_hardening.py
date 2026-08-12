@@ -59,10 +59,14 @@ class WhatsAppMarkdownHardeningTests(unittest.TestCase):
             "2 ** 3",
         )
 
-    def test_mixed_stale_tail_is_removed_but_homogeneous_literal_runs_survive(self) -> None:
+    def test_mixed_stale_tail_is_removed_but_literal_runs_survive(self) -> None:
         self.assertEqual(
             helpers.format_whatsapp_markdown("done~*"),
             "done",
+        )
+        self.assertEqual(
+            helpers.format_whatsapp_markdown(r"done\~*"),
+            r"done\~*",
         )
         self.assertEqual(
             helpers.format_whatsapp_markdown("done**"),
@@ -74,7 +78,15 @@ class WhatsAppMarkdownHardeningTests(unittest.TestCase):
         )
 
     def test_escaped_markdown_keeps_escape_sequence(self) -> None:
-        source = r"\*literal\* \_name\_ \~wave\~"
+        source = (
+            r"\*literal\* "
+            r"\_name\_ "
+            r"\~wave\~ "
+            r"\`code\` "
+            r"\[link\] "
+            r"\|pipe\| "
+            r"\#heading \>quote \-dash \!bang"
+        )
         self.assertEqual(helpers.format_whatsapp_markdown(source), source)
 
     def test_complex_heading_does_not_create_adjacent_bold_markers(self) -> None:
@@ -119,6 +131,22 @@ class WhatsAppMarkdownHardeningTests(unittest.TestCase):
         chunks = helpers.split_whatsapp_text(source, 16)
         self.assertTrue(any("1️⃣" in chunk for chunk in chunks))
         self.assertFalse(any(chunk.startswith("⃣") for chunk in chunks))
+        self.assertEqual("".join(chunks), source)
+
+    def test_emoji_tag_sequence_is_not_split_inside_grapheme(self) -> None:
+        # England subdivision flag = black flag + Unicode tag letters + cancel tag.
+        # Use explicit code points so the test cannot silently degrade to a plain
+        # black flag if an editor hides the tag characters.
+        england = "\U0001f3f4\U000e0067\U000e0062\U000e0065\U000e006e\U000e0067\U000e007f"
+        source = ("A" * 14) + england + "B"
+        chunks = helpers.split_whatsapp_text(source, 16)
+        self.assertTrue(any(england in chunk for chunk in chunks))
+        self.assertFalse(
+            any(
+                chunk and 0xE0020 <= ord(chunk[0]) <= 0xE007F
+                for chunk in chunks
+            ),
+        )
         self.assertEqual("".join(chunks), source)
 
 
