@@ -1,0 +1,12 @@
+{
+  "version": "0.2.38",
+  "previous_version": "0.2.37",
+  "date": "2026-08-12",
+  "commit_subject": "Restore safe AstrBot adapter hot reload",
+  "notes": [
+    "修复从旧版本热替换 WhatsApp adapter 时仍调用已移除的分段文本缓冲初始化方法，避免旧 adapter 已终止后新版本无法重新接管。",
+    "修复管理页启动 Gateway 后健康检查成功日志少一个格式占位符的问题，避免已连线 Gateway 被误判为健康检查超时。",
+    "健康日志改为使用脱敏状态摘要，不再输出 WhatsApp 自身 JID 等运输身份。",
+    "新增热替换与管理页健康检查回归测试，并在 AstrBot 4.27.2 真实环境验证旧会话能够无扫码自动重连。"
+  ]
+}
