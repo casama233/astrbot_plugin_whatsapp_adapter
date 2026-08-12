@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
+import re
+import socket
+import threading
+from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 LOG_LEVELS = ("silent", "fatal", "error", "warn", "info", "debug", "trace")
@@ -75,6 +80,12 @@ LEGACY_BEHAVIOR_DEFAULTS: dict[str, Any] = {
 
 _RUNTIME_PLUGIN_DEFAULTS: dict[str, Any] = {}
 _RUNTIME_WAKE_PREFIXES: tuple[str, ...] = ("/",)
+
+_PLUGIN_NAME = "astrbot_plugin_whatsapp_adapter"
+_DEFAULT_INSTANCE_ID = "whatsapp"
+_AUTO_GATEWAY_PORT_BY_INSTANCE: dict[str, int] = {}
+_AUTO_GATEWAY_INSTANCE_BY_PORT: dict[int, str] = {}
+_AUTO_GATEWAY_PORT_LOCK = threading.Lock()
 
 
 def normalize_config_enum(key: str, value: Any) -> str:
@@ -205,13 +216,125 @@ def get_runtime_wake_prefixes() -> tuple[str, ...]:
     return _RUNTIME_WAKE_PREFIXES
 
 
+def _plugin_data_dir() -> Path:
+    try:
+        from astrbot.core.utils.astrbot_path import get_astrbot_data_path
+    except ImportError:
+        return Path.cwd() / "data" / "plugin_data" / _PLUGIN_NAME
+    return Path(get_astrbot_data_path()) / "plugin_data" / _PLUGIN_NAME
+
+
+def _safe_instance_segment(instance_id: str) -> str:
+    raw = str(instance_id or _DEFAULT_INSTANCE_ID).strip()
+    segment = re.sub(r"[^A-Za-z0-9_.-]", "_", raw).strip(".")
+    if not segment:
+        segment = "instance"
+    changed = segment != raw or len(segment) > 80
+    if len(segment) > 80:
+        segment = segment[:80].rstrip(".") or "instance"
+    if changed:
+        digest = hashlib.blake2s(raw.encode("utf-8"), digest_size=4).hexdigest()
+        segment = f"{segment}-{digest}"
+    return segment
+
+
+def _port_available(host: str, port: int) -> bool:
+    """Best-effort check used only before assigning a new auto-start port."""
+    try:
+        addresses = socket.getaddrinfo(
+            host,
+            port,
+            type=socket.SOCK_STREAM,
+            flags=socket.AI_PASSIVE,
+        )
+    except OSError:
+        # Let GatewayProcess surface invalid/non-local bind hosts consistently.
+        return True
+    for family, socktype, proto, _canonname, sockaddr in addresses:
+        sock = socket.socket(family, socktype, proto)
+        try:
+            sock.bind(sockaddr)
+            return True
+        except OSError:
+            continue
+        finally:
+            sock.close()
+    return False
+
+
+def _allocate_instance_gateway_port(config: dict[str, Any], instance_id: str) -> None:
+    if instance_id == _DEFAULT_INSTANCE_ID:
+        return
+    if not bool(config.get("auto_start_gateway", True)):
+        # External Gateway endpoints are user-managed and must never be silently
+        # rewritten by the adapter's local multi-instance allocator.
+        return
+
+    configured_port = int(config.get("gateway_port", LEGACY_GATEWAY_DEFAULTS["gateway_port"]))
+    host = str(config.get("gateway_host") or LEGACY_GATEWAY_DEFAULTS["gateway_host"])
+    if not 1 <= configured_port <= 65535:
+        raise ValueError(f"Invalid WhatsApp gateway_port: {configured_port}")
+
+    with _AUTO_GATEWAY_PORT_LOCK:
+        existing = _AUTO_GATEWAY_PORT_BY_INSTANCE.get(instance_id)
+        if existing is not None:
+            config["gateway_port"] = existing
+            return
+
+        # The default account owns the configured plugin-wide port. Additional
+        # auto-start accounts start scanning at the next port, even if the
+        # default account has not been instantiated yet.
+        candidate = configured_port + 1
+        while candidate <= 65535:
+            owner = _AUTO_GATEWAY_INSTANCE_BY_PORT.get(candidate)
+            if owner is None and _port_available(host, candidate):
+                _AUTO_GATEWAY_PORT_BY_INSTANCE[instance_id] = candidate
+                _AUTO_GATEWAY_INSTANCE_BY_PORT[candidate] = instance_id
+                config["gateway_port"] = candidate
+                return
+            candidate += 1
+
+    raise ValueError(
+        f"No free WhatsApp Gateway port available after {configured_port} "
+        f"for instance {instance_id!r}"
+    )
+
+
+def _isolate_instance_auth_dir(config: dict[str, Any], instance_id: str) -> None:
+    if instance_id == _DEFAULT_INSTANCE_ID:
+        return
+    segment = _safe_instance_segment(instance_id)
+    configured = str(config.get("auth_dir") or "").strip()
+    if configured:
+        base = Path(configured).expanduser().resolve()
+        config["auth_dir"] = str(base.with_name(f"{base.name}-{segment}"))
+        return
+    config["auth_dir"] = str(
+        (_plugin_data_dir() / f"whatsapp-auth-{segment}").resolve()
+    )
+
+
+def _apply_multi_instance_defaults(config: dict[str, Any]) -> dict[str, Any]:
+    instance_id = str(config.get("id") or _DEFAULT_INSTANCE_ID).strip() or _DEFAULT_INSTANCE_ID
+    _allocate_instance_gateway_port(config, instance_id)
+    _isolate_instance_auth_dir(config, instance_id)
+    return config
+
+
+def _reset_multi_instance_registry_for_tests() -> None:
+    with _AUTO_GATEWAY_PORT_LOCK:
+        _AUTO_GATEWAY_PORT_BY_INSTANCE.clear()
+        _AUTO_GATEWAY_INSTANCE_BY_PORT.clear()
+
+
 def merge_runtime_config(
     runtime_defaults: Mapping[str, Any],
     plugin_defaults: Mapping[str, Any],
     platform_config: Mapping[str, Any],
 ) -> dict[str, Any]:
-    return {
+    merged = {
         **dict(runtime_defaults),
         **dict(plugin_defaults),
         **dict(platform_config),
     }
+    return _apply_multi_instance_defaults(merged)
