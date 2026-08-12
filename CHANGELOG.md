@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.37] - 2026-08-12
+
+- 统一 WhatsApp UMO 为 QQ 风格公开数字 ID：私聊使用用户 ID，群聊使用群 ID，开启 unique_session 时使用 用户ID_群ID，不再把 @lid、@s.whatsapp.net、@hosted 或 @g.us 写入新会话。
+- Gateway 额外提供私聊 canonical PN，适配器在第一条未知 LID 消息进入管道前主动解析并持久化 PN/LID 映射，避免同一联系人因地址模式或设备后缀变化分裂为多个 UMO。
+- 主动发送继续接受旧版 PN、LID、群 JID 与 用户ID_群JID session，并在运输边界统一恢复正确 JID；raw_message 与 target_jid 继续保留完整运输身份。
+- 新增 PN/LID 同会话、手机端发出消息、首次 LID 解析、群聊隔离以及新旧 session 主动发送回归测试，并补充 UMO 公开规范文档。
+
 ## [0.2.36] - 2026-08-12
 
 - 重构内置更新器为 release-pinned Updater v2：检查阶段生成与 Release、asset、digest 绑定的 candidateToken，安装阶段只接受同一候选与 expected version，不再重新查询最新版。
