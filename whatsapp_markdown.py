@@ -251,11 +251,52 @@ def _convert_emphasis(value: str, *, streaming: bool) -> str:
     return value
 
 
+def _format_stack_before_tail(value: str) -> list[str]:
+    """Approximate active WhatsApp format markers before a suspicious tail.
+
+    Code spans, escapes and native block output are placeholders when this runs,
+    so only actual ``*``/``_``/``~`` formatting markers need consideration.
+    The boundary rules intentionally mirror the splitter closely enough to tell
+    a legitimate nested close (``_*`` or ``*~``) from a stale orphan tail.
+    """
+
+    stack: list[str] = []
+    for index, token in enumerate(value):
+        if token not in {"*", "_", "~"}:
+            continue
+        previous = value[index - 1] if index else ""
+        following = value[index + 1] if index + 1 < len(value) else ""
+        if previous == "\\":
+            continue
+        if stack and stack[-1] == token and previous and not previous.isspace():
+            stack.pop()
+            continue
+        previous_is_boundary = (
+            not previous
+            or previous.isspace()
+            or not previous.isalnum()
+        )
+        if previous_is_boundary and following and not following.isspace():
+            stack.append(token)
+    return stack
+
+
+def _tail_closes_active_formatting(prefix: str, run: str) -> bool:
+    stack = _format_stack_before_tail(prefix)
+    for token in run:
+        if not stack or stack[-1] != token:
+            return False
+        stack.pop()
+    return True
+
+
 def _cleanup_malformed_tail(value: str) -> str:
-    """Drop only mixed control-marker tails known to come from stale edits.
+    """Drop only orphaned mixed control-marker tails from stale stream edits.
 
     Literal single delimiters and homogeneous runs such as ``*``, ``**`` or
-    ``~~`` are valid user content and must not be silently deleted.
+    ``~~`` are valid user content and must not be silently deleted. Mixed runs
+    are also preserved when they validly close nested WhatsApp formatting, e.g.
+    ``*_both_*`` and ``~*bold strike*~``.
     """
 
     match = re.search(r"([*_~]{2,})$", value)
@@ -266,7 +307,10 @@ def _cleanup_malformed_tail(value: str) -> str:
         return value
     if match.start() > 0 and value[match.start() - 1] == "\\":
         return value
-    return value[: match.start()]
+    prefix = value[: match.start()]
+    if _tail_closes_active_formatting(prefix, run):
+        return value
+    return prefix
 
 
 def _render_inline_fragment(value: str, *, streaming: bool) -> str:
