@@ -5,7 +5,6 @@ import json
 import re
 import shutil
 import sys
-import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -27,12 +26,17 @@ except ImportError:
 from .plugin_updater import (
     PluginUpdateError,
     ReleaseDetails,
+    acquire_update_transaction,
     atomic_swap_plugin,
     download_release_archive,
     extract_validated_release,
     fetch_latest_release,
     is_newer_version,
+    recover_stale_update_transaction,
+    release_update_transaction,
     restore_plugin_backup,
+    transaction_lock_active,
+    validate_python_requirements_unchanged,
 )
 from .whatsapp_adapter import BASE_GATEWAY_CONFIG
 from .whatsapp_client import (
@@ -61,10 +65,13 @@ _UPDATE_BUSY_PHASES = {
     "downloading",
     "validating",
     "installing_dependencies",
+    "quiescing",
     "installing",
     "reloading",
+    "health_checking",
     "rolling_back",
 }
+_UPDATE_CANDIDATE_MAX_AGE_SECONDS = 15 * 60
 _PAIR_CODE_ERROR_MESSAGES = {
     409: "当前 WhatsApp 已登录，无需再生成配对码。",
     429: "配对码请求过于频繁，请稍后再试。",
@@ -94,6 +101,7 @@ class WhatsAppAdapterPlugin(Star):
         self._update_task: asyncio.Task[None] | None = None
         self._latest_release_cache: ReleaseDetails | None = None
         self._latest_release_checked_at = 0.0
+        self._recover_interrupted_update_state()
         logger.info(
             "WhatsApp adapter plugin loaded: gateway=%s auto_start=%s auth_dir=%s log_level=%s",
             self._base_url,
@@ -160,7 +168,7 @@ class WhatsAppAdapterPlugin(Star):
             f"/{PLUGIN_NAME}/update/install",
             self.page_update_install,
             ["POST"],
-            "Safely install the latest WhatsApp adapter GitHub Release",
+            "Install one explicitly confirmed WhatsApp adapter GitHub Release candidate",
         )
 
         from .whatsapp_adapter import (  # noqa: F401
@@ -425,28 +433,16 @@ class WhatsAppAdapterPlugin(Star):
         except (TypeError, ValueError):
             state_age = float("inf")
         if (
-            state.get("phase") == "reloading"
-            and state.get("targetVersion") == PLUGIN_VERSION
-        ):
-            state = self._write_update_state(
-                {
-                    **state,
-                    "phase": "completed",
-                    "message": f"已更新到 v{PLUGIN_VERSION}",
-                    "completedAt": time.time(),
-                }
-            )
-        elif (
             state.get("phase") in _UPDATE_BUSY_PHASES
             and not self._update_operation_active()
-            and state_age > 120
+            and state_age > 180
         ):
             state = self._write_update_state(
                 {
                     **state,
                     "phase": "failed",
-                    "message": "上次更新任务意外中断，插件目录未切换或已由启动流程恢复。请重新检查更新。",
-                    "error": "update task interrupted",
+                    "message": "上次更新 transaction 已中断；保留的 backup 不会自动删除。请重新检查更新。",
+                    "error": "update transaction interrupted",
                     "failedAt": time.time(),
                 }
             )
@@ -459,10 +455,16 @@ class WhatsAppAdapterPlugin(Star):
                 status_code=409,
             )
         async with self._update_lock:
+            if self._local_update_task_active() or transaction_lock_active(self._update_lock_path()):
+                return json_response(
+                    self._update_payload(self._read_update_state()),
+                    status_code=409,
+                )
             self._write_update_state(
                 {
+                    "schemaVersion": 2,
                     "phase": "checking",
-                    "message": "正在直接检查 GitHub Release…",
+                    "message": "正在检查 GitHub Release 与正式 artifact digest…",
                     "startedAt": time.time(),
                 }
             )
@@ -471,9 +473,10 @@ class WhatsAppAdapterPlugin(Star):
                 available = is_newer_version(release.version, PLUGIN_VERSION)
                 state = self._write_update_state(
                     {
+                        "schemaVersion": 2,
                         "phase": "available" if available else "up_to_date",
                         "message": (
-                            f"发现新版本 v{release.version}"
+                            f"发现可验证更新 v{release.version}"
                             if available
                             else f"当前已是最新版本 v{PLUGIN_VERSION}"
                         ),
@@ -488,6 +491,7 @@ class WhatsAppAdapterPlugin(Star):
                 logger.warning("WhatsApp 插件独立更新检查失败: %s", message)
                 state = self._write_update_state(
                     {
+                        "schemaVersion": 2,
                         "phase": "check_failed",
                         "message": message,
                         "error": message,
@@ -497,72 +501,143 @@ class WhatsAppAdapterPlugin(Star):
                 return json_response(self._update_payload(state), status_code=503)
 
     async def page_update_install(self):
+        payload = await request.json(default={})
+        if not isinstance(payload, dict):
+            return json_response(
+                {"ok": False, "message": "更新请求必须是 JSON 对象"},
+                status_code=400,
+            )
+        candidate_token = str(payload.get("candidateToken") or "").strip()
+        expected_version = str(payload.get("expectedVersion") or "").strip().removeprefix("v")
+        if not candidate_token or not expected_version:
+            return json_response(
+                {"ok": False, "message": "缺少已确认的更新候选，请重新检查更新"},
+                status_code=409,
+            )
         if self._update_operation_active():
             return json_response(
                 self._update_payload(self._read_update_state()),
                 status_code=409,
             )
-        state = self._write_update_state(
-            {
-                "phase": "queued",
-                "message": "更新任务已建立，正在准备检查 GitHub Release…",
-                "startedAt": time.time(),
-            }
-        )
-        self._update_task = asyncio.create_task(self._perform_update())
-        return json_response(self._update_payload(state), status_code=202)
 
-    async def _perform_update(self) -> None:
         async with self._update_lock:
-            work_dir: Path | None = None
-            backup_dir: Path | None = None
+            if self._local_update_task_active() or transaction_lock_active(self._update_lock_path()):
+                return json_response(
+                    self._update_payload(self._read_update_state()),
+                    status_code=409,
+                )
+            state = self._read_update_state()
+            try:
+                checked_at = float(state.get("checkedAt") or 0)
+            except (TypeError, ValueError):
+                checked_at = 0
+            if not checked_at or time.time() - checked_at > _UPDATE_CANDIDATE_MAX_AGE_SECONDS:
+                return json_response(
+                    {"ok": False, "message": "更新候选已过期，请重新检查并确认"},
+                    status_code=409,
+                )
+            try:
+                release = ReleaseDetails.from_dict(state.get("release"))
+            except PluginUpdateError as exc:
+                return json_response(
+                    {"ok": False, "message": str(exc)},
+                    status_code=409,
+                )
+            if (
+                release.candidate_token != candidate_token
+                or release.version != expected_version
+                or state.get("phase") != "available"
+            ):
+                return json_response(
+                    {
+                        "ok": False,
+                        "message": "你确认的 Release 已不是当前候选；为避免误装其他版本，请重新检查更新。",
+                    },
+                    status_code=409,
+                )
+            if not is_newer_version(release.version, PLUGIN_VERSION):
+                return json_response(
+                    {"ok": False, "message": "该候选版本不高于当前版本"},
+                    status_code=409,
+                )
+
+            transaction_id = uuid.uuid4().hex
+            try:
+                acquire_update_transaction(self._update_lock_path(), transaction_id)
+            except PluginUpdateError as exc:
+                return json_response(
+                    {"ok": False, "message": str(exc)},
+                    status_code=409,
+                )
+            queued = self._write_update_state(
+                {
+                    "schemaVersion": 2,
+                    "phase": "queued",
+                    "message": f"已锁定 v{release.version} 的 Release artifact，准备更新…",
+                    "startedAt": time.time(),
+                    "checkedAt": checked_at,
+                    "transactionId": transaction_id,
+                    "fromVersion": PLUGIN_VERSION,
+                    "targetVersion": release.version,
+                    "release": release.as_dict(),
+                }
+            )
+            self._update_task = asyncio.create_task(
+                self._perform_update(release, transaction_id)
+            )
+            return json_response(self._update_payload(queued), status_code=202)
+
+    async def _perform_update(
+        self,
+        release: ReleaseDetails,
+        transaction_id: str,
+    ) -> None:
+        async with self._update_lock:
+            work_dir = self._update_work_root() / transaction_id
+            backup_dir = self._update_backup_root() / f"v{PLUGIN_VERSION}-{transaction_id}"
+            archive_path = work_dir / "release.zip"
+            staged_dir = work_dir / "plugin"
+            quiesced = False
             swapped = False
             try:
-                release = await self._latest_release(force=True)
                 if not is_newer_version(release.version, PLUGIN_VERSION):
-                    self._write_update_state(
-                        {
-                            "phase": "up_to_date",
-                            "message": f"当前已是最新版本 v{PLUGIN_VERSION}",
-                            "checkedAt": time.time(),
-                            "release": release.as_dict(),
-                            "targetVersion": release.version,
-                        }
-                    )
-                    return
-
+                    raise PluginUpdateError("已锁定的候选版本不再高于当前版本")
                 manager = getattr(self.context, "_star_manager", None)
                 if manager is None or not hasattr(manager, "reload"):
                     raise PluginUpdateError("当前 AstrBot 未提供可用的插件重载接口")
 
-                parent = PLUGIN_DIR.parent
-                work_dir = Path(
-                    tempfile.mkdtemp(prefix=f".{PLUGIN_NAME}-update-", dir=str(parent))
-                )
-                archive_path = work_dir / "release.zip"
-                staged_dir = work_dir / "plugin"
-                backup_dir = parent / (
-                    f".{PLUGIN_NAME}-backup-{PLUGIN_VERSION}-{uuid.uuid4().hex[:8]}"
-                )
+                self._update_work_root().mkdir(parents=True, exist_ok=True)
+                self._update_backup_root().mkdir(parents=True, exist_ok=True)
+                work_dir.mkdir(parents=True, exist_ok=False)
+                base_state = {
+                    "schemaVersion": 2,
+                    "transactionId": transaction_id,
+                    "fromVersion": PLUGIN_VERSION,
+                    "targetVersion": release.version,
+                    "release": release.as_dict(),
+                    "workDir": str(work_dir),
+                    "backupDir": str(backup_dir),
+                }
 
                 self._write_update_state(
                     {
+                        **base_state,
                         "phase": "downloading",
-                        "message": f"正在下载 v{release.version}…",
+                        "message": f"正在下载并校验 v{release.version} 的正式 ZIP artifact…",
                         "startedAt": time.time(),
-                        "release": release.as_dict(),
-                        "targetVersion": release.version,
                     }
                 )
-                sha256 = await download_release_archive(release.download_url, archive_path)
+                sha256 = await download_release_archive(
+                    release.download_url,
+                    archive_path,
+                    expected_sha256=release.asset_digest,
+                )
 
                 self._write_update_state(
                     {
+                        **base_state,
                         "phase": "validating",
-                        "message": "正在验证 Release 结构、版本与兼容范围…",
-                        "startedAt": time.time(),
-                        "release": release.as_dict(),
-                        "targetVersion": release.version,
+                        "message": "正在验证 ZIP 路径、组件版本与 AstrBot 兼容范围…",
                         "sha256": sha256,
                     }
                 )
@@ -578,75 +653,121 @@ class WhatsAppAdapterPlugin(Star):
                 )
                 if not valid:
                     raise PluginUpdateError(reason or "新版本不兼容当前 AstrBot")
+                validate_python_requirements_unchanged(PLUGIN_DIR, staged_dir)
 
                 self._write_update_state(
                     {
+                        **base_state,
                         "phase": "installing_dependencies",
-                        "message": "正在预装并验证新版本依赖…",
-                        "startedAt": time.time(),
-                        "release": release.as_dict(),
-                        "targetVersion": release.version,
+                        "message": "正在暂存 Node 依赖并执行本地语法预检…",
                         "sha256": sha256,
                     }
                 )
-                await self._prepare_staged_plugin(staged_dir, manager)
+                await self._prepare_staged_plugin(staged_dir)
 
                 self._write_update_state(
                     {
-                        "phase": "installing",
-                        "message": "依赖验证通过，正在原子切换插件版本…",
-                        "startedAt": time.time(),
-                        "release": release.as_dict(),
-                        "targetVersion": release.version,
+                        **base_state,
+                        "phase": "quiescing",
+                        "message": "验证通过，正在停止旧 Gateway 与 WhatsApp runtime…",
                         "sha256": sha256,
                     }
                 )
-                await asyncio.to_thread(
+                quiesced = True
+                await self._quiesce_update_runtime()
+
+                self._write_update_state(
+                    {
+                        **base_state,
+                        "phase": "installing",
+                        "message": "运行时已停止，正在切换插件目录并保留 rollback backup…",
+                        "sha256": sha256,
+                    }
+                )
+                swap_strategy = await asyncio.to_thread(
                     atomic_swap_plugin,
                     PLUGIN_DIR,
                     staged_dir,
                     backup_dir,
                 )
                 swapped = True
+
                 try:
                     self._write_update_state(
                         {
+                            **base_state,
                             "phase": "reloading",
-                            "message": f"v{release.version} 已安装，正在重载插件…",
-                            "startedAt": time.time(),
-                            "release": release.as_dict(),
-                            "targetVersion": release.version,
+                            "message": f"v{release.version} 已切换，正在重载并执行健康闸门…",
                             "sha256": sha256,
+                            "swapStrategy": swap_strategy,
+                        }
+                    )
+                except Exception as exc:
+                    logger.error("更新状态写入失败，但不会因此回滚已验证代码: %s", exc)
+
+                await self._reload_after_update(
+                    manager,
+                    release,
+                    backup_dir,
+                    work_dir,
+                    transaction_id=transaction_id,
+                    sha256=sha256,
+                    swap_strategy=swap_strategy,
+                )
+            except asyncio.CancelledError:
+                logger.error("WhatsApp 更新 transaction 被取消: %s", transaction_id)
+                if not swapped and quiesced:
+                    await self._resume_quiesced_runtime()
+                try:
+                    self._write_update_state(
+                        {
+                            "schemaVersion": 2,
+                            "phase": "failed",
+                            "message": "更新任务被取消；未完成的 backup/work 目录已保留供恢复。",
+                            "transactionId": transaction_id,
+                            "targetVersion": release.version,
+                            "release": release.as_dict(),
+                            "failedAt": time.time(),
                         }
                     )
                 except Exception:
-                    failed_dir = backup_dir.with_name(f"{backup_dir.name}-failed-new")
-                    await asyncio.to_thread(
-                        restore_plugin_backup,
-                        PLUGIN_DIR,
-                        backup_dir,
-                        failed_dir,
-                    )
-                    swapped = False
-                    raise
-                await self._reload_after_update(manager, release, backup_dir, work_dir)
+                    pass
+                raise
             except Exception as exc:
                 message = self._safe_update_error(exc)
                 logger.exception("WhatsApp 插件手动更新失败: %s", message)
-                if not swapped and work_dir is not None:
+                if not swapped and quiesced:
+                    await self._resume_quiesced_runtime()
+                if not swapped and work_dir.exists():
                     await asyncio.to_thread(shutil.rmtree, work_dir, True)
-                self._write_update_state(
-                    {
-                        "phase": "failed",
-                        "message": message,
-                        "error": message,
-                        "failedAt": time.time(),
-                    }
-                )
+                try:
+                    self._write_update_state(
+                        {
+                            "schemaVersion": 2,
+                            "phase": "failed",
+                            "message": message,
+                            "error": message,
+                            "transactionId": transaction_id,
+                            "fromVersion": PLUGIN_VERSION,
+                            "targetVersion": release.version,
+                            "release": release.as_dict(),
+                            "backupDir": str(backup_dir),
+                            "failedAt": time.time(),
+                        }
+                    )
+                except Exception as state_exc:
+                    logger.error("更新失败状态无法写入: %s", state_exc)
+            finally:
+                release_update_transaction(self._update_lock_path(), transaction_id)
+
+    def _local_update_task_active(self) -> bool:
+        return bool(self._update_task and not self._update_task.done())
 
     def _update_operation_active(self) -> bool:
-        return self._update_lock.locked() or bool(
-            self._update_task and not self._update_task.done()
+        return (
+            self._update_lock.locked()
+            or self._local_update_task_active()
+            or transaction_lock_active(self._update_lock_path())
         )
 
     async def _latest_release(self, *, force: bool = False) -> ReleaseDetails:
@@ -661,27 +782,24 @@ class WhatsAppAdapterPlugin(Star):
         self._latest_release_checked_at = time.monotonic()
         return release
 
-    async def _prepare_staged_plugin(self, staged_dir: Path, manager: Any) -> None:
-        await manager._ensure_plugin_requirements(str(staged_dir), PLUGIN_NAME)
-
+    async def _prepare_staged_plugin(self, staged_dir: Path) -> None:
         package_json = staged_dir / "package.json"
         package_lock = staged_dir / "package-lock.json"
-        if package_json.is_file() or package_lock.is_file():
-            if not package_json.is_file() or not package_lock.is_file():
-                raise PluginUpdateError("新版本的 Node package.json 与 lockfile 不完整")
-            npm = shutil.which("npm")
-            if not npm:
-                raise PluginUpdateError("找不到 npm，无法预装新版本 Gateway 依赖")
-            await self._run_update_command(
-                "npm 生产依赖安装",
-                npm,
-                "ci",
-                "--omit=dev",
-                "--no-audit",
-                "--no-fund",
-                cwd=staged_dir,
-                timeout=900,
-            )
+        if not package_json.is_file() or not package_lock.is_file():
+            raise PluginUpdateError("新版本的 Node package.json 与 lockfile 不完整")
+        npm = shutil.which("npm")
+        if not npm:
+            raise PluginUpdateError("找不到 npm，无法预装新版本 Gateway 依赖")
+        await self._run_update_command(
+            "npm 生产依赖安装",
+            npm,
+            "ci",
+            "--omit=dev",
+            "--no-audit",
+            "--no-fund",
+            cwd=staged_dir,
+            timeout=900,
+        )
 
         await self._run_update_command(
             "Python 语法验证",
@@ -696,18 +814,19 @@ class WhatsAppAdapterPlugin(Star):
             timeout=120,
         )
         gateway_script = staged_dir / "gateway" / "whatsapp-gateway.mjs"
-        if gateway_script.is_file():
-            node = shutil.which(str(self.config.get("node_executable") or "node"))
-            if not node:
-                raise PluginUpdateError("找不到 Node.js，无法验证新版本 Gateway")
-            await self._run_update_command(
-                "Gateway 语法验证",
-                node,
-                "--check",
-                str(gateway_script),
-                cwd=staged_dir,
-                timeout=60,
-            )
+        if not gateway_script.is_file():
+            raise PluginUpdateError("Release 缺少 Gateway 入口")
+        node = shutil.which(str(self.config.get("node_executable") or "node"))
+        if not node:
+            raise PluginUpdateError("找不到 Node.js，无法验证新版本 Gateway")
+        await self._run_update_command(
+            "Gateway 语法验证",
+            node,
+            "--check",
+            str(gateway_script),
+            cwd=staged_dir,
+            timeout=60,
+        )
 
     @staticmethod
     async def _run_update_command(
@@ -733,44 +852,193 @@ class WhatsAppAdapterPlugin(Star):
             detail = output[-2000:] if output else f"exit code {process.returncode}"
             raise PluginUpdateError(f"{label}失败：{detail}")
 
+    async def _quiesce_update_runtime(self) -> None:
+        from .whatsapp_adapter import get_active_whatsapp_adapters
+
+        errors: list[str] = []
+        try:
+            await self.page_client.close()
+        except Exception as exc:
+            errors.append(f"page client: {exc}")
+        if self.page_gateway_process:
+            try:
+                await self.page_gateway_process.stop()
+            except Exception as exc:
+                errors.append(f"page gateway: {exc}")
+        for adapter in list(get_active_whatsapp_adapters()):
+            adapter_id = getattr(adapter.meta(), "id", None)
+            try:
+                await adapter.terminate()
+            except Exception as exc:
+                errors.append(f"adapter {adapter_id}: {exc}")
+        if errors:
+            raise PluginUpdateError("无法安全停止旧运行时：" + "；".join(errors))
+
+    async def _resume_quiesced_runtime(self) -> None:
+        from .whatsapp_adapter import get_active_whatsapp_adapters
+
+        for adapter in list(get_active_whatsapp_adapters()):
+            adapter_id = getattr(adapter.meta(), "id", None)
+            try:
+                await adapter.reload(adapter._platform_config)
+            except Exception as exc:
+                logger.error("更新失败后恢复 WhatsApp adapter 失败: id=%s error=%s", adapter_id, exc)
+
+    async def _verify_update_health(
+        self,
+        manager: Any,
+        release: ReleaseDetails,
+    ) -> None:
+        registered = manager.context.get_registered_star(PLUGIN_NAME)
+        registered_version = str(getattr(registered, "version", "") or "")
+        if not registered or registered_version != release.version:
+            raise PluginUpdateError(
+                f"重载后的插件版本不匹配：期望 {release.version}，实际 {registered_version or '未注册'}"
+            )
+
+        pm = getattr(self.context, "platform_manager", None)
+        if pm is None:
+            return
+        enabled = [
+            config
+            for config in list(getattr(pm, "platforms_config", []) or [])
+            if config.get("type") == "whatsapp" and config.get("enable", False)
+        ]
+        for config in enabled:
+            pid = str(config.get("id") or "").strip()
+            if not pid:
+                raise PluginUpdateError("存在启用但缺少 id 的 WhatsApp 平台配置")
+            last_error: BaseException | None = None
+            for _ in range(30):
+                inst = self.context.get_platform_inst(pid)
+                if inst is None:
+                    last_error = RuntimeError("adapter instance missing")
+                    await asyncio.sleep(1)
+                    continue
+                run_task = getattr(inst, "_run_task", None)
+                if run_task is None or run_task.done():
+                    last_error = RuntimeError("adapter run task is not active")
+                    await asyncio.sleep(1)
+                    continue
+                if not bool(getattr(inst, "config", {}).get("auto_start_gateway", True)):
+                    last_error = None
+                    break
+                try:
+                    await asyncio.wait_for(inst.client.health(), timeout=4)
+                    last_error = None
+                    break
+                except Exception as exc:
+                    last_error = exc
+                    await asyncio.sleep(1)
+            if last_error is not None:
+                raise PluginUpdateError(
+                    f"更新后 WhatsApp adapter {pid} 未通过健康检查：{last_error}"
+                )
+
     async def _reload_after_update(
         self,
         manager: Any,
         release: ReleaseDetails,
         backup_dir: Path,
         work_dir: Path,
+        *,
+        transaction_id: str,
+        sha256: str,
+        swap_strategy: str,
     ) -> None:
-        await asyncio.sleep(1)
+        await asyncio.sleep(0.5)
         try:
             success, error = await manager.reload(PLUGIN_NAME)
             if not success:
                 raise PluginUpdateError(error or "AstrBot 重载新版本失败")
-            self._write_update_state(
-                {
-                    "phase": "completed",
-                    "message": f"已成功更新到 v{release.version}",
-                    "targetVersion": release.version,
-                    "release": release.as_dict(),
-                    "completedAt": time.time(),
-                }
-            )
-            await asyncio.to_thread(shutil.rmtree, backup_dir, True)
-            await asyncio.to_thread(shutil.rmtree, work_dir, True)
-            logger.info("WhatsApp 插件已通过内置管理页更新到 v%s", release.version)
-            return
+            try:
+                self._write_update_state(
+                    {
+                        "schemaVersion": 2,
+                        "phase": "health_checking",
+                        "message": "插件已重载，正在验证版本、adapter runtime 与 Gateway 健康状态…",
+                        "transactionId": transaction_id,
+                        "fromVersion": PLUGIN_VERSION,
+                        "targetVersion": release.version,
+                        "release": release.as_dict(),
+                        "sha256": sha256,
+                        "swapStrategy": swap_strategy,
+                        "backupDir": str(backup_dir),
+                        "workDir": str(work_dir),
+                    }
+                )
+            except Exception as state_exc:
+                logger.warning("健康检查阶段状态写入失败: %s", state_exc)
+            await self._verify_update_health(manager, release)
         except Exception as exc:
             reload_error = self._safe_update_error(exc)
-            logger.exception("WhatsApp 插件新版本重载失败，正在回滚: %s", reload_error)
+            logger.exception("WhatsApp 插件新版本未通过重载/健康闸门，正在回滚: %s", reload_error)
+            await self._rollback_update(
+                manager,
+                release,
+                backup_dir,
+                work_dir,
+                transaction_id=transaction_id,
+                reload_error=reload_error,
+            )
+            return
 
-        self._write_update_state(
-            {
-                "phase": "rolling_back",
-                "message": "新版本重载失败，正在恢复旧版本…",
-                "targetVersion": release.version,
-                "error": reload_error,
-            }
-        )
-        failed_dir = backup_dir.with_name(f"{backup_dir.name}-failed-new")
+        completed_state = {
+            "schemaVersion": 2,
+            "phase": "completed",
+            "message": f"已安全更新到 v{release.version}，健康检查通过",
+            "transactionId": transaction_id,
+            "fromVersion": PLUGIN_VERSION,
+            "targetVersion": release.version,
+            "release": release.as_dict(),
+            "sha256": sha256,
+            "swapStrategy": swap_strategy,
+            "completedAt": time.time(),
+        }
+        try:
+            self._write_update_state(completed_state)
+        except Exception as exc:
+            # The running version is healthy. Do not roll it back merely because
+            # observability storage failed; keep the backup for manual recovery.
+            logger.exception(
+                "更新已通过健康检查但完成状态无法写入；保留 backup: %s",
+                exc,
+            )
+            return
+
+        await asyncio.to_thread(shutil.rmtree, backup_dir, True)
+        await asyncio.to_thread(shutil.rmtree, work_dir, True)
+        logger.info("WhatsApp 插件已通过 Updater v2 安全更新到 v%s", release.version)
+
+    async def _rollback_update(
+        self,
+        manager: Any,
+        release: ReleaseDetails,
+        backup_dir: Path,
+        work_dir: Path,
+        *,
+        transaction_id: str,
+        reload_error: str,
+    ) -> None:
+        try:
+            self._write_update_state(
+                {
+                    "schemaVersion": 2,
+                    "phase": "rolling_back",
+                    "message": "新版本未通过健康闸门，正在恢复旧版本…",
+                    "transactionId": transaction_id,
+                    "fromVersion": PLUGIN_VERSION,
+                    "targetVersion": release.version,
+                    "release": release.as_dict(),
+                    "error": reload_error,
+                    "backupDir": str(backup_dir),
+                    "workDir": str(work_dir),
+                }
+            )
+        except Exception:
+            pass
+
+        failed_dir = self._update_backup_root() / f"failed-new-{transaction_id}"
         rollback_error: str | None = None
         try:
             await asyncio.to_thread(
@@ -788,29 +1056,80 @@ class WhatsAppAdapterPlugin(Star):
                 success, error = await manager.load(specified_dir_name=root_dir)
             if not success:
                 raise PluginUpdateError(error or "旧版本重新载入失败")
+            registered = manager.context.get_registered_star(PLUGIN_NAME)
+            restored_version = str(getattr(registered, "version", "") or "")
+            if restored_version != PLUGIN_VERSION:
+                raise PluginUpdateError(
+                    f"回滚版本校验失败：期望 {PLUGIN_VERSION}，实际 {restored_version or '未注册'}"
+                )
         except Exception as exc:
             rollback_error = self._safe_update_error(exc)
             logger.exception("WhatsApp 插件自动回滚失败: %s", rollback_error)
         finally:
-            await asyncio.to_thread(shutil.rmtree, work_dir, True)
+            if rollback_error is None:
+                await asyncio.to_thread(shutil.rmtree, work_dir, True)
 
-        message = f"新版本重载失败，已自动恢复 v{PLUGIN_VERSION}：{reload_error}"
+        message = f"新版本未通过健康检查，已恢复 v{PLUGIN_VERSION}：{reload_error}"
         if rollback_error:
             message = f"更新与自动回滚均失败：{reload_error}；回滚错误：{rollback_error}"
-        self._write_update_state(
-            {
-                "phase": "failed",
-                "message": message,
-                "targetVersion": release.version,
-                "error": reload_error,
-                "rolledBack": rollback_error is None,
-                "rollbackError": rollback_error,
-                "failedAt": time.time(),
-            }
-        )
+        try:
+            self._write_update_state(
+                {
+                    "schemaVersion": 2,
+                    "phase": "failed",
+                    "message": message,
+                    "transactionId": transaction_id,
+                    "fromVersion": PLUGIN_VERSION,
+                    "targetVersion": release.version,
+                    "release": release.as_dict(),
+                    "error": reload_error,
+                    "rolledBack": rollback_error is None,
+                    "rollbackError": rollback_error,
+                    "backupDir": str(backup_dir),
+                    "failedAt": time.time(),
+                }
+            )
+        except Exception as state_exc:
+            logger.error("回滚结果状态无法写入: %s", state_exc)
 
     def _update_state_path(self) -> Path:
         return self._data_dir() / "update-state.json"
+
+    def _update_lock_path(self) -> Path:
+        return self._data_dir() / "update-v2.lock"
+
+    @staticmethod
+    def _update_storage_root() -> Path:
+        # PLUGIN_DIR is normally data/plugins/<name>.  Keep staging/backups one
+        # level above data/plugins so AstrBot can never scan them as plugins.
+        return PLUGIN_DIR.parent.parent
+
+    def _update_work_root(self) -> Path:
+        return self._update_storage_root() / ".plugin-updates" / PLUGIN_NAME
+
+    def _update_backup_root(self) -> Path:
+        return self._update_storage_root() / ".plugin-backups" / PLUGIN_NAME
+
+    def _recover_interrupted_update_state(self) -> None:
+        stale = recover_stale_update_transaction(self._update_lock_path())
+        if stale is None:
+            return
+        state = self._read_update_state()
+        if state.get("phase") not in _UPDATE_BUSY_PHASES:
+            return
+        try:
+            self._write_update_state(
+                {
+                    **state,
+                    "phase": "failed",
+                    "message": "检测到上一 AstrBot 进程遗留的更新 transaction。backup/work 已保留，请检查当前版本后重新更新。",
+                    "error": "previous updater process interrupted",
+                    "interruptedLock": stale,
+                    "failedAt": time.time(),
+                }
+            )
+        except Exception as exc:
+            logger.warning("无法记录上一进程的更新中断状态: %s", exc)
 
     def _read_update_state(self) -> dict[str, Any]:
         try:
@@ -1083,65 +1402,79 @@ class WhatsAppAdapterPlugin(Star):
         self.page_client.update_base_url(self._base_url)
         await self._reload_active_adapters()
 
-    async def _reload_active_adapters(self) -> None:
+    async def _reload_active_adapters(self, *, strict: bool = False) -> None:
         from .whatsapp_adapter import get_active_whatsapp_adapters
 
+        errors: list[str] = []
         for adapter in get_active_whatsapp_adapters():
             try:
                 await adapter.reload(adapter._platform_config)
             except Exception as exc:
+                adapter_id = getattr(adapter.meta(), "id", None)
                 logger.warning(
                     "Failed to propagate plugin config reload to WhatsApp adapter %s: %s",
-                    getattr(adapter.meta(), "id", None),
+                    adapter_id,
                     exc,
                 )
+                errors.append(f"{adapter_id}: {exc}")
+        if strict and errors:
+            raise PluginUpdateError("WhatsApp adapter reload 失败：" + "；".join(errors))
 
     async def initialize(self) -> None:
         await super().initialize()
         self._adopt_legacy_platform_gateway_defaults()
         self._sync_runtime_policy()
         self.page_client.update_base_url(self._base_url)
-        await self._restore_platform_adapters()
-        await self._reload_active_adapters()
+        update_state = self._read_update_state()
+        strict_update_reload = (
+            update_state.get("phase") in {"reloading", "health_checking"}
+            and update_state.get("targetVersion") == PLUGIN_VERSION
+        )
+        await self._restore_platform_adapters(strict=strict_update_reload)
+        await self._reload_active_adapters(strict=strict_update_reload)
 
-    async def _restore_platform_adapters(self) -> None:
-        """After plugin reload, hot-swap adapter classes to use freshly imported code
-        without disrupting Gateway connection or runtime state."""
-        try:
-            pm = getattr(self.context, "platform_manager", None)
-            if pm is None:
-                return
-            if not pm.platform_insts:
-                return
-            from .whatsapp_adapter import (
-                _ACTIVE_ADAPTERS,
-                sanitize_whatsapp_platform_config,
-            )
-            from .whatsapp_adapter import WhatsAppPlatformAdapter as NewAdapter
-            from .whatsapp_config_policy import extract_legacy_command_prefix
-            platform_configs = getattr(pm, "platforms_config", [])
-            for idx, config in enumerate(platform_configs):
-                if config.get("type") != "whatsapp" or not config.get("enable", False):
-                    continue
+    async def _restore_platform_adapters(self, *, strict: bool = False) -> None:
+        """Hot-swap adapter classes after plugin reload.
+
+        During an Updater v2 transaction this becomes strict: adapter restore
+        errors fail plugin initialization so the updater can roll back instead of
+        declaring a partially running version successful.
+        """
+        pm = getattr(self.context, "platform_manager", None)
+        if pm is None or not pm.platform_insts:
+            return
+        from .whatsapp_adapter import (
+            _ACTIVE_ADAPTERS,
+            sanitize_whatsapp_platform_config,
+        )
+        from .whatsapp_adapter import WhatsAppPlatformAdapter as NewAdapter
+        from .whatsapp_config_policy import extract_legacy_command_prefix
+
+        errors: list[str] = []
+        platform_configs = getattr(pm, "platforms_config", [])
+        for idx, config in enumerate(platform_configs):
+            if config.get("type") != "whatsapp" or not config.get("enable", False):
+                continue
+            pid = config.get("id")
+            try:
                 sanitized_config = sanitize_whatsapp_platform_config(config)
                 if sanitized_config != config:
                     platform_configs[idx] = sanitized_config
                     config.clear()
                     config.update(sanitized_config)
-                pid = config.get("id")
                 if not pid:
-                    continue
+                    raise RuntimeError("enabled WhatsApp config has no id")
                 inst = self.context.get_platform_inst(pid)
                 if inst is None:
-                    continue
-                # Only swap if the instance still carries the old (pre-reload) class
+                    raise RuntimeError("platform instance missing")
                 if type(inst) is NewAdapter:
                     continue
                 logger.info("正在热替换 WhatsApp 适配器类: id=%s", pid)
-                # 完整終止舊執行階段，避免只取消 task 但殘留 Gateway/health task。
                 try:
                     await inst.terminate()
                 except Exception as exc:
+                    if strict:
+                        raise RuntimeError(f"旧 adapter 无法干净终止: {exc}") from exc
                     logger.warning("终止旧 WhatsApp 适配器失败: id=%s error=%s", pid, exc)
                 inst.__class__ = NewAdapter
                 _ACTIVE_ADAPTERS.add(inst)
@@ -1160,8 +1493,11 @@ class WhatsAppAdapterPlugin(Star):
                 inst._restarting = False
                 inst._run_task = asyncio.create_task(inst.run())
                 logger.info("WhatsApp 适配器运行循环已重启: id=%s", pid)
-        except Exception as e:
-            logger.warning("WhatsApp 适配器热替换失败: %s", e)
+            except Exception as exc:
+                logger.warning("WhatsApp 适配器热替换失败: id=%s error=%s", pid, exc)
+                errors.append(f"{pid}: {exc}")
+        if strict and errors:
+            raise PluginUpdateError("WhatsApp adapter 热替换失败：" + "；".join(errors))
 
     async def terminate(self):
         logger.info("正在终止 WhatsApp 适配器插件（适配器由 PlatformManager 管理，保持存活）")

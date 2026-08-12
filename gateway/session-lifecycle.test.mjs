@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import path from "node:path";
 import test from "node:test";
 
 import {
@@ -26,7 +27,7 @@ test("transient reconnects back off to a five minute ceiling", () => {
 test("new auth epochs use isolated directories and reject traversal", () => {
   assert.equal(
     sessionDirectory("/data/whatsapp-auth", "session-2"),
-    "/data/whatsapp-auth/.sessions/session-2",
+    path.join("/data/whatsapp-auth", ".sessions", "session-2"),
   );
   assert.throws(() => sessionDirectory("/data/whatsapp-auth", "../escape"));
 });
