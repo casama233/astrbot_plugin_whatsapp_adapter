@@ -16,8 +16,8 @@ class FakeElement {
     this.listeners.push({ type, handler, capture: options === true || Boolean(options?.capture) });
   }
 
-  click() {
-    const event = {
+  makeEvent() {
+    return {
       defaultPrevented: false,
       immediatePropagationStopped: false,
       preventDefault() {
@@ -27,11 +27,30 @@ class FakeElement {
         this.immediatePropagationStopped = true;
       },
     };
+  }
+
+  click() {
+    const event = this.makeEvent();
     const listeners = this.listeners
       .filter((listener) => listener.type === "click")
       .sort((a, b) => Number(b.capture) - Number(a.capture));
     for (const listener of listeners) {
       listener.handler(event);
+      if (event.immediatePropagationStopped) break;
+    }
+    return event;
+  }
+
+  async clickWithMicrotaskCheckpoint() {
+    const event = this.makeEvent();
+    const listeners = this.listeners
+      .filter((listener) => listener.type === "click")
+      .sort((a, b) => Number(b.capture) - Number(a.capture));
+    for (const listener of listeners) {
+      listener.handler(event);
+      // Browsers may perform a microtask checkpoint after an event callback
+      // before invoking the next listener in the same click dispatch.
+      await Promise.resolve();
       if (event.immediatePropagationStopped) break;
     }
     return event;
@@ -61,10 +80,9 @@ async function loadCompat() {
     document: { getElementById: (id) => elements.get(id) ?? null },
     window,
     Date,
-    queueMicrotask,
-    setTimeout(callback) {
+    setTimeout(callback, delay = 0) {
       const id = nextTimer++;
-      timers.set(id, callback);
+      timers.set(id, { callback, delay });
       return id;
     },
     clearTimeout(id) {
@@ -75,6 +93,14 @@ async function loadCompat() {
   return { install, logout, check, updateMessage, window, nativeConfirm, timers };
 }
 
+function runZeroDelayTimers(timers) {
+  for (const [id, timer] of [...timers]) {
+    if (timer.delay !== 0) continue;
+    timers.delete(id);
+    timer.callback();
+  }
+}
+
 test("plugin page loads sandbox confirmation helper before app module", async () => {
   const html = await readFile(new URL("../pages/whatsapp-login/index.html", import.meta.url), "utf8");
   const helper = html.indexOf('src="./sandbox-confirm.js"');
@@ -83,8 +109,8 @@ test("plugin page loads sandbox confirmation helper before app module", async ()
   assert.ok(app > helper, "helper must register capture listeners before app.js handlers");
 });
 
-test("update confirmation uses two clicks without depending on iframe modals", async () => {
-  const { install, updateMessage, window, nativeConfirm } = await loadCompat();
+test("update confirmation survives a browser-style microtask checkpoint between listeners", async () => {
+  const { install, updateMessage, window, nativeConfirm, timers } = await loadCompat();
   let appCalls = 0;
   let appConfirmed = false;
   install.addEventListener("click", () => {
@@ -99,14 +125,15 @@ test("update confirmation uses two clicks without depending on iframe modals", a
   assert.equal(install.textContent, "再次点击确认更新");
   assert.match(updateMessage.textContent, /10 秒内再次点击/);
 
-  const second = install.click();
+  const second = await install.clickWithMicrotaskCheckpoint();
   assert.equal(second.defaultPrevented, false);
   assert.equal(appCalls, 1);
   assert.equal(appConfirmed, true);
   assert.equal(install.dataset.confirmArmed, undefined);
+  assert.notEqual(window.confirm, nativeConfirm, "confirm shim must survive the event dispatch");
 
-  await Promise.resolve();
-  assert.equal(window.confirm, nativeConfirm, "native confirm must be restored after the event turn");
+  runZeroDelayTimers(timers);
+  assert.equal(window.confirm, nativeConfirm, "native confirm must be restored in the next task");
 });
 
 test("checking again disarms a pending update confirmation", async () => {
@@ -119,7 +146,7 @@ test("checking again disarms a pending update confirmation", async () => {
   assert.equal(updateMessage.textContent, "发现新版本 v0.2.33");
 });
 
-test("logout confirmation gets the same sandbox-safe two-click guard", async () => {
+test("logout confirmation survives the same listener timing", async () => {
   const { logout, window } = await loadCompat();
   let appCalls = 0;
   let appConfirmed = false;
@@ -132,7 +159,7 @@ test("logout confirmation gets the same sandbox-safe two-click guard", async () 
   assert.equal(appCalls, 0);
   assert.equal(logout.textContent, "再次点击确认登出");
 
-  logout.click();
+  await logout.clickWithMicrotaskCheckpoint();
   assert.equal(appCalls, 1);
   assert.equal(appConfirmed, true);
 });
