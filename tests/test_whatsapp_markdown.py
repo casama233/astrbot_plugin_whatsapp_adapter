@@ -365,6 +365,12 @@ class ConverterTests(unittest.TestCase):
             expected,
         )
 
+    def test_unmatched_backtick_in_kaomoji_does_not_swallow_later_markdown(self) -> None:
+        source = "被點名啦～(´▽`ʃ♡ƪ) 小白來解釋：\n\n**粥底火鍋**係粥湯底。"
+        expected = "被點名啦～(´▽`ʃ♡ƪ) 小白來解釋：\n\n*粥底火鍋*係粥湯底。"
+        self.assertEqual(helpers.format_whatsapp_markdown(source), expected)
+        self.assertNotIn("```", helpers.format_whatsapp_markdown(source))
+
     def test_split_balances_formatting_and_preserves_graphemes(self) -> None:
         text = "*" + ("A" * 40) + "* 👨‍👩‍👧‍👦"
         chunks = helpers.split_whatsapp_text(text, 20)

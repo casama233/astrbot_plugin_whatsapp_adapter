@@ -1423,7 +1423,7 @@ class WhatsAppPlatformAdapter(Platform):
         # Keep protocol wake semantics independent from the optional reaction
         # acknowledgement. AstrBot's core uses these flags in the same way as
         # the QQ adapter, including when pre-ack is disabled.
-        if is_self_mentioned or is_reply_to_self:
+        if is_self_mentioned or is_command:
             event.is_at_or_wake_command = True
             event.is_wake = True
         if pre_ack_enabled and not is_reaction_only:
@@ -1432,12 +1432,9 @@ class WhatsAppPlatformAdapter(Platform):
             else:
                 group_mode = self._group_pre_ack_mode()
                 should_ack = group_mode == "always" or (
-                    group_mode == "mentions" and (is_self_mentioned or is_reply_to_self or is_command)
+                    group_mode == "mentions" and (is_self_mentioned or is_command)
                 )
             if should_ack:
-                if not is_command:
-                    event.is_at_or_wake_command = True
-                    event.is_wake = True
                 await self._pre_ack(event)
         if is_legacy_command:
             event.is_at_or_wake_command = True
@@ -1678,7 +1675,12 @@ class WhatsAppPlatformAdapter(Platform):
                 or quoted_data.get("participant")
                 or ""
             )
-            if self._is_self_mention(quoted_sender, raw_self_jid, raw_self_lid):
+            quoted_is_self = self._is_self_mention(
+                quoted_sender,
+                raw_self_jid,
+                raw_self_lid,
+            )
+            if quoted_is_self:
                 quoted_sender_id = standard_self_id
             else:
                 quoted_sender_id = self._numeric_whatsapp_id(quoted_sender) if quoted_sender else "0"
@@ -1691,7 +1693,12 @@ class WhatsAppPlatformAdapter(Platform):
             chain.append(Reply(
                 id=str(quoted_data.get("stanzaId") or ""),
                 chain=quoted_chain if quoted_chain else None,
-                sender_id=quoted_sender_id,
+                # AstrBot Core treats Reply.sender_id == self_id as a wake
+                # signal. QQ replies also carry an explicit At segment, but a
+                # native WhatsApp quote does not. Keep the bot identity in the
+                # QQ-compatible field while preventing quote metadata alone
+                # from masquerading as an @ mention.
+                sender_id="" if quoted_is_self else quoted_sender_id,
                 sender_nickname=quoted_sender_name,
                 time=quoted_timestamp,
                 message_str=quoted_message_str,
