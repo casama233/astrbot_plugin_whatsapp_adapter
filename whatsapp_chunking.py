@@ -19,8 +19,14 @@ def _is_emoji_modifier(char: str) -> bool:
     return 0x1F3FB <= ord(char) <= 0x1F3FF
 
 
+def _is_emoji_tag(char: str) -> bool:
+    code = ord(char)
+    return 0xE0020 <= code <= 0xE007F
+
+
 def _grapheme_units(text: str) -> Iterator[str]:
     """Yield practical grapheme clusters without external dependencies."""
+
     cluster = ""
     regional_count = 0
     join_next = False
@@ -32,9 +38,11 @@ def _grapheme_units(text: str) -> Iterator[str]:
             and (
                 join_next
                 or char == "\u200d"
+                or char == "\u20e3"  # COMBINING ENCLOSING KEYCAP (combining class 0)
                 or unicodedata.combining(char) != 0
                 or _is_variation_selector(char)
                 or _is_emoji_modifier(char)
+                or _is_emoji_tag(char)
                 or (is_regional and regional_count == 1)
             )
         )
@@ -57,8 +65,11 @@ def split_whatsapp_text(text: str, limit: int) -> list[str]:
 
     Each emitted chunk contains visible payload, never just formatting markers.
     Active bold/italic/strike/code delimiters are closed at the end of a chunk
-    and reopened in the next one.
+    and reopened in the next one.  Capacity is calculated against the formatting
+    state *after* the candidate token, so a real closing delimiter at a boundary
+    is not preceded by a synthetic close that would create ``**``/`````` noise.
     """
+
     value = str(text or "")
     if not value:
         return []
@@ -71,9 +82,14 @@ def split_whatsapp_text(text: str, limit: int) -> list[str]:
     payload_units = 0
     index = 0
 
-    def closing_suffix() -> str:
-        suffix = code_delimiter or ""
-        suffix += "".join(reversed(active))
+    def closing_suffix(
+        active_markers: list[str] | None = None,
+        code: str | None | object = ...,
+    ) -> str:
+        markers = active if active_markers is None else active_markers
+        delimiter = code_delimiter if code is ... else code
+        suffix = delimiter or ""
+        suffix += "".join(reversed(markers))
         return suffix
 
     def opening_prefix() -> str:
@@ -90,6 +106,7 @@ def split_whatsapp_text(text: str, limit: int) -> list[str]:
         payload_units = 0
 
     while index < len(units):
+        start_index = index
         unit = units[index]
         token = unit
         if unit == "`":
@@ -99,38 +116,43 @@ def split_whatsapp_text(text: str, limit: int) -> list[str]:
             token = "`" * run
             index += run - 1
 
-        reserve = len(closing_suffix())
-        if current and len("".join(current)) + len(token) + reserve > limit:
-            flush()
+        previous = units[start_index - 1] if start_index > 0 else ""
+        following = units[index + 1] if index + 1 < len(units) else ""
 
-        before_code = code_delimiter
+        next_active = list(active)
+        next_code = code_delimiter
         structural = False
-        current.append(token)
 
         if token.startswith("`") and set(token) == {"`"}:
             if code_delimiter == token:
-                code_delimiter = None
+                next_code = None
                 structural = True
             elif code_delimiter is None and len(token) in (1, 3):
-                code_delimiter = token
+                next_code = token
                 structural = True
         elif code_delimiter is None and token in ("*", "_", "~"):
-            previous = units[index - 1] if index > 0 else ""
-            following = units[index + 1] if index + 1 < len(units) else ""
             at_list_prefix = (
                 token == "*"
-                and (index == 0 or previous == "\n")
+                and (start_index == 0 or previous == "\n")
                 and following.isspace()
             )
             if not at_list_prefix:
-                if active and active[-1] == token and previous and not previous.isspace():
-                    active.pop()
+                if next_active and next_active[-1] == token and previous and not previous.isspace():
+                    next_active.pop()
                     structural = True
                 elif following and not following.isspace():
-                    active.append(token)
+                    next_active.append(token)
                     structural = True
 
-        if not structural or (before_code is not None and token != before_code):
+        reserve_after = len(closing_suffix(next_active, next_code))
+        projected = len("".join(current)) + len(token) + reserve_after
+        if current and payload_units > 0 and projected > limit:
+            flush()
+
+        current.append(token)
+        active = next_active
+        code_delimiter = next_code
+        if not structural:
             payload_units += 1
         index += 1
 
