@@ -33,6 +33,7 @@
 ```
 astrbot_plugin_whatsapp_adapter/
 ├── main.py                      # 插件入口（Star 子类），注册 Web API 与公告板适配器
+├── plugin_updater.py            # Release-pinned Updater v2 验证／事务辅助
 ├── whatsapp_adapter.py          # 平台适配器（Platform 子类），核心消息收发逻辑
 ├── whatsapp_client.py           # Gateway HTTP 客户端 + 子进程管理
 ├── whatsapp_event.py            # 消息事件（AstrMessageEvent 子类），流式输出
@@ -50,6 +51,7 @@ astrbot_plugin_whatsapp_adapter/
 ├── pages/whatsapp-login/       # 插件管理页（扫码登录 UI）
 │   ├── index.html
 │   ├── app.js
+│   ├── two-step-action.js      # 无 modal 的两击确认状态机
 │   └── style.css
 ├── gateway/
 │   └── whatsapp-gateway.mjs    # Node.js WhatsApp Web Gateway（Baileys）
@@ -256,10 +258,26 @@ WhatsAppEdit(message_id="xxx", text="新的内容")
 - 登出并重新扫码
 - 直接检查 GitHub Release 并手动安全更新（不依赖官方插件市场同步）
 
-内置更新器只接受本仓库的稳定 GitHub Release。安装前会检查下载来源、ZIP
-路径、插件名、版本与 AstrBot 兼容范围，并在暂存目录预装依赖和执行语法检查；
-验证通过后才原子切换目录。插件热重载失败时会自动恢复旧版本，认证目录与
-WhatsApp 登录凭证不会参与替换。
+内置 **Updater v2** 只接受本仓库稳定 GitHub Release 中名称精确匹配的正式 ZIP artifact。
+检查更新时会固定 Release ID、asset ID、目标版本与 GitHub 提供的 SHA-256 digest，并生成
+`candidateToken`；第二次点击确认时只允许安装这一候选，不会在后台悄悄改成更新的版本。
+下载过程逐跳限制在受信任的 GitHub HTTPS 主机，ZIP 下载完成后必须与 Release asset digest
+完全一致；不存在 source `zipball` fallback。
+
+安装前还会验证 ZIP 路径安全、metadata / `main.py` / `package.json` / `package-lock.json`
+版本一致性及 AstrBot 兼容范围。Node 依赖只在插件外的 staging 目录中预装；如果新版本修改
+`requirements.txt`，内置 updater 会 fail closed，要求改用 AstrBot 插件管理器并重启，避免
+自更新修改 AstrBot 全局 Python 环境后无法真实回滚。
+
+切换版本前会停止管理页 Gateway 与 active WhatsApp runtimes，staging 与 rollback backup
+存放在 `data/plugins` 扫描范围之外。Linux 且文件系统支持时使用
+`renameat2(RENAME_EXCHANGE)` 做单步目录交换；其他平台使用带异常回滚的双 rename。
+新版本 `manager.reload()` 成功后仍必须通过插件版本、adapter task 和内建 Gateway health gate，
+通过前不会删除旧版本 backup。认证目录与 WhatsApp 登录凭证位于 plugin data，不参与插件目录替换。
+
+> 边界：在 Windows 或不支持 `RENAME_EXCHANGE` 的文件系统上，主机若恰好在双 rename 之间
+> 硬断电，插件层无法提供完整 crash-atomicity；彻底消除此平台级窗口需要 AstrBot Core 提供
+> 外部 transaction coordinator 或 versioned plugin pointer。
 
 更新检查只在打开页面（最近 5 分钟没有检查记录时）或点击「检查更新」时发生，
 不会加入管理页每 5 秒一次的连接状态轮询。
