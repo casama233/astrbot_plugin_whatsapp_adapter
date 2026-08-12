@@ -1,39 +1,39 @@
 {
   "metadata": {
     "display_name": "WhatsApp Adapter",
-    "short_desc": "WhatsApp Web Gateway adapter with QR login.",
-    "desc": "AstrBot platform adapter for WhatsApp Web/Baileys, backed by a local Gateway with QR login, DM/group access control, and media support."
+    "short_desc": "WhatsApp Web Gateway adapter with QR-code login.",
+    "desc": "AstrBot platform adapter for WhatsApp Web/Baileys with QR/phone pairing, DM/group access control, media, streaming replies, and multi-instance support."
   },
   "config": {
-    "gateway_host": {
-      "description": "Gateway HTTP bind host",
-      "hint": "Keep 127.0.0.1 unless AstrBot and the Gateway run in different containers."
-    },
-    "gateway_port": {
-      "description": "Gateway HTTP port",
-      "hint": "Gateway HTTP/SSE port, default 18789."
-    },
-    "auto_start_gateway": {
-      "description": "Auto-start bundled Gateway",
-      "hint": "Starts the Node.js Gateway when the plugin page is opened. Platform instances have their own adapter config."
-    },
-    "node_executable": {
-      "description": "Node.js executable",
-      "hint": "Node.js 20+ is recommended, for example node or /usr/bin/node."
-    },
-    "auth_dir": {
-      "description": "WhatsApp auth directory",
-      "hint": "Empty means data/plugin_data/astrbot_plugin_whatsapp_adapter/whatsapp-auth under AstrBot's working directory."
-    },
-    "log_level": {
-      "description": "Gateway log level",
-      "hint": "Options: silent, fatal, error, warn, info, debug, trace."
-    }
+    "gateway_host": {"description":"Gateway HTTP bind host","hint":"Base bind address for the bundled Gateway. Keep 127.0.0.1 when AstrBot and the Gateway share a host/container, and do not expose it directly to the public Internet."},
+    "gateway_port": {"description":"Gateway HTTP base port","hint":"Base HTTP/SSE port used by the default instance. Bundled secondary instances allocate subsequent available ports automatically."},
+    "auto_start_gateway": {"description":"Auto-start bundled Gateway","hint":"Starts the Node.js Gateway for the login Page and platform runtime. Multi-instance mode isolates ports and auth directories automatically. Disable this when using an external Gateway."},
+    "node_executable": {"description":"Node.js executable","hint":"Node.js 20+ is recommended, for example node or /usr/bin/node."},
+    "auth_dir": {"description":"WhatsApp base auth directory","hint":"Leave empty to use data/plugin_data/astrbot_plugin_whatsapp_adapter/whatsapp-auth. Bundled secondary instances automatically use separate suffixed directories."},
+    "log_level": {"description":"Gateway log level","hint":"Options: silent, fatal, error, warn, info, debug, trace. Restore info after troubleshooting.","labels":["silent","fatal","error","warn","info","debug","trace"]},
+    "default_link_preview_single_url": {"description":"Enable single-link previews by default","hint":"Shared default for all WhatsApp instances. A preview is generated only when a plain-text message contains exactly one URL."},
+    "default_typing_indicator": {"description":"Send typing indicators by default","hint":"Shared default for all WhatsApp instances. Concurrent replies coordinate composing presence so one reply does not stop another prematurely."},
+    "default_send_read_receipts": {"description":"Send read receipts by default","hint":"Send read receipts for inbound messages that pass access control and are accepted for processing."},
+    "default_mark_online": {"description":"Mark online by default","hint":"When enabled, keep the account available. When disabled, the adapter may still go online briefly while replying and returns to unavailable afterward."},
+    "default_parse_inbound_formatting": {"description":"Parse inbound formatting by default","hint":"Convert WhatsApp bold, italic, strikethrough, and code formatting to Markdown for AstrBot."},
+    "default_media_album_debounce_seconds": {"description":"Default album debounce (seconds)","hint":"Wait window for merging a short burst of images from the same sender. Private-chat captions and mentions are preserved where possible. Set 0 to disable."},
+    "default_streaming_edit_throttle": {"description":"Default streaming edit interval (seconds)","hint":"Global minimum interval between streaming text edits. Default 1.0 seconds; runtime enforces a minimum of 0.1 seconds."}
   },
   "pages": {
     "whatsapp-login": {
-      "title": "WhatsApp Login",
-      "description": "View Gateway status, scan the WhatsApp Web QR code, restart the connection, or log out."
+      "title":"WhatsApp Adapter — Management","description":"View Gateway status, sign in to WhatsApp Web, manage the session, and install verified updates.","heading":"Management","refresh_now":"Refresh now",
+      "metrics":{"connection":"Connection","waiting":"Waiting","gateway_health":"Gateway health","not_checked":"Not checked","account":"Account","whatsapp_account":"WhatsApp account","last_active":"Last active","last_presence":"Last presence"},
+      "status":{"connected":"Connected","waiting":"Waiting","disconnected":"Disconnected","healthy":"Healthy","unhealthy":"Unhealthy","running":"Running","pending":"Pending","not_logged_in":"Not signed in","last_online":"Last online","online":"Online","currently_online":"Currently online","no_data":"No data","unreachable":"Unreachable","unknown":"Unknown"},
+      "qr":{"title":"QR code login","phase_waiting":"Waiting","connecting_gateway":"Connecting to Gateway…","scan_hint":"On your phone, open WhatsApp → Linked devices and scan the QR code.","refresh":"Refresh QR code","connected_title":"WhatsApp connected","connected_hint":"No scan is required. Use Log out if you want to switch accounts.","connected_action_hint":"To switch accounts, choose Log out and scan again.","image_alt":"WhatsApp login QR code","waiting_scan":"Waiting for scan","refresh_hint":"The QR code refreshes periodically. Use the button below if scanning fails.","connection_failed":"Connection failed","connection_failed_hint":"Could not connect to WhatsApp. Check the network and try again.","retry":"Retry","retry_hint":"Use Retry to create a fresh login session.","pairing_title":"Phone scanned. Finishing sign-in…","pairing_hint":"Keep the phone online and do not refresh or scan repeatedly.","connecting_title":"Connecting to WhatsApp Web…","connecting_hint":"The first startup can take a few seconds before a QR code appears.","logging_in":"Signing in","connecting":"Connecting","login_success_hint":"The page will switch to Connected automatically after sign-in."},
+      "pairing":{"divider":"Or pair with a phone number","phone_label":"International phone number","phone_placeholder":"For example +852 9123 4567","request":"Get pairing code","requesting":"Requesting…","cooldown":"Wait {seconds}s","help":"Include the country or region code. The number is used only for this pairing request and is not stored by this page.","result_title":"Enter this pairing code on your phone","copy":"Copy","copy_aria":"Copy WhatsApp pairing code","expiry":"Pairing codes expire quickly. You can request another after the cooldown. This page clears the code on session reset, restart, or logout.","invalid_phone":"Enter a valid international phone number including the country or region code.","request_pending":"Requesting a pairing code from WhatsApp…","generated":"Pairing code generated. Complete the connection on your phone soon.","failed":"Could not get a pairing code. Check the number and Gateway status, then try again.","copied":"Pairing code copied.","copy_failed":"Automatic copy failed. Select and copy the pairing code manually."},
+      "session":{"title":"Session","connection":"Connection","account_jid":"Account JID","auth_dir":"Auth directory","runtime":"Runtime","configured":"Configured","checking":"Checking…","configured_yes":"✓ Configured","configured_no":"✗ Not synced"},
+      "policy":{"title":"Access policy","dm":"DM policy","group":"Group policy","groups":"Allowed groups","numbers_count":"{count} numbers","groups_count":"{count} groups","none":"None"},
+      "actions":{"restart":"Restart connection","logout":"Log out and scan again"},
+      "runtime":{"ready":"✓ Ready","unavailable":"✗ Unavailable","check_failed":"Runtime check failed","baileys_installed":"Baileys installed","baileys_pending":"Baileys not installed"},
+      "update":{"title":"Plugin update","current_version":"Current version","latest_version":"Latest on GitHub","source_message":"Checks a release-pinned GitHub artifact and verifies its digest before installation.","release_notes":"View release notes","check":"Check for updates","install":"Update now","installing":"Updating…","candidate":"this version","phase":{"idle":"Not checked","queued":"Candidate locked","checking":"Checking","available":"Update available","up_to_date":"Up to date","check_failed":"Check failed","downloading":"Downloading & verifying","validating":"Validating","installing_dependencies":"Preparing dependencies","quiescing":"Stopping old runtime","installing":"Switching version","reloading":"Reloading","health_checking":"Health checking","rolling_back":"Rolling back","completed":"Completed","failed":"Update failed"},"message":{"idle":"Checks a release-pinned GitHub artifact and verifies its digest before installation.","available":"A verified stable Release candidate is available.","up_to_date":"This plugin is up to date.","checking":"Checking GitHub Release and artifact digest…","check_failed":"Could not verify a GitHub Release candidate.","busy":"Update transaction in progress…","completed":"Plugin update completed and passed health checks.","failed":"Plugin update failed or rolled back. Check AstrBot logs for details.","poll_timeout":"Frontend polling stopped after 30 minutes. The durable backend transaction may still be running; reload the page to resume reading its state."},"confirm":{"armed":"Click again to confirm {version}","helper":"The {version} Release artifact is pinned. Click again within 10 seconds to install exactly this verified candidate."}},
+      "event_log":{"title":"Event log","clear":"Clear","waiting":"Waiting for events…","cleared":"Log cleared"},
+      "log":{"page_loaded":"Management page loaded","runtime_failed":"Runtime check failed: {error}","status_refreshed":"Status refreshed: {status}","status_failed":"Status request failed: {error}","qr_failed":"QR code request failed: {error}","refresh_failed":"Refresh failed: {error}","session_expired":"Login session expired. Creating a fresh session…","session_reset_created":"Fresh login session created. Waiting for a QR code…","session_reset_failed":"Could not create a fresh login session: {error}","pair_generated":"A new phone pairing code was generated (sensitive value not logged)","pair_failed":"Pairing-code request failed (sensitive value not logged)","restart_start":"Restarting connection…","restart_result":"Restart result: {status}","restart_failed":"Restart failed: {error}","logout_start":"Logging out…","logout_result":"Logout result: {status}","logout_failed":"Logout failed: {error}","update_check_start":"Checking GitHub Release and official artifact digest…","update_check_done":"Release candidate check completed","update_check_failed":"Update check failed: {error}","update_candidate_missing":"The current update candidate is missing its identity token; checking the Release again","update_completed":"Plugin update completed and passed health checks","update_failed":"Plugin update failed or rolled back","update_install_start":"Installing the confirmed v{version} Release artifact…","update_transaction_started":"Update transaction started","update_request_interrupted":"Update request was interrupted; checking durable transaction state: {error}","update_poll_timeout":"Update polling stopped after 30 minutes without marking the backend transaction failed","init_failed":"Initialization failed: {error}"},
+      "confirm":{"logout_armed":"Click again to confirm logout"}
     }
   }
 }

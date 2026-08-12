@@ -4,21 +4,21 @@
     "type": "string",
     "default": "127.0.0.1",
     "group": "connection",
-    "hint": "除非 AstrBot 和 Gateway 分别运行在不同容器，否则建议保持 127.0.0.1。"
+    "hint": "内置 Gateway 的基准监听地址。AstrBot 与 Gateway 同机/同容器时建议保持 127.0.0.1，不要直接暴露到公网。"
   },
   "gateway_port": {
-    "description": "Gateway HTTP 端口",
+    "description": "Gateway HTTP 基准端口",
     "type": "int",
     "default": 18789,
     "group": "connection",
-    "hint": "Gateway HTTP/SSE 端口，预设 18789。"
+    "hint": "默认实例使用的 HTTP/SSE 基准端口。启用内置多实例时，secondary 实例会自动从后续可用端口分配。"
   },
   "auto_start_gateway": {
     "description": "自动启动内置 Gateway",
     "type": "bool",
     "default": true,
     "group": "connection",
-    "hint": "启用后，打开插件登录页时会自动启动 Node.js Gateway；平台实例也有独立的同名配置。"
+    "hint": "启用后，插件登录页与平台运行时会自动启动 Node.js Gateway；多实例会自动隔离端口和认证目录。关闭时视为使用 external Gateway。"
   },
   "node_executable": {
     "description": "Node.js 可执行文件",
@@ -28,18 +28,18 @@
     "hint": "推荐 Node.js 20+，例如 node 或 /usr/bin/node。"
   },
   "auth_dir": {
-    "description": "WhatsApp 登录态目录",
+    "description": "WhatsApp 基准登录态目录",
     "type": "string",
     "default": "",
     "group": "connection",
-    "hint": "留空时使用 AstrBot 工作目录下的 data/plugin_data/astrbot_plugin_whatsapp_adapter/whatsapp-auth。"
+    "hint": "留空时默认使用 data/plugin_data/astrbot_plugin_whatsapp_adapter/whatsapp-auth；内置多实例的 secondary 账号会自动使用带实例后缀的独立目录。"
   },
   "log_level": {
     "description": "Gateway 日志级别",
     "type": "string",
     "default": "info",
     "group": "connection",
-    "hint": "可选：silent、fatal、error、warn、info、debug、trace。",
+    "hint": "可选：silent、fatal、error、warn、info、debug、trace。排障结束后建议恢复 info。",
     "options": [
       "silent",
       "fatal",
@@ -55,48 +55,48 @@
     "type": "bool",
     "default": true,
     "group": "messaging_defaults",
-    "hint": "所有 WhatsApp 平台实例的全局默认值；仅当纯文字消息只包含一个 URL 时生成预览。"
+    "hint": "所有 WhatsApp 平台实例共享的默认行为；仅当纯文字消息只包含一个 URL 时生成预览。"
   },
   "default_typing_indicator": {
     "description": "默认发送输入状态",
     "type": "bool",
     "default": true,
     "group": "messaging_defaults",
-    "hint": "所有 WhatsApp 平台实例的全局默认值。"
+    "hint": "所有 WhatsApp 平台实例共享的默认行为。并发回复会协调 composing 状态，避免过早停止。"
   },
   "default_send_read_receipts": {
     "description": "默认发送已读回执",
     "type": "bool",
     "default": true,
     "group": "messaging_defaults",
-    "hint": "所有 WhatsApp 平台实例的全局默认值。"
+    "hint": "对通过访问控制并被接受处理的消息发送已读回执。"
   },
   "default_mark_online": {
     "description": "默认标记在线状态",
     "type": "bool",
     "default": false,
     "group": "messaging_defaults",
-    "hint": "所有 WhatsApp 平台实例的全局默认值。"
+    "hint": "开启时维持 available；关闭时仍可能在回复期间短暂上线并发送 composing，回复完成后恢复 unavailable。"
   },
   "default_parse_inbound_formatting": {
     "description": "默认解析入站格式",
     "type": "bool",
     "default": true,
     "group": "messaging_defaults",
-    "hint": "将 WhatsApp 原生粗体、斜体、删除线和代码转换为 Markdown 供 AstrBot 阅读。"
+    "hint": "将 WhatsApp 原生粗体、斜体、删除线和代码格式转换为 Markdown 供 AstrBot 阅读。"
   },
   "default_media_album_debounce_seconds": {
     "description": "默认相簿去抖时间（秒）",
     "type": "float",
     "default": 2.5,
     "group": "messaging_defaults",
-    "hint": "连续无文字图片合并为相簿的全局等待时间；设为 0 关闭。"
+    "hint": "同一发送者的短时间连续图片合并等待窗口；私聊 caption/提及会尽量保留，设为 0 关闭。"
   },
   "default_streaming_edit_throttle": {
     "description": "默认流式编辑间隔（秒）",
     "type": "float",
     "default": 1.0,
     "group": "messaging_defaults",
-    "hint": "所有 WhatsApp 平台实例编辑流式文字的全局最小间隔。"
+    "hint": "所有 WhatsApp 平台实例编辑流式文字的全局最小间隔；默认 1.0 秒，运行时最低保护值为 0.1 秒。"
   }
 }
