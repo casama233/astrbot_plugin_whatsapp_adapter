@@ -1304,7 +1304,11 @@ class WhatsAppAdapterPlugin(Star):
             for attempt in range(1, 31):
                 try:
                     health = await health_client.health()
-                    logger.info("WhatsApp Gateway 健康检查通过（第 %s 次）", attempt, health)
+                    logger.info(
+                        "WhatsApp Gateway 健康检查通过（第 %s 次）: %s",
+                        attempt,
+                        self._safe_status(health),
+                    )
                     break
                 except Exception as exc:
                     last_error = exc
@@ -1485,7 +1489,6 @@ class WhatsAppAdapterPlugin(Star):
                 inst._legacy_command_prefix = extract_legacy_command_prefix(sanitized_config)
                 inst._registered_commands = []
                 inst._refresh_registered_commands()
-                inst._ensure_send_buffer_state()
                 inst.clear_errors()
                 inst._stopped.clear()
                 inst._reconnect_event.clear()
