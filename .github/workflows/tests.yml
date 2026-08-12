@@ -25,6 +25,10 @@ jobs:
         run: python -m compileall -q .
       - name: Python tests
         run: python -m unittest discover -v tests
+      - name: Install Markdown parser research dependency
+        run: python -m pip install --disable-pip-version-check "markdown-it-py==4.2.0"
+      - name: Markdown parser differential prototype
+        run: python -m unittest discover -v tests -p 'test_markdown_it_differential.py'
       - name: Install Node dependencies
         run: npm ci
       - name: Node tests
