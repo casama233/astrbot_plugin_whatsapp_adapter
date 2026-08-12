@@ -1,0 +1,11 @@
+{
+  "version": "0.2.35",
+  "previous_version": "0.2.34",
+  "date": "2026-08-12",
+  "commit_subject": "Fix sandbox confirmation event timing",
+  "notes": [
+    "修复 AstrBot Plugin Page 沙箱环境中「再次点击确认更新」或「再次点击确认登出」仍可能没有反应的问题。",
+    "将临时确认 shim 的恢复时机从 microtask 延后到下一事件任务，确保同一次点击的 capture 与 bubble 监听器都能正确消费二次确认。",
+    "新增浏览器式 listener 间 microtask checkpoint 回归测试，防止真实浏览器时序与 Node 假 DOM 测试不一致再次漏测。"
+  ]
+}
