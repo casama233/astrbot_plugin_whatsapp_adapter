@@ -48,7 +48,10 @@
         // AstrBot Plugin Pages intentionally omit `allow-modals` from their
         // iframe sandbox. The existing page handlers still call window.confirm,
         // so make that one synchronous confirmation succeed only for this
-        // already-confirmed second click, then immediately restore it.
+        // already-confirmed second click. Restore it in the next task rather
+        // than a microtask: browsers may run a microtask checkpoint between
+        // event listeners, which can otherwise restore confirm before the
+        // app.js bubble listener consumes the second click.
         armedUntil = 0;
         delete button.dataset.confirmArmed;
         if (resetTimer) clearTimeout(resetTimer);
@@ -57,9 +60,9 @@
 
         const previousConfirm = window.confirm;
         window.confirm = () => true;
-        queueMicrotask(() => {
+        setTimeout(() => {
           window.confirm = previousConfirm;
-        });
+        }, 0);
       },
       true,
     );
