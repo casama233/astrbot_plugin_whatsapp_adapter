@@ -86,6 +86,73 @@ def phone_from_identity(value: str | None) -> str:
     return f"+{digits}" if digits else ""
 
 
+def public_numeric_id(value: str | None) -> str:
+    """Return the QQ-compatible public ID for a WhatsApp identity.
+
+    Transport domains and Baileys device suffixes must never become part of an
+    AstrBot ``session_id``.  Keep the original JID in ``raw_message`` and use
+    only this public projection for UMO, sender, self and group identifiers.
+    """
+
+    user = identity_user(value)
+    digits = re.sub(r"\D", "", user)
+    return digits or user
+
+
+def normalize_group_session_id(value: str | None) -> str:
+    """Normalize current and legacy group session IDs to a public group ID.
+
+    Accepted legacy forms include ``group@g.us`` and
+    ``sender_group@g.us``.  New canonical group sessions contain neither the
+    sender nor WhatsApp's transport domain.
+    """
+
+    raw = str(value or "").strip()
+    if raw.endswith("@g.us"):
+        raw = raw[: -len("@g.us")]
+    if "_" in raw:
+        raw = raw.rsplit("_", 1)[-1]
+    return public_numeric_id(raw)
+
+
+def build_umo_session_id(
+    *,
+    is_group: bool,
+    group_id: str | None,
+    user_id: str | None,
+    unique_session: bool,
+) -> str:
+    """Build one canonical AstrBot session ID using the QQ adapter contract."""
+
+    public_user_id = public_numeric_id(user_id)
+    if not is_group:
+        return public_user_id
+
+    public_group_id = normalize_group_session_id(group_id)
+    if unique_session and public_user_id:
+        return f"{public_user_id}_{public_group_id}"
+    return public_group_id
+
+
+def delivery_jid_from_session_id(
+    value: str | None,
+    *,
+    is_group: bool,
+) -> str:
+    """Resolve canonical or legacy UMO session IDs back to transport JIDs."""
+
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if is_group:
+        group_id = normalize_group_session_id(raw)
+        return f"{group_id}@g.us" if group_id else raw
+    if is_pn_jid(raw) or is_lid_jid(raw):
+        return normalize_user_jid(raw)
+    public_id = public_numeric_id(raw)
+    return base_pn_jid(public_id) or raw
+
+
 @dataclass(slots=True)
 class IdentityMappingCache:
     """A mapping cache owned by one adapter/account runtime."""

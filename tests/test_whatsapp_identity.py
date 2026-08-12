@@ -37,6 +37,58 @@ class WhatsAppIdentityTests(unittest.TestCase):
         self.assertEqual(identity.base_lid_jid("123456:7@hosted.lid"), "123456@hosted.lid")
         self.assertEqual(identity.phone_from_identity("85264362105:23@hosted"), "+85264362105")
 
+    def test_umo_sessions_use_qq_compatible_public_ids(self) -> None:
+        identity = self.identity
+        self.assertEqual(
+            identity.build_umo_session_id(
+                is_group=False,
+                group_id=None,
+                user_id="85264362105:23@s.whatsapp.net",
+                unique_session=False,
+            ),
+            "85264362105",
+        )
+        self.assertEqual(
+            identity.build_umo_session_id(
+                is_group=True,
+                group_id="120363000000000001@g.us",
+                user_id="111@hosted",
+                unique_session=False,
+            ),
+            "120363000000000001",
+        )
+        self.assertEqual(
+            identity.build_umo_session_id(
+                is_group=True,
+                group_id="120363000000000001@g.us",
+                user_id="111@hosted",
+                unique_session=True,
+            ),
+            "111_120363000000000001",
+        )
+
+    def test_delivery_accepts_canonical_and_legacy_sessions(self) -> None:
+        identity = self.identity
+        for value in (
+            "120363000000000001",
+            "120363000000000001@g.us",
+            "111_120363000000000001",
+            "111_120363000000000001@g.us",
+        ):
+            with self.subTest(value=value):
+                self.assertEqual(
+                    identity.delivery_jid_from_session_id(value, is_group=True),
+                    "120363000000000001@g.us",
+                )
+        self.assertEqual(
+            identity.delivery_jid_from_session_id("111", is_group=False),
+            "111@s.whatsapp.net",
+        )
+        self.assertEqual(
+            identity.delivery_jid_from_session_id("123:7@hosted.lid", is_group=False),
+            "123@hosted.lid",
+        )
+
     def test_mapping_caches_are_isolated_by_adapter_account(self) -> None:
         identity = self.identity
         first = identity.IdentityMappingCache()

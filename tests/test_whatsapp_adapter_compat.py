@@ -226,6 +226,12 @@ class WhatsAppAdapterCompatibilityTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.module = _adapter_module()
+        cls._save_mapping_patcher = patch.object(cls.module, "_save_lid_mapping")
+        cls._save_mapping_patcher.start()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls._save_mapping_patcher.stop()
 
     def test_numeric_ids_ordered_mentions_reply_and_raw_projection(self) -> None:
         adapter = object.__new__(self.module.WhatsAppPlatformAdapter)
@@ -262,7 +268,7 @@ class WhatsAppAdapterCompatibilityTests(unittest.TestCase):
         self.assertIsNotNone(message)
         self.assertEqual(message.self_id, "999")
         self.assertEqual(message.sender.user_id, "111")
-        self.assertEqual(message.session_id, "120363000000000001@g.us")
+        self.assertEqual(message.session_id, "120363000000000001")
 
         chain = message.message
         self.assertIsInstance(chain[0], _Reply)
@@ -322,6 +328,7 @@ class WhatsAppAdapterCompatibilityTests(unittest.TestCase):
         self.assertEqual(raw.message_id, "12345")
         self.assertIsInstance(raw.user_id, str)
         self.assertIsInstance(raw.self_id, str)
+        self.assertEqual(message.session_id, "111")
 
     def test_failed_inbound_media_remains_visible_even_with_a_caption(self) -> None:
         adapter = object.__new__(self.module.WhatsAppPlatformAdapter)
@@ -371,7 +378,7 @@ class WhatsAppAdapterCompatibilityTests(unittest.TestCase):
         self.assertEqual(visible, ["<media:sticker unavailable>"])
         self.assertEqual(message.message_str, "<media:sticker unavailable>")
 
-    def test_global_unique_session_uses_sender_and_group_jid(self) -> None:
+    def test_global_unique_session_matches_qq_sender_and_group_ids(self) -> None:
         adapter = object.__new__(self.module.WhatsAppPlatformAdapter)
         adapter.config = {"parse_inbound_formatting": False}
         adapter._platform_settings = {"unique_session": True}
@@ -391,7 +398,7 @@ class WhatsAppAdapterCompatibilityTests(unittest.TestCase):
 
         self.assertEqual(message.sender.user_id, "111")
         self.assertEqual(message.group_id, "120363000000000001")
-        self.assertEqual(message.session_id, "111_120363000000000001@g.us")
+        self.assertEqual(message.session_id, "111_120363000000000001")
 
     def test_native_event_is_projected_as_detailed_plain_text(self) -> None:
         adapter = object.__new__(self.module.WhatsAppPlatformAdapter)
@@ -562,6 +569,7 @@ class WhatsAppAdapterCompatibilityTests(unittest.TestCase):
         ):
             for session_id in (
                 "120363000000000001",
+                "111_120363000000000001",
                 "111_120363000000000001@g.us",
             ):
                 session = types.SimpleNamespace(
@@ -572,12 +580,150 @@ class WhatsAppAdapterCompatibilityTests(unittest.TestCase):
 
         self.assertEqual(
             captured["targets"],
-            ["120363000000000001@g.us", "120363000000000001@g.us"],
+            [
+                "120363000000000001@g.us",
+                "120363000000000001@g.us",
+                "120363000000000001@g.us",
+            ],
         )
         self.assertTrue(
             all(state.message_id == "quoted-message" for state in captured["states"]),
         )
-        self.assertEqual(adapter.base_session_sends, 2)
+        self.assertEqual(adapter.base_session_sends, 3)
+
+    def test_private_numeric_session_resolves_back_to_cached_lid(self) -> None:
+        adapter = object.__new__(self.module.WhatsAppPlatformAdapter)
+        adapter.config = {
+            "link_preview_single_url": True,
+            "text_chunk_limit": 4000,
+            "media_caption_mode": "separate",
+            "typing_indicator": False,
+        }
+        adapter.client = object()
+        adapter._identity_cache = self.module.IdentityMappingCache()
+        adapter._identity_cache.remember("123@lid", "111@s.whatsapp.net")
+        captured = []
+
+        async def process(_client, target, _chain, **kwargs):
+            captured.append(target)
+            kwargs["quote_state"].sent_count += 1
+            return None, []
+
+        async def flush(*_args, **_kwargs):
+            return None, []
+
+        session = types.SimpleNamespace(
+            session_id="111",
+            message_type=_MessageType.FRIEND_MESSAGE,
+        )
+        with (
+            patch.object(self.module, "process_message_chain", process),
+            patch.object(self.module, "flush_pending_text", flush),
+        ):
+            asyncio.run(
+                adapter.send_by_session(
+                    session,
+                    self.module.MessageChain([_Plain("hello")]),
+                ),
+            )
+
+        self.assertEqual(captured, ["123@lid"])
+
+    def test_private_pn_and_lid_addresses_share_one_numeric_session(self) -> None:
+        with tempfile.TemporaryDirectory() as auth_dir:
+            adapter = object.__new__(self.module.WhatsAppPlatformAdapter)
+            adapter.config = {
+                "parse_inbound_formatting": False,
+                "auth_dir": auth_dir,
+            }
+
+            pn_message = asyncio.run(
+                adapter.convert_message(
+                    {
+                        "chatJid": "111@s.whatsapp.net",
+                        "senderJid": "111@s.whatsapp.net",
+                        "senderPn": "111@s.whatsapp.net",
+                        "senderName": "Alice",
+                        "selfJid": "999@s.whatsapp.net",
+                        "messageId": "pn-address",
+                        "text": "one",
+                    },
+                ),
+            )
+            lid_message = asyncio.run(
+                adapter.convert_message(
+                    {
+                        "chatJid": "123@lid",
+                        "senderJid": "123@lid",
+                        "senderPn": "111@s.whatsapp.net",
+                        "canonicalSessionJid": "123@lid",
+                        "canonicalSessionPn": "111@s.whatsapp.net",
+                        "senderName": "Alice",
+                        "selfJid": "999@s.whatsapp.net",
+                        "messageId": "lid-address",
+                        "text": "two",
+                    },
+                ),
+            )
+
+        self.assertEqual(pn_message.sender.user_id, "111")
+        self.assertEqual(lid_message.sender.user_id, "111")
+        self.assertEqual(pn_message.session_id, "111")
+        self.assertEqual(lid_message.session_id, "111")
+
+    def test_phone_originated_direct_message_uses_remote_session_identity(self) -> None:
+        adapter = object.__new__(self.module.WhatsAppPlatformAdapter)
+        adapter.config = {"parse_inbound_formatting": False}
+        message = asyncio.run(
+            adapter.convert_message(
+                {
+                    "chatJid": "123@lid",
+                    "senderJid": "999@s.whatsapp.net",
+                    "senderPn": "999@s.whatsapp.net",
+                    "canonicalSessionJid": "123@lid",
+                    "canonicalSessionPn": "111@s.whatsapp.net",
+                    "senderName": "Bot owner",
+                    "selfJid": "999@s.whatsapp.net",
+                    "fromMe": True,
+                    "messageId": "phone-originated",
+                    "text": "hello",
+                },
+            ),
+        )
+
+        self.assertEqual(message.sender.user_id, "999")
+        self.assertEqual(message.session_id, "111")
+
+    def test_unknown_lid_is_resolved_before_first_public_session_is_built(self) -> None:
+        class Client:
+            async def resolve_lid(self, lid_jid):
+                self.lid_jid = lid_jid
+                return "111:4@s.whatsapp.net"
+
+        with tempfile.TemporaryDirectory() as auth_dir:
+            adapter = object.__new__(self.module.WhatsAppPlatformAdapter)
+            adapter.config = {
+                "parse_inbound_formatting": False,
+                "auth_dir": auth_dir,
+            }
+            adapter.client = Client()
+            message = asyncio.run(
+                adapter.convert_message(
+                    {
+                        "chatJid": "123:8@lid",
+                        "senderJid": "123:8@lid",
+                        "canonicalSessionJid": "123:8@lid",
+                        "senderName": "Alice",
+                        "selfJid": "999@s.whatsapp.net",
+                        "messageId": "resolve-first",
+                        "text": "hello",
+                    },
+                ),
+            )
+
+        self.assertEqual(adapter.client.lid_jid, "123@lid")
+        self.assertEqual(message.sender.user_id, "111")
+        self.assertEqual(message.session_id, "111")
 
     def test_send_by_session_never_delays_plugin_messages_for_segmented_reply(self) -> None:
         adapter = object.__new__(self.module.WhatsAppPlatformAdapter)
@@ -654,7 +800,10 @@ class WhatsAppAdapterCompatibilityTests(unittest.TestCase):
         )
 
     def test_adapter_mapping_state_is_isolated_and_supports_hosted_lids(self) -> None:
-        with tempfile.TemporaryDirectory() as first_dir, tempfile.TemporaryDirectory() as second_dir:
+        with (
+            tempfile.TemporaryDirectory() as first_dir,
+            tempfile.TemporaryDirectory() as second_dir,
+        ):
             first = object.__new__(self.module.WhatsAppPlatformAdapter)
             first.config = {
                 "parse_inbound_formatting": False,
@@ -685,8 +834,9 @@ class WhatsAppAdapterCompatibilityTests(unittest.TestCase):
             self.assertEqual(first_message.sender.user_id, "111")
             self.assertEqual(second_message.sender.user_id, "222")
             self.assertEqual(first_follow_up.sender.user_id, "111")
-            self.assertEqual(first_message.session_id, "123@hosted.lid")
-            self.assertEqual(second_message.session_id, "123@hosted.lid")
+            self.assertEqual(first_message.session_id, "111")
+            self.assertEqual(second_message.session_id, "222")
+            self.assertEqual(first_follow_up.session_id, "111")
             self.assertEqual(
                 first._identity_mappings().pn_for_lid("123:10@hosted.lid"),
                 "111@hosted",

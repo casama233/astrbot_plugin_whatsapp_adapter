@@ -1568,6 +1568,7 @@ async function handleIncomingMessage(
     senderPn,
     senderLid: senderIdentity.lidJid,
     canonicalSessionJid,
+    canonicalSessionPn: isGroup ? null : (directSessionIdentity?.pnJid || null),
     senderPhone: allowedResult.senderPhone || resolvePhone(senderJid) || "",
     senderName: primary.pushName || senderJid,
     fromMe,
