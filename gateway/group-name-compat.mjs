@@ -107,7 +107,10 @@ export function patchGatewayGroupNames(source) {
     return { content: source, changed: false };
   }
 
-  let content = source;
+  // Git commonly checks JavaScript out as CRLF on Windows. All structural
+  // patterns below describe JavaScript layout, not a particular newline
+  // encoding, so canonicalize before matching and emit deterministic LF output.
+  let content = source.replace(/\r\n?/g, "\n");
   content = replaceRequired(
     content,
     /const host = process\.env\.WA_GATEWAY_HOST/,
