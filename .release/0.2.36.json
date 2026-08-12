@@ -1,0 +1,17 @@
+{
+  "version": "0.2.36",
+  "previous_version": "0.2.35",
+  "date": "2026-08-12",
+  "commit_subject": "Introduce release-pinned Updater v2",
+  "notes": [
+    "重构内置更新器为 release-pinned Updater v2：检查阶段生成与 Release、asset、digest 绑定的 candidateToken，安装阶段只接受同一候选与 expected version，不再重新查询最新版。",
+    "正式更新只接受 astrbot_plugin_whatsapp_adapter-vX.Y.Z.zip，并要求 GitHub Release asset SHA-256 digest；移除 source zipball fallback，下载后再次校验摘要。",
+    "发布包会同时验证 metadata.yaml、main.py、package.json 与 package-lock.json 版本一致性，并继续执行 ZIP 路径、文件类型、体积与插件身份安全检查。",
+    "更新 transaction 使用持久 lock，并将 staging/backup 移出 AstrBot 插件扫描目录；切换前停止 WhatsApp runtime，reload 后通过插件、adapter 与 Gateway health gate 才删除 rollback 数据。",
+    "Linux 支持时使用 renameat2(RENAME_EXCHANGE) 降低切换窗口；Windows 与不支持该能力的文件系统使用带回滚保护的双 rename，并明确保留极端断电窗口这一平台边界。",
+    "内置 updater 不再修改 AstrBot 全局 Python 环境；若新版本改变 requirements.txt 将 fail closed，并要求通过 AstrBot 插件管理器更新。",
+    "管理页的更新与登出确认改为纯两次点击状态机，彻底移除 window.confirm monkey-patch 与 destructive-action UI 的动态 HTML sink。",
+    "CI 扩展为 Ubuntu 与 Windows 双平台，并修复 release identity parser、Gateway source patcher 的 CRLF 兼容问题及跨平台 path 测试。",
+    "重要过渡说明：从 v0.2.35 升级到 v0.2.36 时，建议优先使用 AstrBot 插件管理器或手动安装本 Release 的正式 ZIP，因为发起这一次升级的仍是 v0.2.35 旧 updater；完成升级后后续版本将使用 Updater v2 的完整 transaction 与 health-gate 保证。"
+  ]
+}
