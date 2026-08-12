@@ -65,9 +65,14 @@ def split_whatsapp_text(text: str, limit: int) -> list[str]:
 
     Each emitted chunk contains visible payload, never just formatting markers.
     Active bold/italic/strike/code delimiters are closed at the end of a chunk
-    and reopened in the next one.  Capacity is calculated against the formatting
+    and reopened in the next one. Capacity is calculated against the formatting
     state *after* the candidate token, so a real closing delimiter at a boundary
     is not preceded by a synthetic close that would create ``**``/`````` noise.
+
+    Whitespace alone is not considered payload. If a previous chunk had to
+    synthesize a close immediately before trailing whitespace, a later real
+    closer collapses that empty reopened span back to plain whitespace instead
+    of emitting e.g. `````\n``` `` as a marker-only message.
     """
 
     value = str(text or "")
@@ -92,11 +97,14 @@ def split_whatsapp_text(text: str, limit: int) -> list[str]:
         suffix += "".join(reversed(markers))
         return suffix
 
-    def opening_prefix() -> str:
-        prefix = "".join(active)
-        if code_delimiter:
-            prefix += code_delimiter
+    def opening_prefix_for(markers: list[str], code: str | None) -> str:
+        prefix = "".join(markers)
+        if code:
+            prefix += code
         return prefix
+
+    def opening_prefix() -> str:
+        return opening_prefix_for(active, code_delimiter)
 
     def flush() -> None:
         nonlocal current, payload_units
@@ -119,14 +127,18 @@ def split_whatsapp_text(text: str, limit: int) -> list[str]:
         previous = units[start_index - 1] if start_index > 0 else ""
         following = units[index + 1] if index + 1 < len(units) else ""
 
+        old_active = list(active)
+        old_code = code_delimiter
         next_active = list(active)
         next_code = code_delimiter
         structural = False
+        closing_token = False
 
         if token.startswith("`") and set(token) == {"`"}:
             if code_delimiter == token:
                 next_code = None
                 structural = True
+                closing_token = True
             elif code_delimiter is None and len(token) in (1, 3):
                 next_code = token
                 structural = True
@@ -140,6 +152,7 @@ def split_whatsapp_text(text: str, limit: int) -> list[str]:
                 if next_active and next_active[-1] == token and previous and not previous.isspace():
                     next_active.pop()
                     structural = True
+                    closing_token = True
                 elif following and not following.isspace():
                     next_active.append(token)
                     structural = True
@@ -150,9 +163,21 @@ def split_whatsapp_text(text: str, limit: int) -> list[str]:
             flush()
 
         current.append(token)
+
+        if closing_token and payload_units == 0:
+            # A synthetic prefix from ``flush`` followed only by whitespace and
+            # the real closer represents an empty formatting span. Remove that
+            # span while keeping the whitespace as a separator for later text.
+            old_prefix = opening_prefix_for(old_active, old_code)
+            joined = "".join(current)
+            if old_prefix and joined.startswith(old_prefix) and joined.endswith(token):
+                middle_end = len(joined) - len(token)
+                middle = joined[len(old_prefix) : middle_end]
+                current = list(opening_prefix_for(next_active, next_code) + middle)
+
         active = next_active
         code_delimiter = next_code
-        if not structural:
+        if not structural and token and not token.isspace():
             payload_units += 1
         index += 1
 
