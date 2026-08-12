@@ -111,7 +111,7 @@ class WhatsAppMarkdownHardeningTests(unittest.TestCase):
         self.assertNotIn("```foo", rendered)
 
         streaming = helpers.format_whatsapp_markdown(source, streaming=True)
-        self.assertIn("```", streaming)
+        self.assertEqual(streaming, "Use `foo and **important**`")
         self.assertIn("**important**", streaming)
 
     def test_keycap_emoji_is_not_split_inside_grapheme(self) -> None:
