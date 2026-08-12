@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.38] - 2026-08-12
+
+- 修复从旧版本热替换 WhatsApp adapter 时仍调用已移除的分段文本缓冲初始化方法，避免旧 adapter 已终止后新版本无法重新接管。
+- 修复管理页启动 Gateway 后健康检查成功日志少一个格式占位符的问题，避免已连线 Gateway 被误判为健康检查超时。
+- 健康日志改为使用脱敏状态摘要，不再输出 WhatsApp 自身 JID 等运输身份。
+- 新增热替换与管理页健康检查回归测试，并在 AstrBot 4.27.2 真实环境验证旧会话能够无扫码自动重连。
+
 ## [0.2.37] - 2026-08-12
 
 - 统一 WhatsApp UMO 为 QQ 风格公开数字 ID：私聊使用用户 ID，群聊使用群 ID，开启 unique_session 时使用 用户ID_群ID，不再把 @lid、@s.whatsapp.net、@hosted 或 @g.us 写入新会话。
