@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.34] - 2026-08-12
+
+- 支持在同一个 AstrBot 进程中运行多个 WhatsApp 平台实例，并为每个账号分配稳定且隔离的 Gateway endpoint 与认证目录。
+- 默认 whatsapp 实例保留基准端口，secondary 实例从下一可用端口开始分配，支持并发启动、重连、热重载与端口绑定竞争恢复，避免 session 串号和端口漂移。
+- 强化多实例安全边界：instance ID 使用安全且抗碰撞的目录标识，自定义 auth_dir 自动按实例隔离，外部 Gateway endpoint 禁止被多个账号 runtime 静默共用。
+- 新增多实例端口、认证目录、external Gateway、bind-race 等回归测试及 docs/multi-instance.md 使用文档。
+- 感谢 @cdxiaodong 提交并推动最初的多实例方案，维护者整合版保留了原始提交与贡献归属。
+
 ## [0.2.33] - 2026-08-12
 
 - 修复 AstrBot Plugin Page 受限 iframe 中原生 confirm 无法弹出，导致「立即更新」点击后没有反应的问题。
