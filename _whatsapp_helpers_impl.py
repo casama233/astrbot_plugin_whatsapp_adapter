@@ -15,7 +15,13 @@ from astrbot.api.platform import At
 
 from .whatsapp_client import WhatsAppGatewayClient
 from .whatsapp_components import WhatsAppButtons, WhatsAppEdit, WhatsAppList, WhatsAppPoll
-from .whatsapp_identity import is_lid_jid, is_pn_jid, normalize_user_jid
+from .whatsapp_identity import (
+    base_lid_jid,
+    base_pn_jid,
+    is_lid_jid,
+    is_pn_jid,
+)
+from .whatsapp_chunking import split_whatsapp_text
 
 __all__ = [
     "MentionRef",
@@ -76,22 +82,6 @@ def _placeholder(index: int, kind: str = "PROTECTED") -> str:
     return f"\x00WA{kind}{index}\x00"
 
 
-def _protect_escaped_markdown(value: str) -> tuple[str, list[str]]:
-    protected: list[str] = []
-
-    def replace(match: re.Match[str]) -> str:
-        protected.append(match.group(1))
-        return _placeholder(len(protected) - 1, "ESC")
-
-    return re.sub(r"\\([\\`*_{}\[\]()#+\-.!|>~])", replace, value), protected
-
-
-def _restore_escaped_markdown(value: str, protected: Sequence[str]) -> str:
-    for index, text in enumerate(protected):
-        value = value.replace(_placeholder(index, "ESC"), text)
-    return value
-
-
 def _extract_fenced_code(value: str, *, streaming: bool) -> tuple[str, list[str]]:
     """將 Markdown fenced code 轉成 WhatsApp 官方三反引號格式並保護。"""
     lines = value.splitlines(keepends=True)
@@ -142,6 +132,7 @@ def _extract_fenced_code(value: str, *, streaming: bool) -> tuple[str, list[str]
         output.append(_placeholder(len(protected) - 1, "FENCE"))
 
     return "".join(output), protected
+
 
 def _protect_inline_code(value: str, *, streaming: bool) -> tuple[str, list[str]]:
     """保護 Markdown code spans；反引號 run 以完全相同長度配對。"""
@@ -250,49 +241,587 @@ def _is_table_delimiter(line: str) -> bool:
     return bool(cells) and all(re.fullmatch(r":?-{3,}:?", cell.strip()) for cell in cells)
 
 
-def _convert_markdown_blocks(value: str, *, streaming: bool) -> str:
-    """把 WhatsApp 不支援的 Markdown block 降級到官方支援格式。"""
+_MARKDOWN_ESCAPABLE = frozenset(r"\`*_{}[]()#+-.!|>~")
+_URL_TRAILING_PUNCTUATION = ".,!?;:，。！？；：、"
+_WORD_JOINER = "\u2060"
+
+
+@dataclass(slots=True)
+class _InlinePiece:
+    """One token in the supported Markdown inline subset."""
+
+    kind: str
+    text: str
+    marker: str = ""
+    size: int = 0
+    candidate: bool = False
+    structural: bool = False
+
+
+def _append_inline_text(pieces: list[_InlinePiece], text: str) -> None:
+    if not text:
+        return
+    if pieces and pieces[-1].kind == "text":
+        pieces[-1].text += text
+    else:
+        pieces.append(_InlinePiece("text", text))
+
+
+def _markdown_punctuation(char: str) -> bool:
+    return bool(char) and unicodedata.category(char)[0] in {"P", "S"}
+
+
+def _markdown_flanking(
+    value: str,
+    start: int,
+    end: int,
+    marker: str,
+) -> tuple[bool, bool]:
+    previous = value[start - 1] if start else ""
+    following = value[end] if end < len(value) else ""
+    previous_space = not previous or previous.isspace()
+    following_space = not following or following.isspace()
+    previous_punctuation = _markdown_punctuation(previous)
+    following_punctuation = _markdown_punctuation(following)
+    left_flanking = not following_space and (
+        not following_punctuation or previous_space or previous_punctuation
+    )
+    right_flanking = not previous_space and (
+        not previous_punctuation or following_space or following_punctuation
+    )
+    if marker in {"_", "~"}:
+        return (
+            left_flanking and (not right_flanking or previous_punctuation),
+            right_flanking and (not left_flanking or following_punctuation),
+        )
+    return left_flanking, right_flanking
+
+
+def _bare_url_end(
+    value: str,
+    start: int,
+    open_delimiters: Sequence[_InlinePiece] = (),
+) -> int | None:
+    lowered = value[start : start + 8].lower()
+    if not (
+        lowered.startswith("http://")
+        or lowered.startswith("https://")
+        or value[start : start + 4].lower() == "www."
+    ):
+        return None
+    end = start
+    while end < len(value) and not value[end].isspace() and value[end] not in "<>":
+        end += 1
+    while end > start and value[end - 1] in _URL_TRAILING_PUNCTUATION:
+        end -= 1
+    for opening, closing in (("(", ")"), ("[", "]"), ("{", "}")):
+        while value[start:end].count(closing) > value[start:end].count(opening):
+            if end <= start or value[end - 1] != closing:
+                break
+            end -= 1
+
+    # A bare URL may legally contain Markdown punctuation.  Only detach a
+    # trailing run when it exactly closes formatting that was already open
+    # before the URL; otherwise keep the punctuation as part of the URL.
+    for count in range(len(open_delimiters), 0, -1):
+        closing = "".join(
+            opening.marker * opening.size
+            for opening in reversed(open_delimiters[-count:])
+        )
+        if end - len(closing) < start:
+            continue
+        if value[end - len(closing) : end] == closing:
+            end -= len(closing)
+            break
+    return end if end > start else None
+
+
+def _escaped_whatsapp_literal(value: str, *, code_collision: bool = False) -> str:
+    protected = "`*_~" if code_collision else "`*_~"
+    return "".join(
+        char + _WORD_JOINER if char in protected else char
+        for char in value
+    )
+
+
+def _contains_whatsapp_bold_span(value: str) -> bool:
+    """Return whether rendered inline text already has a real bold pair."""
+    markers = 0
+    for index, char in enumerate(value):
+        if char != "*":
+            continue
+        previous = value[index - 1] if index else ""
+        following = value[index + 1] if index + 1 < len(value) else ""
+        if previous != _WORD_JOINER and following != _WORD_JOINER:
+            markers += 1
+    return markers >= 2
+
+
+def _render_heading_inline(value: str, *, streaming: bool) -> str:
+    rendered = _render_markdown_inline(value, streaming=streaming)
+    # Wrapping an existing WhatsApp ``*bold*`` span in another pair produces
+    # an ambiguous sequence such as ``**Bold* heading*``.  Preserve the
+    # explicit inline emphasis and degrade only the heading-wide emphasis.
+    return rendered if _contains_whatsapp_bold_span(rendered) else f"*{rendered}*"
+
+
+def _render_code_token(content: str, *, block: bool) -> str:
+    if not block:
+        content = content.replace("\n", " ")
+        if (
+            len(content) >= 2
+            and content.startswith(" ")
+            and content.endswith(" ")
+            and content.strip(" ")
+        ):
+            content = content[1:-1]
+    if "```" in content:
+        # WhatsApp only supports one- and three-backtick delimiters.  A
+        # four-backtick CommonMark span containing ``` therefore has no safe
+        # equivalent; keep it visible as plain text and neutralize controls.
+        return _escaped_whatsapp_literal(content, code_collision=True)
+    if block or "`" in content or "\n" in content:
+        return f"```{content}```"
+    return f"`{content}`"
+
+
+def _find_backtick_close(value: str, start: int, run_length: int) -> tuple[int, int] | None:
+    cursor = start
+    while cursor < len(value):
+        candidate = value.find("`", cursor)
+        if candidate < 0:
+            return None
+        end = candidate + 1
+        while end < len(value) and value[end] == "`":
+            end += 1
+        if end - candidate == run_length:
+            return candidate, end
+        cursor = end
+    return None
+
+
+def _count_backtick_runs(value: str, start: int, run_length: int) -> int:
+    """Count unescaped backtick runs of one exact delimiter length."""
+    count = 0
+    cursor = start
+    while cursor < len(value):
+        candidate = value.find("`", cursor)
+        if candidate < 0:
+            break
+        end = candidate + 1
+        while end < len(value) and value[end] == "`":
+            end += 1
+        slash_count = 0
+        slash_index = candidate - 1
+        while slash_index >= 0 and value[slash_index] == "\\":
+            slash_count += 1
+            slash_index -= 1
+        if end - candidate == run_length and slash_count % 2 == 0:
+            count += 1
+        cursor = end
+    return count
+
+
+def _find_label_close(value: str, start: int) -> int | None:
+    depth = 1
+    index = start
+    while index < len(value):
+        if value[index] == "\\" and index + 1 < len(value):
+            index += 2
+            continue
+        if value[index] == "[":
+            depth += 1
+        elif value[index] == "]":
+            depth -= 1
+            if depth == 0:
+                return index
+        index += 1
+    return None
+
+
+def _find_link_destination_close(value: str, start: int) -> int | None:
+    depth = 1
+    index = start
+    while index < len(value):
+        if value[index] == "\\" and index + 1 < len(value):
+            index += 2
+            continue
+        if value[index] == "(":
+            depth += 1
+        elif value[index] == ")":
+            depth -= 1
+            if depth == 0:
+                return index
+        index += 1
+    return None
+
+
+def _parse_markdown_link(
+    value: str,
+    start: int,
+    *,
+    streaming: bool = False,
+) -> tuple[int, str] | None:
+    image = value.startswith("![", start)
+    label_open = start + 1 if image else start
+    if label_open >= len(value) or value[label_open] != "[":
+        return None
+    label_close = _find_label_close(value, label_open + 1)
+    if label_close is None or label_close + 1 >= len(value) or value[label_close + 1] != "(":
+        return None
+    destination_close = _find_link_destination_close(value, label_close + 2)
+    if destination_close is None:
+        return None
+
+    raw_destination = value[label_close + 2 : destination_close].strip()
+    if raw_destination.startswith("<") and ">" in raw_destination:
+        destination = raw_destination[1 : raw_destination.find(">")]
+    else:
+        destination = raw_destination.split(None, 1)[0] if raw_destination else ""
+    destination = re.sub(r"\\([\\()])", r"\1", destination)
+    label = _render_markdown_inline(
+        value[label_open + 1 : label_close],
+        streaming=streaming,
+    )
+    rendered = label
+    if destination:
+        rendered = destination if label == destination and not image else f"{label} ({destination})"
+    return destination_close + 1, rendered
+
+
+def _delimiter_sizes(marker: str, count: int) -> tuple[list[int], int]:
+    if marker == "~":
+        return [2] * (count // 2), count % 2
+    return ([1] if count % 2 else []) + ([2] * (count // 2)), 0
+
+
+def _render_markdown_inline(value: str, *, streaming: bool = False) -> str:
+    """Render the supported inline subset using paired delimiter tokens."""
+    pieces: list[_InlinePiece] = []
+    delimiter_stack: list[_InlinePiece] = []
+    index = 0
+
+    while index < len(value):
+        char = value[index]
+        if char == "\\" and index + 1 < len(value) and value[index + 1] in _MARKDOWN_ESCAPABLE:
+            escaped = value[index + 1]
+            pieces.append(
+                _InlinePiece(
+                    "escaped",
+                    escaped + (_WORD_JOINER if escaped in "`*_~" else ""),
+                ),
+            )
+            index += 2
+            continue
+
+        link = (
+            _parse_markdown_link(value, index, streaming=streaming)
+            if char in "!["
+            else None
+        )
+        if link is not None:
+            index, rendered_link = link
+            pieces.append(_InlinePiece("opaque", rendered_link))
+            continue
+
+        url_end = _bare_url_end(value, index, delimiter_stack)
+        if url_end is not None:
+            pieces.append(_InlinePiece("opaque", value[index:url_end]))
+            index = url_end
+            continue
+
+        if char == "`":
+            run_end = index + 1
+            while run_end < len(value) and value[run_end] == "`":
+                run_end += 1
+            run_length = run_end - index
+            # With an odd number of equal runs, preserve the first as a
+            # literal and pair the later runs.  This prevents a stray kaomoji
+            # backtick from consuming a subsequent well-formed code span.
+            if _count_backtick_runs(value, index, run_length) % 2:
+                _append_inline_text(
+                    pieces,
+                    _escaped_whatsapp_literal(value[index:run_end]),
+                )
+                index = run_end
+                continue
+            closing = _find_backtick_close(value, run_end, run_length)
+            if closing is None:
+                _append_inline_text(
+                    pieces,
+                    _escaped_whatsapp_literal(value[index:run_end]),
+                )
+                index = run_end
+                continue
+            closing_start, closing_end = closing
+            pieces.append(
+                _InlinePiece(
+                    "opaque",
+                    _render_code_token(value[run_end:closing_start], block=False),
+                ),
+            )
+            index = closing_end
+            continue
+
+        if char not in "*_~":
+            _append_inline_text(pieces, char)
+            index += 1
+            continue
+
+        run_end = index + 1
+        while run_end < len(value) and value[run_end] == char:
+            run_end += 1
+        count = run_end - index
+        can_open, can_close = _markdown_flanking(value, index, run_end, char)
+        supported_count = count if char != "~" else count - (count % 2)
+        remaining = supported_count
+
+        while (
+            can_close
+            and remaining
+            and delimiter_stack
+            and delimiter_stack[-1].marker == char
+            and delimiter_stack[-1].size <= remaining
+        ):
+            opening = delimiter_stack.pop()
+            opening.structural = True
+            closing = _InlinePiece(
+                "delimiter",
+                char * opening.size,
+                marker=char,
+                size=opening.size,
+                candidate=True,
+                structural=True,
+            )
+            pieces.append(closing)
+            remaining -= opening.size
+
+        if can_open and remaining:
+            sizes, leftover = _delimiter_sizes(char, remaining)
+            for size in sizes:
+                opening = _InlinePiece(
+                    "delimiter",
+                    char * size,
+                    marker=char,
+                    size=size,
+                    candidate=True,
+                )
+                pieces.append(opening)
+                delimiter_stack.append(opening)
+            remaining = leftover
+
+        if remaining:
+            pieces.append(
+                _InlinePiece(
+                    "delimiter",
+                    char * remaining,
+                    marker=char,
+                    size=remaining,
+                    candidate=can_open or can_close,
+                ),
+            )
+        if count > supported_count:
+            pieces.append(_InlinePiece("delimiter", char, marker=char, size=1))
+        index = run_end
+
+    trailing_unmatched: set[int] = set()
+    tail: list[int] = []
+    piece_index = len(pieces) - 1
+
+    # Model streams often append a partial ``~*`` immediately before an outer
+    # quote or closing parenthesis.  Ignore only such terminal wrapper text
+    # while looking for the control fragment; ordinary sentence punctuation
+    # remains a hard boundary so literal markers elsewhere are preserved.
+    terminal_closers = frozenset(")]}）】〉》」』〕〗〙〛〞〟'\"’”")
+    while piece_index >= 0:
+        piece = pieces[piece_index]
+        if piece.kind != "text" or not piece.text or not all(
+            char.isspace()
+            or unicodedata.category(char) in {"Pe", "Pf"}
+            or char in terminal_closers
+            for char in piece.text
+        ):
+            break
+        piece_index -= 1
+
+    for piece_index in range(piece_index, -1, -1):
+        piece = pieces[piece_index]
+        if piece.kind != "delimiter" or piece.structural:
+            break
+        tail.append(piece_index)
+    tail_text = "".join(pieces[piece_index].text for piece_index in reversed(tail))
+    if len(tail_text) >= 2 and all(char in "*_~" for char in tail_text):
+        trailing_unmatched.update(tail)
+
+    output: list[str] = []
+    for piece_index, piece in enumerate(pieces):
+        if piece_index in trailing_unmatched:
+            continue
+        if piece.kind != "delimiter":
+            output.append(piece.text)
+            continue
+        if not piece.structural:
+            # Preserve unmatched candidates as visible literals, but prevent
+            # WhatsApp or the later chunker from pairing them with unrelated
+            # markers. Non-flanking punctuation (for example underscores in
+            # identifiers) is already safe and stays byte-for-byte unchanged.
+            if not (streaming and piece.candidate):
+                output.append(
+                    _escaped_whatsapp_literal(piece.text)
+                    if piece.candidate
+                    else piece.text
+                )
+            continue
+        if piece.marker == "~":
+            output.append("~")
+        elif piece.size == 2:
+            output.append("*")
+        else:
+            output.append("_")
+    return "".join(output)
+
+
+def _line_parts(line: str) -> tuple[str, str]:
+    bare = line.rstrip("\n")
+    return bare, line[len(bare) :]
+
+
+def _fence_opening(line: str) -> re.Match[str] | None:
+    return re.match(r"^[ ]{0,3}(`{3,}|~{3,})(.*)$", line)
+
+
+def _special_block_start(lines: Sequence[str], index: int) -> bool:
+    bare, _ending = _line_parts(lines[index])
+    if not bare.strip() or _fence_opening(bare):
+        return True
+    if bare.startswith("    ") or bare.startswith("\t"):
+        return True
+    if re.match(r"^[ ]{0,3}#{1,6}(?:[ \t]+|$)", bare):
+        return True
+    if re.fullmatch(r"[ \t]*(?:\*{3,}|_{3,}|-{3,})[ \t]*", bare):
+        return True
+    if re.match(r"^[ \t]*(?:[-+*][ \t]+|\d+[.)][ \t]+|>[ \t]?)", bare):
+        return True
+    if index + 1 < len(lines):
+        following, _ = _line_parts(lines[index + 1])
+        if ("|" in bare and _is_table_delimiter(following)) or re.fullmatch(
+            r"[ ]{0,3}(?:=+|-+)[ \t]*",
+            following,
+        ):
+            return True
+    return False
+
+
+def _render_markdown_blocks(value: str, *, streaming: bool) -> str:
+    """Line-tokenize blocks, then apply the paired inline parser."""
     lines = value.splitlines(keepends=True)
+    if not lines and value:
+        lines = [value]
     output: list[str] = []
     index = 0
 
     while index < len(lines):
-        line = lines[index]
-        bare = line.rstrip("\r\n")
-        ending = line[len(bare):]
-
-        if (
-            index + 1 < len(lines)
-            and "|" in bare
-            and _is_table_delimiter(lines[index + 1].rstrip("\r\n"))
-        ):
-            headers = _split_table_row(bare)
-            index += 2
-            rows: list[list[str]] = []
-            while index < len(lines) and "|" in lines[index]:
-                candidate = lines[index].rstrip("\r\n")
-                if not candidate.strip():
-                    break
-                rows.append(_split_table_row(candidate))
-                index += 1
-
-            for row in rows:
-                fields: list[str] = []
-                for column, header in enumerate(headers):
-                    cell = row[column] if column < len(row) else ""
-                    if header or cell:
-                        fields.append(f"**{header or f'欄位 {column + 1}'}:** {cell}")
-                output.append("- " + " | ".join(fields) + "\n")
-            if rows:
-                output.append("\n")
-            continue
-
-        heading = re.match(r"^[ \t]{0,3}#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$", bare)
-        if heading:
-            output.append(f"**{heading.group(1)}**{ending}")
+        bare, ending = _line_parts(lines[index])
+        if not bare.strip():
+            output.append(lines[index])
             index += 1
             continue
 
+        fence = _fence_opening(bare)
+        if fence:
+            delimiter = fence.group(1)
+            tail = fence.group(2)
+            same_line_close = re.search(
+                rf"{re.escape(delimiter[0])}{{{len(delimiter)},}}[ \t]*$",
+                tail,
+            )
+            if same_line_close:
+                code = tail[: same_line_close.start()]
+                output.append(_render_code_token(code, block=True) + ending)
+                index += 1
+                continue
+
+            body: list[str] = []
+            index += 1
+            closing_ending = ""
+            while index < len(lines):
+                candidate, candidate_ending = _line_parts(lines[index])
+                if re.fullmatch(
+                    rf"[ ]{{0,3}}{re.escape(delimiter[0])}{{{len(delimiter)},}}[ \t]*",
+                    candidate,
+                ):
+                    closing_ending = candidate_ending
+                    index += 1
+                    break
+                body.append(lines[index])
+                index += 1
+            output.append(_render_code_token("".join(body), block=True) + closing_ending)
+            continue
+
+        if bare.startswith("    ") or bare.startswith("\t"):
+            body: list[str] = []
+            while index < len(lines):
+                candidate, _ = _line_parts(lines[index])
+                if candidate.startswith("    "):
+                    body.append(lines[index][4:])
+                elif candidate.startswith("\t"):
+                    body.append(lines[index][1:])
+                else:
+                    break
+                index += 1
+            output.append(_render_code_token("".join(body), block=True))
+            continue
+
+        if index + 1 < len(lines):
+            delimiter_line, delimiter_ending = _line_parts(lines[index + 1])
+            if "|" in bare and _is_table_delimiter(delimiter_line):
+                headers = _split_table_row(bare)
+                index += 2
+                rows: list[list[str]] = []
+                while index < len(lines):
+                    row_line, _ = _line_parts(lines[index])
+                    if not row_line.strip() or "|" not in row_line:
+                        break
+                    rows.append(_split_table_row(row_line))
+                    index += 1
+                rendered_headers = [
+                    _render_markdown_inline(header, streaming=streaming)
+                    for header in headers
+                ]
+                if rows:
+                    for row in rows:
+                        fields: list[str] = []
+                        for column, header in enumerate(rendered_headers):
+                            cell = _render_markdown_inline(
+                                row[column] if column < len(row) else "",
+                                streaming=streaming,
+                            )
+                            if header or cell:
+                                label = header or f"欄位 {column + 1}"
+                                fields.append(f"*{label}:* {cell}")
+                        output.append("- " + " | ".join(fields) + "\n")
+                    output.append("\n")
+                else:
+                    output.append(
+                        " | ".join(f"*{header}*" for header in rendered_headers) + "\n\n",
+                    )
+                continue
+            if re.fullmatch(r"[ ]{0,3}(?:=+|-+)[ \t]*", delimiter_line):
+                output.append(
+                    _render_heading_inline(bare.strip(), streaming=streaming)
+                    + delimiter_ending,
+                )
+                index += 2
+                continue
+
+        heading = re.match(r"^[ ]{0,3}#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$", bare)
+        if heading:
+            output.append(
+                _render_heading_inline(heading.group(1), streaming=streaming)
+                + ending,
+            )
+            index += 1
+            continue
         if re.fullmatch(r"[ \t]*(?:\*{3,}|_{3,}|-{3,})[ \t]*", bare):
             output.append(f"──────────{ending}")
             index += 1
@@ -300,90 +829,46 @@ def _convert_markdown_blocks(value: str, *, streaming: bool) -> str:
 
         unordered = re.match(r"^([ \t]*)[-+*][ \t]+(.+)$", bare)
         if unordered:
-            output.append(f"{unordered.group(1)}- {unordered.group(2)}{ending}")
+            output.append(
+                f"{unordered.group(1)}- "
+                f"{_render_markdown_inline(unordered.group(2), streaming=streaming)}"
+                f"{ending}",
+            )
             index += 1
             continue
-
-        ordered = re.match(r"^([ \t]*)(\d{1,2})[.)][ \t]+(.+)$", bare)
+        ordered = re.match(r"^([ \t]*)(\d+)[.)][ \t]+(.+)$", bare)
         if ordered:
-            output.append(f"{ordered.group(1)}{ordered.group(2)}. {ordered.group(3)}{ending}")
+            output.append(
+                f"{ordered.group(1)}{ordered.group(2)}. "
+                f"{_render_markdown_inline(ordered.group(3), streaming=streaming)}"
+                f"{ending}",
+            )
             index += 1
             continue
-
         quote = re.match(r"^([ \t]*)>[ \t]?(.*)$", bare)
         if quote:
-            output.append(f"{quote.group(1)}> {quote.group(2)}{ending}")
+            output.append(
+                f"{quote.group(1)}> "
+                f"{_render_markdown_inline(quote.group(2), streaming=streaming)}"
+                f"{ending}",
+            )
             index += 1
             continue
 
-        output.append(line)
-        index += 1
+        paragraph: list[str] = []
+        while index < len(lines):
+            if paragraph and _special_block_start(lines, index):
+                break
+            candidate, _ = _line_parts(lines[index])
+            if not candidate.strip():
+                break
+            paragraph.append(lines[index])
+            index += 1
+        output.append(
+            _render_markdown_inline("".join(paragraph), streaming=streaming),
+        )
 
     return "".join(output)
-
-
-def _convert_links(value: str) -> str:
-    # WhatsApp 自動識別裸 URL；保留標籤並把 URL 放在括號中。
-    value = re.sub(r"!\[([^\]]*)\]\(([^)\s]+)(?:\s+['\"][^'\"]*['\"])?\)", r"\1 (\2)", value)
-    return re.sub(r"\[([^\]]+)\]\(([^)\s]+)(?:\s+['\"][^'\"]*['\"])?\)", r"\1 (\2)", value)
-
-
-def _convert_emphasis(value: str, *, streaming: bool) -> str:
-    # 單星號 Markdown 斜體必須先處理，以免把稍後生成的 WhatsApp 粗體再轉一次。
-    value = re.sub(r"(?<!\*)\*(?![\s*])([^*\n]*?\S)\*(?!\*)", r"_\1_", value)
-    value = re.sub(r"\*\*\*(?=\S)([\s\S]*?\S)\*\*\*", r"*_\1_*", value)
-    value = re.sub(r"___(?=\S)([\s\S]*?\S)___", r"*_\1_*", value)
-    value = re.sub(r"\*\*(?=\S)([\s\S]*?\S)\*\*", r"*\1*", value)
-    value = re.sub(r"__(?=\S)([\s\S]*?\S)__", r"*\1*", value)
-    value = re.sub(r"~~(?=\S)([\s\S]*?\S)~~", r"~\1~", value)
-
-    # 不為流式中的未閉合 Markdown 人工補尾符。WhatsApp edit 訊息可能在
-    # 不同裝置上亂序到達；舊版本產生的臨時 ``~`` / ``*`` 因而可能覆蓋
-    # 最終 edit，留下肉眼可見的 ``~*``。完整標記已在上方轉換，這裡只需
-    # 移除剩餘的無配對 Markdown delimiter，先以純文字顯示即可。
-    value = re.sub(r"(?<!\*)\*{2,}(?!\*)", "", value)
-    value = re.sub(r"(?<![\w_])_{2,}(?!_)|(?<!_)_{2,}(?![\w_])", "", value)
-    value = re.sub(r"(?<![\w~])~{2,}(?!~)|(?<!~)~{2,}(?![\w~])", "", value)
-    return value
-
-
-def _remove_unmatched_single_delimiters(value: str) -> str:
-    """移除孤立的 WhatsApp/Markdown 单分隔符，保留成对格式与正文内符号。"""
-    delimiters = {"*", "_", "~"}
-    stack: list[tuple[str, int]] = []
-    remove: set[int] = set()
-
-    for index, token in enumerate(value):
-        if token not in delimiters:
-            continue
-        previous = value[index - 1] if index else ""
-        following = value[index + 1] if index + 1 < len(value) else ""
-
-        if stack and stack[-1][0] == token and previous and not previous.isspace():
-            stack.pop()
-            continue
-
-        previous_is_boundary = not previous or previous.isspace() or (
-            not previous.isalnum() and previous not in {"_", "\x00"}
-        )
-        following_has_content = bool(following and not following.isspace())
-        if previous_is_boundary and following_has_content:
-            stack.append((token, index))
-            continue
-
-        following_is_boundary = not following or following.isspace() or not following.isalnum()
-        if previous and not previous.isspace() and following_is_boundary:
-            remove.add(index)
-
-    # 流式正文开头的单个标记（例如 ``*正在生成``）仍可能在后续 edit
-    # 收到闭合符；保留它交给切片器临时配对。只有末尾完全由控制符组成的
-    # 残片（如 ``~*``）才与已识别的孤立符一起删除。
-    for _token, index in stack:
-        if value[index:] and all(char in delimiters for char in value[index:]):
-            remove.add(index)
-    if not remove:
-        return value
-    return "".join(char for index, char in enumerate(value) if index not in remove)
 
 
 def format_whatsapp_markdown(
@@ -407,17 +892,7 @@ def format_whatsapp_markdown(
     if source_format != "markdown":
         raise ValueError(f"unsupported source_format: {source_format}")
 
-    value, escaped = _protect_escaped_markdown(value)
-    value, fenced = _extract_fenced_code(value, streaming=streaming)
-    value, inline = _protect_inline_code(value, streaming=streaming)
-    value = _convert_markdown_blocks(value, streaming=streaming)
-    value = _convert_links(value)
-    value = _convert_emphasis(value, streaming=streaming)
-    value = _remove_unmatched_single_delimiters(value)
-    value = _restore_code(value, fenced, "FENCE")
-    value = _restore_code(value, inline, "INLINE")
-    value = _restore_escaped_markdown(value, escaped)
-    return value
+    return _render_markdown_blocks(value, streaming=streaming)
 
 
 def format_markdown_from_whatsapp(text: str) -> str:
@@ -443,6 +918,10 @@ def _is_emoji_modifier(char: str) -> bool:
     return 0x1F3FB <= ord(char) <= 0x1F3FF
 
 
+def _is_emoji_tag(char: str) -> bool:
+    return 0xE0020 <= ord(char) <= 0xE007F
+
+
 def _grapheme_units(text: str) -> Iterator[str]:
     """標準庫近似 grapheme segmentation，避免拆開組合字、ZWJ emoji 與旗幟。"""
     cluster = ""
@@ -457,8 +936,10 @@ def _grapheme_units(text: str) -> Iterator[str]:
                 join_next
                 or char == "\u200d"
                 or unicodedata.combining(char) != 0
+                or char == "\u20e3"
                 or _is_variation_selector(char)
                 or _is_emoji_modifier(char)
+                or _is_emoji_tag(char)
                 or (is_regional and regional_count == 1)
             )
         )
@@ -490,82 +971,6 @@ def chunk_text(text: str, limit: int) -> Iterator[str]:
         length += len(unit)
     if current:
         yield "".join(current)
-
-
-def split_whatsapp_text(text: str, limit: int) -> list[str]:
-    """切分 WhatsApp 原生格式並在跨訊息邊界自動關閉／重開格式標記。"""
-    value = str(text or "")
-    if not value:
-        return []
-    limit = max(16, int(limit))
-    units = list(_grapheme_units(value))
-    chunks: list[str] = []
-    current: list[str] = []
-    active: list[str] = []
-    code_delimiter: str | None = None
-    index = 0
-
-    def closing_suffix() -> str:
-        suffix = ""
-        if code_delimiter:
-            suffix += code_delimiter
-        suffix += "".join(reversed(active))
-        return suffix
-
-    def opening_prefix() -> str:
-        prefix = "".join(active)
-        if code_delimiter:
-            prefix += code_delimiter
-        return prefix
-
-    def flush() -> None:
-        nonlocal current
-        body = "".join(current)
-        suffix = closing_suffix()
-        if body and body != opening_prefix():
-            chunks.append(body + suffix)
-        current = list(opening_prefix())
-
-    while index < len(units):
-        unit = units[index]
-        token = unit
-
-        if unit == "`":
-            run = 1
-            while index + run < len(units) and units[index + run] == "`":
-                run += 1
-            token = "`" * run
-            index += run - 1
-
-        reserve = len(closing_suffix())
-        if current and len("".join(current)) + len(token) + reserve > limit:
-            flush()
-
-        current.append(token)
-
-        if token.startswith("`") and set(token) == {"`"}:
-            if code_delimiter == token:
-                code_delimiter = None
-            elif code_delimiter is None and len(token) in (1, 3):
-                code_delimiter = token
-        elif code_delimiter is None and token in ("*", "_", "~"):
-            previous = units[index - 1] if index > 0 else ""
-            following = units[index + 1] if index + 1 < len(units) else ""
-            at_list_prefix = token == "*" and (index == 0 or previous == "\n") and following.isspace()
-            if not at_list_prefix:
-                if active and active[-1] == token and previous and not previous.isspace():
-                    active.pop()
-                elif following and not following.isspace():
-                    active.append(token)
-        index += 1
-
-    if current:
-        body = "".join(current)
-        suffix = closing_suffix()
-        if body and body != opening_prefix():
-            chunks.append(body + suffix)
-
-    return [chunk for chunk in chunks if chunk]
 
 
 def has_visible_whatsapp_content(text: str) -> bool:
@@ -600,28 +1005,86 @@ def mention_text_from_at(component: At) -> str:
     return f"@{value}"
 
 
-def mention_jid_from_at(component: At) -> str | None:
+MentionResolver = Callable[[str], str | None]
+
+
+def _valid_mention_jid(value: str | None) -> str:
+    """Return a strict, device-independent user JID suitable for Baileys."""
+
+    raw = str(value or "").strip()
+    if is_lid_jid(raw):
+        return base_lid_jid(raw)
+    if is_pn_jid(raw):
+        return base_pn_jid(raw)
+    return ""
+
+
+def _resolve_public_mention(
+    public_id: str,
+    resolver: MentionResolver | None,
+    fallback: str,
+) -> str:
+    if resolver is not None:
+        try:
+            resolved = _valid_mention_jid(resolver(public_id))
+        except Exception as exc:
+            logger.warning(
+                "WhatsApp @提及身份回解析失败: public_id=%s error=%s",
+                public_id,
+                exc,
+            )
+        else:
+            if resolved:
+                return resolved
+    return fallback
+
+
+def mention_jid_from_at(
+    component: At,
+    resolver: MentionResolver | None = None,
+) -> str | None:
     value = str(getattr(component, "qq", "") or getattr(component, "name", "") or "").strip()
     if not value:
         return None
+    if value.startswith("@") and value.count("@") == 1:
+        value = value[1:].strip()
     if value.lower().lstrip("@") == "all":
         # Baileys exposes WhatsApp's native mention-all bit separately from
         # ordinary JIDs.  The Gateway recognizes this reserved transport token.
         return "all"
     if "@" in value:
-        if is_lid_jid(value) or is_pn_jid(value):
-            return normalize_user_jid(value)
-        return value
-    digits = "".join(char for char in value if char.isdigit())
-    if digits:
-        return f"{digits}@s.whatsapp.net"
+        jid = _valid_mention_jid(value)
+        if jid:
+            return jid
+        logger.warning("WhatsApp @提及 JID 解析失败: value=%s", value)
+        return None
+
+    lid_match = re.fullmatch(r"lid-(\d+)", value, flags=re.IGNORECASE)
+    if lid_match:
+        public_id = f"lid-{lid_match.group(1)}"
+        return _resolve_public_mention(
+            public_id,
+            resolver,
+            f"{lid_match.group(1)}@lid",
+        )
+
+    pn_jid = base_pn_jid(value)
+    if pn_jid:
+        public_id = pn_jid.split("@", 1)[0]
+        return _resolve_public_mention(public_id, resolver, pn_jid)
+
     logger.warning("WhatsApp @提及 JID 解析失败: value=%s", value)
     return None
 
 
-def mention_jid_for_token(token: str) -> str | None:
-    digits = "".join(char for char in token if char.isdigit())
-    return f"{digits}@s.whatsapp.net" if digits else None
+def mention_jid_for_token(
+    token: str,
+    resolver: MentionResolver | None = None,
+) -> str | None:
+    """Resolve only the explicit public/JID grammar, never scrape digits."""
+
+    component = At(qq=str(token or "").lstrip("@"))
+    return mention_jid_from_at(component, resolver)
 
 
 async def mentions_for_text(
@@ -631,10 +1094,27 @@ async def mentions_for_text(
     explicit_mentions: Sequence[str | MentionRef],
 ) -> list[str]:
     del client, target
+
+    def contains_visible_token(token: str) -> bool:
+        offset = 0
+        while True:
+            start = text.find(token, offset)
+            if start < 0:
+                return False
+            end = start + len(token)
+            previous = text[start - 1] if start else ""
+            following = text[end] if end < len(text) else ""
+            if not token.startswith("@") or (
+                (not previous or (not previous.isalnum() and previous not in "_@"))
+                and (not following or (not following.isalnum() and following != "_"))
+            ):
+                return True
+            offset = start + max(1, len(token))
+
     resolved: list[str] = []
     for mention in explicit_mentions:
         if isinstance(mention, MentionRef):
-            if mention.text and mention.text not in text:
+            if mention.text and not contains_visible_token(mention.text):
                 continue
             jid = mention.jid
         else:
@@ -676,7 +1156,18 @@ async def flush_pending_text(
     if not has_visible_whatsapp_content(rendered):
         return None, []
     state = quote_state or QuoteState(quoted_message_id, quoted_participant)
-    for chunk in split_whatsapp_text(rendered, text_chunk_limit):
+    atomic_texts = [
+        mention.text
+        for mention in (mentions or [])
+        if isinstance(mention, MentionRef) and mention.text
+    ]
+    for chunk in split_whatsapp_text(
+        rendered,
+        text_chunk_limit,
+        atomic_texts=atomic_texts,
+    ):
+        if not has_visible_whatsapp_content(chunk):
+            continue
         chunk_mentions = await mentions_for_text(client, target, chunk, mentions or [])
         quote_kwargs = state.kwargs()
         await client.send_text(
@@ -793,6 +1284,7 @@ async def process_message_chain(
     quoted_message_id: str | None = None,
     quoted_participant: str | None = None,
     resolve_media_func: MediaResolver | None = None,
+    mention_resolver: MentionResolver | None = None,
     quote_state: QuoteState | None = None,
 ) -> tuple[str | None, list[MentionRef]]:
     """累積相鄰 Plain/At 的原始 Markdown，在真正發送前只轉換一次。"""
@@ -824,9 +1316,14 @@ async def process_message_chain(
         if not pending_raw:
             return None, []
         rendered = format_whatsapp_markdown(pending_raw)
+        atomic_texts = [mention.text for mention in pending_mentions if mention.text]
         chunks = [
             chunk
-            for chunk in split_whatsapp_text(rendered, text_chunk_limit)
+            for chunk in split_whatsapp_text(
+                rendered,
+                text_chunk_limit,
+                atomic_texts=atomic_texts,
+            )
             if has_visible_whatsapp_content(chunk)
         ]
         if not chunks:
@@ -859,7 +1356,7 @@ async def process_message_chain(
             continue
         if isinstance(component, At):
             visible = mention_text_from_at(component)
-            jid = mention_jid_from_at(component)
+            jid = mention_jid_from_at(component, mention_resolver)
             # 与 aiocqhttp 一致：At 后固定保留一个分隔空格，避免昵称和正文粘连。
             pending_raw = (pending_raw or "") + visible + " "
             if jid:
@@ -1033,6 +1530,7 @@ async def process_message_chain(
                     quoted_message_id=quoted_message_id,
                     quoted_participant=quoted_participant,
                     resolve_media_func=resolve_media_func,
+                    mention_resolver=mention_resolver,
                     quote_state=state,
                 )
                 pending_raw = nested_pending

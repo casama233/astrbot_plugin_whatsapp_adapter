@@ -7,6 +7,7 @@ import {
   chatMessageKey,
   findChatMessage,
 } from "./message-cache.mjs";
+import { RuntimeIdentityRegistry } from "./runtime-identity.mjs";
 
 function message(chatJid, id, text) {
   return {
@@ -80,4 +81,76 @@ test("reply lookup sees edited content under the original message id", () => {
   assert.deepEqual(updated.message.extendedTextMessage.contextInfo.mentionedJid, [
     "alice@s.whatsapp.net",
   ]);
+});
+
+test("same digits in PN and LID chats do not collide without a mapping", () => {
+  const cache = new Map();
+  const identities = new RuntimeIdentityRegistry();
+  cacheChatMessage(
+    cache,
+    message("123@s.whatsapp.net", "same-id", "phone chat"),
+    500,
+    identities,
+  );
+  cacheChatMessage(
+    cache,
+    message("123@lid", "same-id", "lid chat"),
+    500,
+    identities,
+  );
+
+  assert.equal(cache.size, 2);
+  assert.equal(
+    findChatMessage(cache, "123@hosted", "same-id", identities).message.conversation,
+    "phone chat",
+  );
+  assert.equal(
+    findChatMessage(cache, "123@hosted.lid", "same-id", identities).message.conversation,
+    "lid chat",
+  );
+});
+
+test("a mapping learned after caching makes the old LID entry available by PN", () => {
+  const cache = new Map();
+  const identities = new RuntimeIdentityRegistry();
+  cacheChatMessage(
+    cache,
+    message("456@lid", "mapped-id", "mapped message"),
+    500,
+    identities,
+  );
+
+  identities.rememberMapping("456@hosted.lid", "123@hosted");
+
+  assert.equal(
+    findChatMessage(cache, "123@s.whatsapp.net", "mapped-id", identities).message.conversation,
+    "mapped message",
+  );
+});
+
+test("mapped aliases still isolate the same message id in a different chat", () => {
+  const cache = new Map();
+  const identities = new RuntimeIdentityRegistry();
+  identities.rememberMapping("456@lid", "123@s.whatsapp.net");
+  cacheChatMessage(
+    cache,
+    message("456@lid", "same-id", "mapped chat"),
+    500,
+    identities,
+  );
+  cacheChatMessage(
+    cache,
+    message("999@s.whatsapp.net", "same-id", "other chat"),
+    500,
+    identities,
+  );
+
+  assert.equal(
+    findChatMessage(cache, "123@hosted", "same-id", identities).message.conversation,
+    "mapped chat",
+  );
+  assert.equal(
+    findChatMessage(cache, "999@hosted", "same-id", identities).message.conversation,
+    "other chat",
+  );
 });

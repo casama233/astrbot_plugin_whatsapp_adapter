@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { createWriteStream, statSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -23,9 +23,14 @@ import {
   sessionDirectory,
 } from "./session-lifecycle.mjs";
 import {
-  cacheChatMessage,
-  cacheEditedMessage,
-  findChatMessage,
+  allowedByIdentityList,
+  normalizeGroupAllowlistValue,
+  resolveAllowlistPnToLid,
+} from "./allowlist-identity.mjs";
+import {
+  cacheChatMessage as cacheChatMessageByIdentity,
+  cacheEditedMessage as cacheEditedMessageByIdentity,
+  findChatMessage as findChatMessageByIdentity,
 } from "./message-cache.mjs";
 import {
   inboundMediaDownloadContext,
@@ -45,10 +50,17 @@ import {
   isPnJid,
   normalizeIdentityJid,
   participantIdentityValues,
-  phoneFromIdentity,
   resolveExplicitIdentityMentions,
   senderIdentityFromKey,
 } from "./identity-compat.mjs";
+import {
+  persistRuntimeIdentityMappings,
+  readRuntimeIdentityMappings,
+  rememberRuntimeScope,
+  RuntimeIdentityRegistry,
+  runtimeIdentityLookupKeys,
+  runtimeScopeKeys,
+} from "./runtime-identity.mjs";
 import {
   buildContactContent,
   buildEventContent,
@@ -110,6 +122,26 @@ const mentionDirectory = new Map();
 const mentionDirectoriesByChat = new Map();
 const mentionDisplayNames = new Map();
 const maxKnownContacts = 10000;
+const runtimeIdentities = new RuntimeIdentityRegistry();
+let runtimeIdentityPersistQueue = Promise.resolve();
+
+function cacheChatMessage(cache, item, maxSize = 500) {
+  return cacheChatMessageByIdentity(cache, item, maxSize, runtimeIdentities);
+}
+
+function cacheEditedMessage(cache, originalKey, editedMessage, maxSize = 500) {
+  return cacheEditedMessageByIdentity(
+    cache,
+    originalKey,
+    editedMessage,
+    maxSize,
+    runtimeIdentities,
+  );
+}
+
+function findChatMessage(cache, chatJid, messageId) {
+  return findChatMessageByIdentity(cache, chatJid, messageId, runtimeIdentities);
+}
 
 // 統一聯絡人儲存：JID → contact 物件（含 id/lid/jid 欄位）
 const knownContacts = new Map();
@@ -141,28 +173,68 @@ function updateContact(contact) {
 function pnJidFromValue(value) {
   const raw = String(value || "").trim();
   if (!raw || raw === "*" || raw.endsWith("@g.us")) return null;
-  if (isPnJid(raw)) return raw;
+  if (isPnJid(raw)) {
+    const normalized = normalizeIdentityJid(raw);
+    return /^\d+$/.test(identityUser(normalized)) ? normalized : null;
+  }
   if (isLidJid(raw)) return resolveLidToPn(raw);
-  const digits = raw.replace(/\D/g, "");
+  if (!/^\+?\d+$/.test(raw)) return null;
+  const digits = raw.replace(/^\+/, "");
   return digits ? `${digits}@s.whatsapp.net` : null;
 }
 
-async function persistLidMapping(lidJid, pnJid) {
-  const lidNum = normalizeJid(lidJid).replace(/\D/g, "");
-  const pnNum = normalizeJid(pnJid).replace(/\D/g, "");
-  if (!lidNum || !pnNum) return;
+async function persistLegacyLidMapping(directory, lidJid, pnJid) {
+  const lidNum = identityUser(normalizeIdentityJid(lidJid));
+  const pnNum = identityUser(normalizeIdentityJid(pnJid));
+  if (!/^\d+$/.test(lidNum) || !/^\d+$/.test(pnNum)) return;
+  const target = path.join(directory, `lid-mapping-${lidNum}_reverse.json`);
+  const temporary = `${target}.tmp-${process.pid}-${randomUUID()}`;
   try {
-    await mkdir(currentAuthDir, { recursive: true });
-    await writeFile(path.join(currentAuthDir, `lid-mapping-${lidNum}_reverse.json`), JSON.stringify(pnNum), "utf-8");
+    await mkdir(directory, { recursive: true });
+    await writeFile(temporary, JSON.stringify(pnNum), "utf-8");
+    await rename(temporary, target);
   } catch (error) {
+    await unlink(temporary).catch(() => {});
     log.debug({ error, lidJid, pnJid }, "failed to persist lid→pn mapping");
   }
 }
 
+function queueRuntimeIdentityPersistence(directory, mappings, legacyMapping = null) {
+  runtimeIdentityPersistQueue = runtimeIdentityPersistQueue
+    .catch(() => {})
+    .then(async () => {
+      if (legacyMapping) {
+        await persistLegacyLidMapping(
+          directory,
+          legacyMapping.lidJid,
+          legacyMapping.pnJid,
+        );
+      }
+      await persistRuntimeIdentityMappings(directory, mappings);
+    })
+    .catch((error) => {
+      log.debug({ error, directory }, "failed to persist full-JID identity mappings");
+    });
+}
+
+function persistLidMappings(lidJid, pnJid) {
+  queueRuntimeIdentityPersistence(
+    currentAuthDir,
+    runtimeIdentities.mappings(),
+    { lidJid, pnJid },
+  );
+}
+
 function rememberLidPnMapping(lidJid, pnJid, persist = true) {
   if (!lidJid || !pnJid || !isLidJid(lidJid) || !isPnJid(pnJid)) return false;
-  updateContact({ id: lidJid, jid: pnJid, lid: lidJid });
-  if (persist) persistLidMapping(lidJid, pnJid).catch(() => {});
+  const normalizedLid = normalizeIdentityJid(lidJid);
+  const normalizedPn = normalizeIdentityJid(pnJid);
+  if (!/^\d+$/.test(identityUser(normalizedLid)) || !/^\d+$/.test(identityUser(normalizedPn))) {
+    return false;
+  }
+  const changed = runtimeIdentities.rememberMapping(normalizedLid, normalizedPn);
+  updateContact({ id: normalizedLid, jid: normalizedPn, lid: normalizedLid });
+  if (persist && changed) persistLidMappings(normalizedLid, normalizedPn);
   return true;
 }
 
@@ -177,21 +249,27 @@ function resolvePhone(jid) {
   if (!jid) return null;
   const raw = String(jid).trim();
   if (isPnJid(raw)) {
-    return phoneFromIdentity(raw);
+    const normalized = normalizeIdentityJid(raw);
+    const digits = identityUser(normalized);
+    return /^\d+$/.test(digits) ? `+${digits}` : null;
   }
   if (isLidJid(raw)) {
+    const mapped = runtimeIdentities.canonical(raw);
+    if (isPnJid(mapped)) return `+${identityUser(mapped)}`;
     const contact = knownContacts.get(raw);
     if (contact) {
       const pnJid = [contact.phoneNumber, contact.jid, contact.id]
         .find((j) => isPnJid(j));
       if (pnJid) {
-        const digits = pnJid.split("@")[0].replace(/\D/g, "");
-        if (digits) return `+${digits}`;
+        const normalizedPn = normalizeIdentityJid(pnJid);
+        const digits = identityUser(normalizedPn);
+        if (/^\d+$/.test(digits)) return `+${digits}`;
       }
     }
     return null;
   }
-  const digits = raw.replace(/\D/g, "");
+  if (!/^\+?\d+$/.test(raw)) return null;
+  const digits = raw.replace(/^\+/, "");
   return digits ? `+${digits}` : null;
 }
 
@@ -199,7 +277,9 @@ function normalizeLidJid(value) {
   const text = String(value || "").trim();
   if (!text) return null;
   const normalized = normalizeIdentityJid(text);
-  return isLidJid(normalized) ? normalized : `${identityUser(normalized)}@lid`;
+  const digits = identityUser(normalized);
+  if (!/^\d+$/.test(digits)) return null;
+  return isLidJid(normalized) ? normalized : `${digits}@lid`;
 }
 
 /**
@@ -208,11 +288,16 @@ function normalizeLidJid(value) {
  */
 function resolveLidToPn(lidJid) {
   if (!lidJid || !isLidJid(lidJid)) return null;
+  const mapped = runtimeIdentities.canonical(lidJid);
+  if (isPnJid(mapped)) return mapped;
   const contact = knownContacts.get(String(lidJid).trim());
   if (contact) {
     const pnJid = [contact.phoneNumber, contact.jid, contact.id]
       .find((j) => isPnJid(j));
-    if (pnJid) return pnJid;
+    if (pnJid) {
+      const normalizedPn = normalizeIdentityJid(pnJid);
+      if (/^\d+$/.test(identityUser(normalizedPn))) return normalizedPn;
+    }
   }
   return null;
 }
@@ -248,9 +333,11 @@ async function resolveLidToPnDeep(
  * 在 Gateway 重啟時恢復 Lid→PN 映射，補償 Baileys 不重播既有映射事件。
  */
 async function loadLidMappingsFromDisk() {
+  let legacyLoaded = 0;
+  let fullJidLoaded = 0;
+  let persistedMappings = [];
   try {
     const files = await readdir(currentAuthDir);
-    let loaded = 0;
     for (const name of files) {
       const match = name.match(/^lid-mapping-(\d+)_reverse\.json$/);
       if (!match) continue;
@@ -261,15 +348,35 @@ async function loadLidMappingsFromDisk() {
           const lid = `${match[1]}@lid`;
           const pnJid = `${phone}@s.whatsapp.net`;
           rememberLidPnMapping(lid, pnJid, false);
-          loaded++;
+          legacyLoaded++;
         }
       } catch {
         // ignore malformed files
       }
     }
-    if (loaded) log.info({ loaded }, "loaded lid→pn mappings from disk on startup");
   } catch (error) {
-    log.debug({ error }, "failed to load lid mappings from disk");
+    log.debug({ error }, "failed to load legacy lid mappings from disk");
+  }
+  try {
+    persistedMappings = await readRuntimeIdentityMappings(currentAuthDir);
+    for (const { lidJid, pnJid } of persistedMappings) {
+      if (rememberLidPnMapping(lidJid, pnJid, false)) fullJidLoaded++;
+    }
+  } catch (error) {
+    log.warn({ error }, "failed to load full-JID identity mappings from disk");
+  }
+  if (legacyLoaded || fullJidLoaded) {
+    log.info(
+      { legacyLoaded, fullJidLoaded },
+      "loaded lid→pn mappings from disk on startup",
+    );
+  }
+  const runtimeMappings = runtimeIdentities.mappings();
+  if (
+    legacyLoaded
+    && JSON.stringify(runtimeMappings) !== JSON.stringify(persistedMappings)
+  ) {
+    queueRuntimeIdentityPersistence(currentAuthDir, runtimeMappings);
   }
 }
 
@@ -317,15 +424,19 @@ async function waitForLidPnMapping(lidJid, timeoutMs) {
         }
         const data = args[0];
         let pn = null;
-        if (data && data.id === lidJid) {
+        if (data && sameWhatsappUser(data.id, lidJid)) {
           pn = [data.phoneNumber, data.jid, data.id].find((j) => isPnJid(j));
-        } else if (data && data.lid === lidJid) {
+        } else if (data && sameWhatsappUser(data.lid, lidJid)) {
           pn = data.pn || data.pnJid || data.jid;
-        } else if (data && data.lidJid === lidJid) {
+        } else if (data && sameWhatsappUser(data.lidJid, lidJid)) {
           pn = data.pnJid || data.pn || data.jid;
         }
         if (!pn && Array.isArray(data)) {
-          const matched = data.find((c) => c.id === lidJid || c.lid === lidJid || c.jid === lidJid);
+          const matched = data.find((c) => (
+            sameWhatsappUser(c.id, lidJid)
+            || sameWhatsappUser(c.lid, lidJid)
+            || sameWhatsappUser(c.jid, lidJid)
+          ));
           if (matched) pn = [matched.phoneNumber, matched.jid, matched.id].find((j) => isPnJid(j));
         }
         if (pn) {
@@ -427,23 +538,19 @@ function configuredAllowlistPnJids() {
 }
 
 async function resolvePnToLid(pnJid) {
-  if (!socket || !pnJid?.endsWith?.("@s.whatsapp.net")) return null;
-  let normalizedPn = pnJid;
-  try {
-    const result = await socket.onWhatsApp(normalizeJid(pnJid));
-    const found = (result || []).find((item) => item?.exists && item?.jid?.endsWith?.("@s.whatsapp.net"));
-    if (found?.jid) normalizedPn = found.jid;
-  } catch (error) {
-    log.debug({ error, pnJid }, "onWhatsApp lookup failed while resolving allowlist LID");
-  }
-  try {
-    const lid = await socket.signalRepository?.lidMapping?.getLIDForPN?.(normalizedPn);
-    if (lid?.endsWith?.("@lid")) {
-      rememberLidPnMapping(lid, normalizedPn);
-      return lid;
-    }
-  } catch (error) {
-    log.debug({ error, pnJid: normalizedPn }, "lidMapping.getLIDForPN failed");
+  const mapping = await resolveAllowlistPnToLid(
+    pnJid,
+    socket,
+    (error, stage, normalizedPn) => {
+      log.debug(
+        { error, pnJid: normalizedPn },
+        `${stage} failed while resolving allowlist LID`,
+      );
+    },
+  );
+  if (mapping) {
+    rememberLidPnMapping(mapping.lidJid, mapping.pnJid);
+    return mapping.lidJid;
   }
   return null;
 }
@@ -530,10 +637,18 @@ function mentionKey(value) {
   return String(value || "").trim().replace(/^@+/, "").toLowerCase();
 }
 
+function mentionIdentityKeys(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return [];
+  const keys = runtimeIdentityLookupKeys(runtimeIdentities, raw);
+  if (!keys.includes(raw)) keys.push(raw);
+  return keys;
+}
+
 function rememberMentionIdentity(jid, ...names) {
   if (!jid) return;
   const fullJid = String(jid);
-  const keys = [fullJid, normalizeJid(fullJid), jidToPhone(fullJid), ...names].filter(Boolean);
+  const keys = [...mentionIdentityKeys(fullJid), ...names].filter(Boolean);
   for (const key of keys) {
     const normalized = mentionKey(key);
     if (normalized) mentionDirectory.set(normalized, fullJid);
@@ -560,7 +675,7 @@ function rememberScopedMentionIdentity(chatJid, jid, ...names) {
     mentionDirectoriesByChat.set(chat, directory);
   }
   const fullJid = String(jid);
-  for (const key of [fullJid, normalizeJid(fullJid), jidToPhone(fullJid), ...names].filter(Boolean)) {
+  for (const key of [...mentionIdentityKeys(fullJid), ...names].filter(Boolean)) {
     const normalized = mentionKey(key);
     if (normalized) directory.set(normalized, fullJid);
   }
@@ -576,8 +691,7 @@ function rememberScopedMentionAliases(chatJid, targetJid, aliases, names = []) {
   rememberScopedMentionIdentity(chat, target, ...names);
   const directory = mentionDirectoriesByChat.get(chat);
   for (const alias of aliases.filter(Boolean)) {
-    const value = String(alias);
-    for (const key of [value, normalizeJid(value), jidToPhone(value)]) {
+    for (const key of mentionIdentityKeys(alias)) {
       const normalized = mentionKey(key);
       if (normalized) directory.set(normalized, target);
     }
@@ -720,10 +834,18 @@ function resolveMentionTokens(tokens, chatJid = null) {
     const key = mentionKey(token);
     if (!key) continue;
     const raw = String(token || "").trim();
-    const isDirectIdentity = raw.includes("@") || /^\+?\d+$/.test(raw);
+    const normalizedIdentity = (isPnJid(raw) || isLidJid(raw))
+      ? normalizeIdentityJid(raw)
+      : null;
+    const validExplicitIdentity = normalizedIdentity
+      && /^\d+$/.test(identityUser(normalizedIdentity));
+    const isBarePhone = /^\+?\d+$/.test(raw);
+    const isDirectIdentity = validExplicitIdentity || isBarePhone;
     let jid = scoped?.get(key) || (!chatJid || isDirectIdentity ? mentionDirectory.get(key) : null);
-    if (!jid && isDirectIdentity) {
-      const digits = raw.replace(/\D/g, "");
+    if (!jid && validExplicitIdentity) {
+      jid = normalizedIdentity;
+    } else if (!jid && isBarePhone) {
+      const digits = raw.replace(/^\+/, "");
       if (digits) jid = scoped?.get(mentionKey(digits)) || mentionDirectory.get(mentionKey(digits)) || `${digits}@s.whatsapp.net`;
     }
     if (jid && !mentions.includes(jid)) mentions.push(jid);
@@ -741,17 +863,17 @@ function resolveExplicitMentions(values, chatJid = null) {
 }
 
 function sameWhatsappUser(left, right) {
-  return normalizeJid(left) === normalizeJid(right);
+  return runtimeIdentities.same(left, right);
 }
 
-function rememberIncomingMessage(key) {
-  if (!key) return false;
-  if (seenIncomingMessages.has(key)) return true;
-  seenIncomingMessages.set(key, Date.now());
-  while (seenIncomingMessages.size > maxSeenIncomingMessages) {
-    seenIncomingMessages.delete(seenIncomingMessages.keys().next().value);
-  }
-  return false;
+function rememberIncomingMessage(chatJid, senderJid, messageId) {
+  if (!chatJid || !senderJid || !messageId) return false;
+  return rememberRuntimeScope(
+    seenIncomingMessages,
+    runtimeIdentities,
+    [chatJid, senderJid, messageId],
+    maxSeenIncomingMessages,
+  );
 }
 
 function mentionedJidsForAstrBot(message) {
@@ -772,30 +894,8 @@ function mentionedNamesForAstrBot(message) {
   return names;
 }
 
-function normalizePhone(value) {
-  const text = String(value || "").trim();
-  if (!text) return "";
-  if (text === "*") return "*";
-  return phoneFromIdentity(text) || text;
-}
-
-function jidToPhone(jid) {
-  return phoneFromIdentity(jid) || normalizeJid(jid);
-}
-
 function allowedByList(value, allowList) {
-  const normalized = normalizePhone(value);
-  const raw = String(value || "").trim();
-  const normalizedJid = normalizeJid(raw);
-  const normalizedList = (Array.isArray(allowList) ? allowList : []).map((item) => ({
-    raw: String(item || "").trim(),
-    phone: normalizePhone(item),
-    jid: normalizeJid(item),
-  }));
-  return normalizedList.some((item) => (
-    item.raw === "*" || item.phone === "*" ||
-    item.phone === normalized || item.raw === raw || item.jid === normalizedJid
-  ));
+  return allowedByIdentityList(value, allowList, runtimeIdentities);
 }
 
 function allowedMessageResult(chatJid, senderJid, item) {
@@ -816,7 +916,7 @@ function allowedMessageResult(chatJid, senderJid, item) {
   }
 
   if (runtimeConfig.groupPolicy === "disabled") return { allowed: false, reason: "group_disabled", senderPhone };
-  const groups = runtimeConfig.groups || [];
+  const groups = (runtimeConfig.groups || []).map(normalizeGroupAllowlistValue);
   if (groups.length > 0 && !groups.includes("*") && !groups.includes(chatJid)) {
     return { allowed: false, reason: "group_not_allowed", senderPhone };
   }
@@ -1219,6 +1319,7 @@ function clearAlbumBuffers() {
 function clearAccountRuntimeCaches() {
   messageCache.clear();
   seenIncomingMessages.clear();
+  runtimeIdentities.clear();
   knownContacts.clear();
   mentionDirectory.clear();
   mentionDirectoriesByChat.clear();
@@ -1227,10 +1328,22 @@ function clearAccountRuntimeCaches() {
   if (typeof groupMetadataCache !== "undefined") groupMetadataCache.clear();
 }
 
+function albumBufferKeys(item, expectedGeneration = socketGeneration) {
+  const key = item?.key || {};
+  const chatJid = String(key.remoteJid || "");
+  const senderJid = String(
+    key.participant || key.participantAlt || (key.fromMe ? selfJid : null) || chatJid,
+  );
+  return runtimeScopeKeys(runtimeIdentities, [expectedGeneration, chatJid, senderJid]);
+}
+
+function albumBufferKey(item, expectedGeneration = socketGeneration) {
+  const keys = albumBufferKeys(item, expectedGeneration);
+  return keys.find((key) => albumBuffers.has(key)) || keys[0];
+}
+
 function scheduleAlbumItem(item, expectedGeneration = socketGeneration, eventSocket = socket) {
-  const chatJid = item.key.remoteJid;
-  const senderJid = item.key.participant || item.key.participantAlt || (item.key.fromMe ? selfJid : null) || chatJid;
-  const bufferKey = `${expectedGeneration}:${chatJid}:${senderJid}`;
+  const bufferKey = albumBufferKey(item, expectedGeneration);
   const debounceMs = Number(runtimeConfig.mediaAlbumDebounceMs || 0);
   let buffer = albumBuffers.get(bufferKey);
   if (!buffer) {
@@ -1266,8 +1379,18 @@ async function routeIncomingMessage(
   const chatJid = item.key.remoteJid;
   if (!chatJid || chatJid.endsWith("@status") || chatJid.endsWith("@broadcast")) return;
   const senderJid = item.key.participant || item.key.participantAlt || (item.key.fromMe ? selfJid : null) || chatJid;
-  const dedupKey = `${chatJid}:${senderJid}:${item.key.id || ""}`;
-  if (rememberIncomingMessage(dedupKey)) {
+  const routingIdentity = senderIdentityFromKey(item.key, {
+    isGroup: chatJid.endsWith("@g.us"),
+    fromMe: Boolean(item.key.fromMe),
+    senderJid,
+    chatJid,
+    selfJid,
+    selfLid,
+  });
+  if (routingIdentity.lidJid && routingIdentity.pnJid) {
+    rememberLidPnMapping(routingIdentity.lidJid, routingIdentity.pnJid);
+  }
+  if (rememberIncomingMessage(chatJid, senderJid, item.key.id)) {
     log.debug({ chatJid, senderJid, messageId: item.key.id }, "ignored duplicate inbound WhatsApp message");
     return;
   }
@@ -2331,30 +2454,51 @@ const server = createServer(async (req, res) => {
         return {
           jid,
           pnJid,
+          lidJid: identity?.lidJid || "",
           userId: normalizeJid(pnJid || jid),
           name: mentionDisplayName(pnJid) || mentionDisplayName(identity?.lidJid || jid) || normalizeJid(pnJid || jid),
           role,
         };
       });
       const ownerIdentity = rememberGroupOwnerIdentity(metadata);
-      const owner = normalizeJid(
+      const ownerJid = normalizeIdentityJid(
+        ownerIdentity?.jid
+        || ownerIdentity?.lidJid
+        || ownerIdentity?.pnJid
+        || "",
+      );
+      const ownerPnJid = normalizeIdentityJid(
         ownerIdentity?.pnJid
         || resolveLidToPn(ownerIdentity?.lidJid || ownerIdentity?.jid)
-        || ownerIdentity?.jid
         || "",
-      )
+      );
+      const owner = normalizeJid(ownerPnJid || ownerJid)
         || participants.find((participant) => participant.role === "owner")?.userId
         || "";
-      const admins = participants
+      const adminIdentities = participants
         .filter((participant) => participant.role === "admin" && participant.userId !== owner)
-        .map((participant) => participant.userId);
+        .map((participant) => ({
+          jid: participant.jid,
+          pnJid: participant.pnJid,
+          lidJid: participant.lidJid,
+        }));
+      const adminJids = adminIdentities.map((identity) => identity.jid).filter(Boolean);
+      const adminPnJids = adminIdentities.map((identity) => identity.pnJid).filter(Boolean);
+      const admins = adminIdentities
+        .map((identity) => normalizeJid(identity.pnJid || identity.jid || identity.lidJid))
+        .filter(Boolean);
       sendJson(res, 200, {
         ok: true,
         groupId: normalizeJid(metadata?.id || groupJid),
         groupJid,
         subject: String(metadata?.subject || ""),
         owner,
+        ownerJid,
+        ownerPnJid,
         admins,
+        adminJids,
+        adminPnJids,
+        adminIdentities,
         participants,
       });
       return;

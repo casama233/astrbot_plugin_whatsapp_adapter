@@ -62,7 +62,12 @@ test("adds group metadata to inbound Gateway events", () => {
   assert.match(result.content, /group_name: groupName/);
   assert.match(result.content, /groupSubject: groupName/);
   assert.match(result.content, /groupOwner,/);
+  assert.match(result.content, /groupOwnerJid,/);
+  assert.match(result.content, /groupOwnerPnJid,/);
   assert.match(result.content, /groupAdmins,/);
+  assert.match(result.content, /groupAdminJids,/);
+  assert.match(result.content, /groupAdminPnJids,/);
+  assert.match(result.content, /groupAdminIdentities,/);
   assert.match(result.content, /senderRole,/);
   assert.match(result.content, /participant\?\.admin === "superadmin"/);
   assert.match(result.content, /sameGroupParticipant\(participant, senderJid\)/);
@@ -121,7 +126,13 @@ test("group info keeps owner separate from string-normalized admins", () => {
   );
 
   assert.match(source, /userId: normalizeJid\(pnJid \|\| jid\)/);
+  assert.match(source, /lidJid: identity\?\.lidJid/);
   assert.match(source, /const owner = normalizeJid\(/);
+  assert.match(source, /ownerJid,/);
+  assert.match(source, /ownerPnJid,/);
+  assert.match(source, /adminIdentities,/);
+  assert.match(source, /adminJids,/);
+  assert.match(source, /adminPnJids,/);
   assert.match(
     source,
     /participant\.role === "admin" && participant\.userId !== owner/,

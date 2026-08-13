@@ -77,18 +77,35 @@ const GROUP_BROADCAST_ENRICHMENT = `  const groupMetadata = isGroup ? await grou
   const groupName = String(groupMetadata?.subject || "").trim();
   const groupParticipants = Array.isArray(groupMetadata?.participants) ? groupMetadata.participants : [];
   const ownerIdentity = rememberGroupOwnerIdentity(groupMetadata);
-  const groupOwner = normalizeJid(
-    ownerIdentity?.pnJid
-    || resolveLidToPn(ownerIdentity?.lidJid || ownerIdentity?.jid)
-    || ownerIdentity?.jid
+  const groupOwnerJid = normalizeIdentityJid(
+    ownerIdentity?.jid
+    || ownerIdentity?.lidJid
+    || ownerIdentity?.pnJid
     || "",
   );
-  const groupAdmins = groupParticipants
+  const groupOwnerPnJid = normalizeIdentityJid(
+    ownerIdentity?.pnJid
+    || resolveLidToPn(ownerIdentity?.lidJid || ownerIdentity?.jid)
+    || "",
+  );
+  const groupOwner = normalizeJid(groupOwnerPnJid || groupOwnerJid);
+  const groupAdminIdentities = groupParticipants
     .filter((participant) => participant?.admin === "admin" || participant?.admin === "superadmin")
     .map((participant) => {
       const identity = rememberGroupParticipantIdentity(participant, chatJid);
-      return normalizeJid(identity?.pnJid || identity?.jid || "");
+      return {
+        jid: normalizeIdentityJid(identity?.jid || identity?.lidJid || identity?.pnJid || ""),
+        pnJid: normalizeIdentityJid(
+          identity?.pnJid || resolveLidToPn(identity?.lidJid || identity?.jid) || "",
+        ),
+        lidJid: normalizeIdentityJid(identity?.lidJid || ""),
+      };
     })
+    .filter((identity) => identity.jid || identity.pnJid || identity.lidJid);
+  const groupAdminJids = groupAdminIdentities.map((identity) => identity.jid).filter(Boolean);
+  const groupAdminPnJids = groupAdminIdentities.map((identity) => identity.pnJid).filter(Boolean);
+  const groupAdmins = groupAdminIdentities
+    .map((identity) => normalizeJid(identity.pnJid || identity.jid || identity.lidJid))
     .filter(Boolean);
   const senderGroupParticipant = groupParticipants.find((participant) =>
     sameGroupParticipant(participant, senderJid),
@@ -156,7 +173,7 @@ export function patchGatewayGroupNames(source) {
   content = replaceRequired(
     content,
     /(    albumMessageIds: albumItems\.length > 1 \? albumItems\.map\(\(albumItem\) => albumItem\.key\.id\) : undefined,\n    chatJid,\n)(    senderJid,)/,
-    `$1    groupName,\n    group_name: groupName,\n    groupSubject: groupName,\n    groupOwner,\n    groupAdmins,\n    senderRole,\n$2`,
+    `$1    groupName,\n    group_name: groupName,\n    groupSubject: groupName,\n    groupOwner,\n    groupOwnerJid,\n    groupOwnerPnJid,\n    groupAdmins,\n    groupAdminJids,\n    groupAdminPnJids,\n    groupAdminIdentities,\n    senderRole,\n$2`,
     "message group fields anchor",
   );
 

@@ -55,11 +55,18 @@ function albumMentionAll(items) {
   return (items || []).some((item) => mentionAllFromMessage(item.message));
 }`;
 
-const ALBUM_SCHEDULER = `function albumBufferKey(item, expectedGeneration = socketGeneration) {
+const ALBUM_SCHEDULER = `function albumBufferKeys(item, expectedGeneration = socketGeneration) {
   const key = item?.key || {};
   const chatJid = String(key.remoteJid || "");
-  const senderJid = String(key.participant || key.participantAlt || (key.fromMe ? selfJid : null) || chatJid);
-  return \`${"${expectedGeneration}:${chatJid}:${senderJid}"}\`;
+  const senderJid = String(
+    key.participant || key.participantAlt || (key.fromMe ? selfJid : null) || chatJid,
+  );
+  return runtimeScopeKeys(runtimeIdentities, [expectedGeneration, chatJid, senderJid]);
+}
+
+function albumBufferKey(item, expectedGeneration = socketGeneration) {
+  const keys = albumBufferKeys(item, expectedGeneration);
+  return keys.find((key) => albumBuffers.has(key)) || keys[0];
 }
 
 function inboundMessageTimestampMs(item) {
@@ -161,7 +168,7 @@ export function patchGatewayPrivateMediaBursts(source) {
   );
   content = replaceRequired(
     content,
-    /function scheduleAlbumItem\([\s\S]*?\n}\n\nasync function routeIncomingMessage/,
+    /function albumBufferKeys\([\s\S]*?\n}\n\nasync function routeIncomingMessage/,
     `${ALBUM_SCHEDULER}\n\nasync function routeIncomingMessage`,
     "album scheduler",
   );

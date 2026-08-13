@@ -40,6 +40,8 @@ test("private media burst patch keeps source ordering and replay protection", as
 
   assert.match(result.content, /async function flushAlbumBuffer\(/);
   assert.match(result.content, /Math\.abs\(timestampMs - buffer\.lastTimestampMs\) > debounceMs/);
+  assert.match(result.content, /runtimeScopeKeys\(runtimeIdentities, \[expectedGeneration, chatJid, senderJid\]\)/);
+  assert.match(result.content, /keys\.find\(\(key\) => albumBuffers\.has\(key\)\) \|\| keys\[0\]/);
   assert.match(result.content, /albumBuffers\.has\(bufferKey\) && !albumCandidate/);
   assert.match(result.content, /await flushAlbumBuffer\(bufferKey, expectedGeneration, eventSocket\);/);
   assert.match(result.content, /await scheduleAlbumItem\(item, expectedGeneration, eventSocket\);/);

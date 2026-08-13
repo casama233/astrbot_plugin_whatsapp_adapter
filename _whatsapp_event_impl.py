@@ -6,7 +6,7 @@ import os
 import re
 import textwrap
 from dataclasses import dataclass, field
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Callable
 from urllib.parse import unquote
 
 from astrbot import logger
@@ -114,6 +114,7 @@ class WhatsAppMessageEvent(AstrMessageEvent):
         ack_done_emoji: str = "",
         unsupported_streaming_strategy: str = "",
         streaming_edit_throttle: float = 1.0,
+        mention_resolver: Callable[[str], str | None] | None = None,
     ) -> None:
         super().__init__(message_str, message_obj, platform_meta, session_id)
         self.client = client
@@ -125,6 +126,7 @@ class WhatsAppMessageEvent(AstrMessageEvent):
         self.media_caption_mode = media_caption_mode
         self.link_preview_single_url = link_preview_single_url
         self.typing_indicator = typing_indicator
+        self.mention_resolver = mention_resolver
         # Kept as a constructor keyword for compatibility with older adapter
         # instances. AstrBot resolves the provider-level strategy and passes the
         # result to ``send_streaming(..., use_fallback=...)`` for every stream.
@@ -156,6 +158,7 @@ class WhatsAppMessageEvent(AstrMessageEvent):
                 quoted_message_id=quoted_message_id,
                 quoted_participant=quoted_participant,
                 resolve_media_func=self._resolve_media_path,
+                mention_resolver=self.mention_resolver,
                 quote_state=quote_state,
             )
             await _flush_pending_text(
@@ -356,7 +359,11 @@ class WhatsAppMessageEvent(AstrMessageEvent):
                 cut = boundaries[-1].end()
             stable_raw = pending[:cut]
             rendered = format_whatsapp_markdown(stable_raw, streaming=not force)
-            chunks = split_whatsapp_text(rendered, max_edit_length)
+            chunks = split_whatsapp_text(
+                rendered,
+                max_edit_length,
+                atomic_texts=[mention.text for mention in state.mentions if mention.text],
+            )
             await send_rendered_chunks(chunks)
             state.fallback_raw_offset += cut
 
@@ -375,7 +382,13 @@ class WhatsAppMessageEvent(AstrMessageEvent):
             if not raw:
                 return
             rendered = format_whatsapp_markdown(raw, streaming=False)
-            await send_rendered_chunks(split_whatsapp_text(rendered, max_edit_length))
+            await send_rendered_chunks(
+                split_whatsapp_text(
+                    rendered,
+                    max_edit_length,
+                    atomic_texts=[mention.text for mention in state.mentions if mention.text],
+                ),
+            )
 
         async def publish(*, force: bool = False) -> None:
             if not state.raw:
@@ -397,7 +410,11 @@ class WhatsAppMessageEvent(AstrMessageEvent):
             rendered = format_whatsapp_markdown(state.raw, streaming=not force)
             chunks = [
                 chunk
-                for chunk in split_whatsapp_text(rendered, max_edit_length)
+                for chunk in split_whatsapp_text(
+                    rendered,
+                    max_edit_length,
+                    atomic_texts=[mention.text for mention in state.mentions if mention.text],
+                )
                 if has_visible_whatsapp_content(chunk)
             ]
             if not chunks or chunks == state.rendered_chunks:
@@ -482,6 +499,7 @@ class WhatsAppMessageEvent(AstrMessageEvent):
                     text_chunk_limit=self.text_chunk_limit,
                     use_caption=False,
                     resolve_media_func=self._resolve_media_path,
+                    mention_resolver=self.mention_resolver,
                     quote_state=quote_state,
                 )
                 await _flush_pending_text(
@@ -522,7 +540,7 @@ class WhatsAppMessageEvent(AstrMessageEvent):
                     continue
                 elif isinstance(component, At):
                     visible = mention_text_from_at(component)
-                    jid = mention_jid_from_at(component)
+                    jid = mention_jid_from_at(component, self.mention_resolver)
                     # QQ/OneBot 发送 At 后会补空格；流式与普通发送保持相同语义。
                     state.raw += visible + " "
                     if jid:

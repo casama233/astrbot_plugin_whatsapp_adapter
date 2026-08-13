@@ -80,6 +80,46 @@ class GroupNameCompatibilityTests(unittest.TestCase):
             ["15550002", "15550003"],
         )
 
+    def test_full_group_identities_use_stable_projector_without_bare_lid_collision(self):
+        message = _Message()
+        calls = []
+
+        def projector(value, *, lid_jid=None, pn_jid=None):
+            calls.append((value, lid_jid, pn_jid))
+            if pn_jid:
+                return str(pn_jid).split("@", 1)[0].split(":", 1)[0]
+            return f"lid-{str(lid_jid or value).split('@', 1)[0].split(':', 1)[0]}"
+
+        module.apply_group_name(
+            message,
+            {
+                "groupOwner": "999999",
+                "groupOwnerJid": "700:4@lid",
+                "groupOwnerPnJid": "15550001:7@s.whatsapp.net",
+                "groupAdminIdentities": [
+                    {
+                        "jid": "701:8@hosted.lid",
+                        "lidJid": "701:8@hosted.lid",
+                    },
+                    {
+                        "jid": "702:9@lid",
+                        "pnJid": "15550002:3@hosted",
+                        "lidJid": "702:9@lid",
+                    },
+                ],
+            },
+            projector,
+        )
+
+        self.assertEqual(message.group.group_owner, "15550001")
+        self.assertEqual(message.group.group_admins, ["lid-701", "15550002"])
+        self.assertEqual(message.raw_message["groupOwner"], "15550001")
+        self.assertEqual(
+            message.raw_message["groupAdmins"],
+            ["lid-701", "15550002"],
+        )
+        self.assertTrue(calls)
+
     def test_admin_update_still_excludes_owner_from_existing_snapshot(self):
         message = _Message()
         message.group.group_owner = "15550001"
@@ -102,6 +142,20 @@ class GroupNameCompatibilityTests(unittest.TestCase):
             message.group,
         )
         self.assertIsNone(module.current_event_group(event, "another-group"))
+
+    def test_event_group_lookup_preserves_legacy_hyphenated_id(self):
+        message = _Message()
+        message.group.group_id = "123456789-123345"
+        event = _Event(message)
+        event.target_jid = "123456789-123345@g.us"
+        self.assertIs(
+            module.current_event_group(event, "123456789-123345"),
+            message.group,
+        )
+        self.assertIs(
+            module.current_event_group(event, "123456789-123345@g.us"),
+            message.group,
+        )
 
 
 if __name__ == "__main__":

@@ -92,6 +92,33 @@ test("prefers GroupMetadata ownerPn as stable owner identity", () => {
 test("strips a device suffix before normalizing a phone number", () => {
   assert.equal(phoneFromIdentity("85254420939:20@s.whatsapp.net"), "+85254420939");
   assert.equal(phoneFromIdentity("85254420939:99@hosted"), "+85254420939");
+  assert.equal(phoneFromIdentity("85254420939@lid"), null);
+  assert.equal(phoneFromIdentity("abc123@s.whatsapp.net"), null);
+  assert.equal(phoneFromIdentity("abc123"), null);
+});
+
+test("rejects malformed device suffixes and alphanumeric legacy identity fields", () => {
+  assert.equal(phoneFromIdentity("123:device@s.whatsapp.net"), null);
+  assert.equal(phoneFromIdentity("123:7:8@hosted"), null);
+  assert.equal(phoneFromIdentity("123_agent:7@s.whatsapp.net"), null);
+  assert.equal(phoneFromIdentity("123_128:7:8@hosted"), null);
+
+  const sender = senderIdentityFromKey(
+    { participant: "1@lid", participantPn: "abc123" },
+    { isGroup: true, senderJid: "1@lid" },
+  );
+  assert.deepEqual(sender, { pnJid: null, lidJid: "1@lid" });
+
+  const participant = groupParticipantIdentity({
+    id: "1@lid",
+    phoneNumber: "abc123",
+    lid: "def456",
+  });
+  assert.deepEqual(participant, {
+    jid: "1@lid",
+    pnJid: null,
+    lidJid: "1@lid",
+  });
 });
 
 test("normalizes own PN and LID device identities before public status", () => {
@@ -102,6 +129,14 @@ test("normalizes own PN and LID device identities before public status", () => {
   assert.equal(
     normalizeIdentityJid("125013663469807:4@lid"),
     "125013663469807@lid",
+  );
+  assert.equal(
+    normalizeIdentityJid("85254420939_128:23@hosted"),
+    "85254420939@hosted",
+  );
+  assert.equal(
+    normalizeIdentityJid("125013663469807_129:4@hosted.lid"),
+    "125013663469807@hosted.lid",
   );
 });
 
@@ -116,7 +151,15 @@ test("explicit mentions accept only resolved or valid WhatsApp identities", () =
 
   assert.deepEqual(
     resolveExplicitIdentityMentions(
-      ["@all", "Alice", "+85251112222", "85254420939:23@s.whatsapp.net", "unknown", "foo@bar"],
+      [
+        "@all",
+        "Alice",
+        "+85251112222",
+        "85254420939:23@s.whatsapp.net",
+        "unknown",
+        "foo@bar",
+        "abc123@s.whatsapp.net",
+      ],
       {
         chatJid: "120363000000000001@g.us",
         scopedDirectory,

@@ -1,6 +1,7 @@
 const PN_DOMAINS = ["@s.whatsapp.net", "@hosted"];
 const LID_DOMAINS = ["@lid", "@hosted.lid"];
 const IDENTITY_DOMAINS = [...PN_DOMAINS, ...LID_DOMAINS];
+const DEVICE_USER_PATTERN = /^(\d+)(?:_\d+)?(?::\d+)?$/;
 
 export function normalizeIdentityJid(value) {
   const raw = String(value || "").trim();
@@ -8,17 +9,20 @@ export function normalizeIdentityJid(value) {
   if (separator <= 0) return raw;
   const domain = `@${raw.slice(separator + 1).toLowerCase()}`;
   if (!IDENTITY_DOMAINS.includes(domain)) return raw;
-  const user = raw.slice(0, separator).split(":", 1)[0];
-  return user ? `${user}${domain}` : raw;
+  const match = raw.slice(0, separator).match(DEVICE_USER_PATTERN);
+  return match ? `${match[1]}${domain}` : raw;
 }
 
 function jidForKind(value, domains, fallbackDomain, allowBare = false) {
   const raw = String(value || "").trim();
   if (!raw) return null;
   const normalized = normalizeIdentityJid(raw);
-  if (domains.some((domain) => normalized.endsWith(domain))) return normalized;
+  if (domains.some((domain) => normalized.endsWith(domain))) {
+    return /^\d+$/.test(identityUser(normalized)) ? normalized : null;
+  }
   if (raw.includes("@") || !allowBare) return null;
-  const digits = raw.replace(/\D/g, "");
+  if (!/^\+?\d+$/.test(raw)) return null;
+  const digits = raw.replace(/^\+/, "");
   return digits ? `${digits}${fallbackDomain}` : null;
 }
 
@@ -33,14 +37,21 @@ export function isLidJid(value) {
 }
 
 export function identityUser(value) {
-  return String(value || "").trim().split("@", 1)[0].split(":", 1)[0];
+  const localPart = String(value || "").trim().split("@", 1)[0];
+  const match = localPart.match(DEVICE_USER_PATTERN);
+  return match ? match[1] : localPart;
 }
 
 export function phoneFromIdentity(value) {
   const raw = String(value || "").trim();
-  const source = raw.includes("@") ? identityUser(raw) : raw;
-  const digits = source.replace(/\D/g, "");
-  return digits ? `+${digits}` : null;
+  if (!raw) return null;
+  if (raw.includes("@")) {
+    if (!isPnJid(raw)) return null;
+    const digits = identityUser(normalizeIdentityJid(raw));
+    return /^\d+$/.test(digits) ? `+${digits}` : null;
+  }
+  if (!/^\+?\d+$/.test(raw)) return null;
+  return `+${raw.replace(/^\+/, "")}`;
 }
 
 export function identityPair(values) {
@@ -159,7 +170,8 @@ export function resolveExplicitIdentityMentions(
     if (!jid && (!chatJid || isBarePhone)) jid = globalDirectory?.get(key) || null;
 
     if (!jid && (isPnJid(token) || isLidJid(token))) {
-      jid = normalizeIdentityJid(token);
+      const normalized = normalizeIdentityJid(token);
+      jid = /^\d+$/.test(identityUser(normalized)) ? normalized : null;
     } else if (!jid && isBarePhone) {
       const digits = token.replace(/\D/g, "");
       jid = digits ? `${digits}@s.whatsapp.net` : null;
@@ -167,6 +179,7 @@ export function resolveExplicitIdentityMentions(
 
     if (!isPnJid(jid) && !isLidJid(jid)) continue;
     const normalized = normalizeIdentityJid(jid);
+    if (!/^\d+$/.test(identityUser(normalized))) continue;
     if (normalized && !mentions.includes(normalized)) mentions.push(normalized);
   }
 

@@ -76,9 +76,12 @@ from .whatsapp_identity import (
     is_lid_jid as _is_lid_jid,
     is_pn_jid as _is_pn_jid,
     load_lid_mappings as _load_identity_mappings,
+    normalize_group_session_id as _normalize_group_session_id,
     normalize_user_jid as _normalize_user_jid,
     phone_from_identity as _phone_from_identity,
     public_numeric_id as _public_numeric_id,
+    same_whatsapp_identity as _same_whatsapp_identity,
+    save_identity_projections as _save_identity_projections,
     save_lid_mapping as _save_identity_mapping,
 )
 
@@ -181,12 +184,17 @@ def _load_lid_mappings(
         logger.debug("加載 lid 映射失敗: %s", exc)
 
 
-def _save_lid_mapping(auth_dir: Path, lid_jid: str, pn_jid: str) -> None:
+def _save_lid_mapping(
+    auth_dir: Path,
+    lid_jid: str,
+    pn_jid: str,
+    cache: IdentityMappingCache | None = None,
+) -> None:
     """持久化 lid→PN 映射到 Gateway auth 目錄。"""
     if not auth_dir:
         return
     try:
-        _save_identity_mapping(auth_dir, lid_jid, pn_jid)
+        _save_identity_mapping(auth_dir, lid_jid, pn_jid, cache=cache)
     except Exception:
         pass
 
@@ -1023,18 +1031,57 @@ class WhatsAppPlatformAdapter(Platform):
         if not pn_jid:
             return ""
         _cache_lid_mapping(lid_jid, pn_jid, identity_cache)
-        _save_lid_mapping(self._auth_dir(), lid_jid, pn_jid)
+        _save_lid_mapping(self._auth_dir(), lid_jid, pn_jid, identity_cache)
         return pn_jid
 
-    @staticmethod
+    def _project_public_user_id(
+        self,
+        value: str | None = None,
+        *,
+        lid_jid: str | None = None,
+        pn_jid: str | None = None,
+        cache: IdentityMappingCache | None = None,
+        persist: bool = True,
+    ) -> str:
+        """Return this account's stable public PN/LID projection."""
+
+        identity_cache = cache or self._identity_mappings(refresh_session=True)
+        public_id = identity_cache.project_public_id(
+            value,
+            lid_jid=lid_jid,
+            pn_jid=pn_jid,
+        )
+        if persist:
+            self._persist_identity_projections(identity_cache)
+        return public_id
+
+    def _persist_identity_projections(
+        self,
+        cache: IdentityMappingCache | None = None,
+    ) -> None:
+        """Persist a projection batch once at its transport boundary."""
+
+        identity_cache = cache or self._identity_mappings(refresh_session=True)
+        if not identity_cache.projections_dirty:
+            return
+        try:
+            _save_identity_projections(self._auth_dir(), identity_cache)
+        except Exception as exc:
+            logger.debug("持久化 WhatsApp 公开身份投影失败: %s", exc)
+
     def _delivery_target_from_session_id(
+        self,
         session_id: str,
         *,
         is_group: bool = False,
     ) -> str:
         """Recover a transport JID from canonical or legacy AstrBot sessions."""
 
-        return _delivery_jid_from_session_id(session_id, is_group=is_group)
+        return _delivery_jid_from_session_id(
+            session_id,
+            is_group=is_group,
+            cache=self._identity_mappings(refresh_session=True),
+        )
 
     async def send_by_session(self, session: MessageSesion, message_chain: MessageChain):
         target = getattr(session, "session_id", None) or getattr(session, "message_session_id", None)
@@ -1048,6 +1095,8 @@ class WhatsAppPlatformAdapter(Platform):
             str(target),
             is_group=is_group_session,
         )
+        if not target:
+            raise ValueError("WhatsApp send_by_session 目标会话 ID 格式无效")
 
         # PN→lid 正向解析：若目標是 PN 且有緩存 lid，用 lid 確保訊息歸流正確
         target_key = target
@@ -1074,6 +1123,7 @@ class WhatsAppPlatformAdapter(Platform):
                 link_preview_single_url=bool(self.config.get("link_preview_single_url", True)),
                 text_chunk_limit=int(self.config.get("text_chunk_limit") or 4000),
                 use_caption=str(self.config.get("media_caption_mode") or "separate") == "caption",
+                mention_resolver=self._delivery_target_from_session_id,
                 quote_state=quote_state,
             )
             await flush_pending_text(
@@ -1199,6 +1249,7 @@ class WhatsAppPlatformAdapter(Platform):
         chat_jid = str(data.get("chatJid") or "")
         sender_jid = str(data.get("senderJid") or chat_jid)
         sender_pn = str(data.get("senderPn") or "")
+        sender_lid = str(data.get("senderLid") or "")
         sender_phone = str(data.get("senderPhone") or "")
         identity_cache = self._identity_mappings(refresh_session=True)
 
@@ -1208,6 +1259,12 @@ class WhatsAppPlatformAdapter(Platform):
         if _is_lid_jid(sender_jid) or _is_pn_jid(sender_jid):
             sender_jid = _normalize_user_jid(sender_jid)
             data["senderJid"] = sender_jid
+        if _is_lid_jid(sender_lid):
+            sender_lid = _normalize_lid_jid(sender_lid)
+        elif _is_lid_jid(sender_jid):
+            sender_lid = _normalize_lid_jid(sender_jid)
+        if sender_lid:
+            data["senderLid"] = sender_lid
         if _is_pn_jid(sender_pn):
             sender_pn = _base_pn_jid(sender_pn)
 
@@ -1218,24 +1275,35 @@ class WhatsAppPlatformAdapter(Platform):
                 sender_pn = f"{digits}@s.whatsapp.net"
 
         # 缓存 lid→PN 映射，用于出站 @mention 时解析
-        if _is_lid_jid(sender_jid) and _is_pn_jid(sender_pn):
-            if not identity_cache.pn_for_lid(sender_jid):
-                _cache_lid_mapping(sender_jid, sender_pn, identity_cache)
-                _save_lid_mapping(self._auth_dir(), sender_jid, sender_pn)
+        if _is_lid_jid(sender_lid) and _is_pn_jid(sender_pn):
+            if not identity_cache.pn_for_lid(sender_lid):
+                _cache_lid_mapping(sender_lid, sender_pn, identity_cache)
+                _save_lid_mapping(
+                    self._auth_dir(),
+                    sender_lid,
+                    sender_pn,
+                    identity_cache,
+                )
         if (
             _is_lid_jid(chat_jid)
+            and not bool(data.get("fromMe"))
             and not identity_cache.pn_for_lid(chat_jid)
             and _is_pn_jid(sender_pn)
         ):
             _cache_lid_mapping(chat_jid, sender_pn, identity_cache)
-            _save_lid_mapping(self._auth_dir(), chat_jid, sender_pn)
+            _save_lid_mapping(
+                self._auth_dir(),
+                chat_jid,
+                sender_pn,
+                identity_cache,
+            )
 
         # Baileys 并非每一条消息都会带 senderPn；一旦学到过映射，后续必须
         # 继续使用同一个手机号身份，避免同一成员在 QQ 式 user_id 语义下分裂。
-        if not _is_pn_jid(sender_pn) and _is_lid_jid(sender_jid):
-            sender_pn = identity_cache.pn_for_lid(sender_jid)
-        if not sender_pn and _is_lid_jid(sender_jid):
-            sender_pn = await self._resolve_lid_pn(sender_jid, identity_cache)
+        if not _is_pn_jid(sender_pn) and _is_lid_jid(sender_lid):
+            sender_pn = identity_cache.pn_for_lid(sender_lid)
+        if not sender_pn and _is_lid_jid(sender_lid):
+            sender_pn = await self._resolve_lid_pn(sender_lid, identity_cache)
         if not sender_phone and _is_pn_jid(sender_pn):
             sender_phone = _phone_from_identity(sender_pn)
         if sender_pn:
@@ -1245,8 +1313,9 @@ class WhatsAppPlatformAdapter(Platform):
 
         # Gateway canonicalSessionJid keeps the transport target stable when
         # WhatsApp switches a direct chat between PN and LID addressing modes.
-        # It must not leak into UMO: public UMO IDs follow QQ semantics and use
-        # only the normalized numeric contact/group identity.
+        # UMO uses this account's persistent public projection: normally a QQ-
+        # style numeric PN, or an explicit ``lid-N`` namespace when WhatsApp has
+        # not proved a phone-number alias yet.
         canonical_session_jid = str(data.get("canonicalSessionJid") or "")
         if _is_lid_jid(canonical_session_jid) or _is_pn_jid(canonical_session_jid):
             canonical_session_jid = _normalize_user_jid(canonical_session_jid)
@@ -1264,6 +1333,23 @@ class WhatsAppPlatformAdapter(Platform):
             canonical_session_pn = _base_pn_jid(canonical_session_jid)
         if not canonical_session_pn and not bool(data.get("fromMe")):
             canonical_session_pn = sender_pn
+        if (
+            _is_lid_jid(canonical_session_jid)
+            and _is_pn_jid(canonical_session_pn)
+            and identity_cache.pn_for_lid(canonical_session_jid)
+            != canonical_session_pn
+        ):
+            _cache_lid_mapping(
+                canonical_session_jid,
+                canonical_session_pn,
+                identity_cache,
+            )
+            _save_lid_mapping(
+                self._auth_dir(),
+                canonical_session_jid,
+                canonical_session_pn,
+                identity_cache,
+            )
         extras = data.get("extras") or {}
         reaction = extras.get("reaction")
         if self._is_reaction_only(data):
@@ -1284,21 +1370,52 @@ class WhatsAppPlatformAdapter(Platform):
         if is_group and sender_phone and group_id and self._numeric_whatsapp_id(sender_phone) == group_id:
             sender_phone = ""
 
-        user_id = ""
-        if _is_pn_jid(sender_pn):
-            user_id = self._numeric_whatsapp_id(sender_pn)
-        elif sender_phone:
-            user_id = "".join(ch for ch in sender_phone if ch.isdigit())
-        if not user_id:
-            user_id = self._numeric_whatsapp_id(sender_jid)
+        user_id = self._project_public_user_id(
+            sender_pn or sender_lid or sender_jid,
+            lid_jid=sender_lid or None,
+            pn_jid=sender_pn or None,
+            cache=identity_cache,
+        )
 
-        private_session_id = _public_numeric_id(
+        session_lid = canonical_session_jid if _is_lid_jid(canonical_session_jid) else ""
+        if not session_lid and not is_group and _is_lid_jid(chat_jid):
+            session_lid = chat_jid
+        private_session_id = self._project_public_user_id(
             canonical_session_pn
-            or canonical_session_jid
+            or session_lid
             or chat_jid
             or sender_pn
             or sender_jid,
+            lid_jid=session_lid or None,
+            pn_jid=canonical_session_pn or None,
+            cache=identity_cache,
         )
+
+        # Do not let malformed transport identities create empty or unstable
+        # AstrBot UMO keys. The Gateway normally filters these first, but this
+        # boundary is also used by external Gateway deployments.
+        if not user_id:
+            logger.warning(
+                "忽略身份格式无效的 WhatsApp 消息: chat=%s sender=%s message_id=%s",
+                chat_jid,
+                sender_jid,
+                data.get("messageId"),
+            )
+            return None
+        if is_group and not group_id:
+            logger.warning(
+                "忽略群组 ID 格式无效的 WhatsApp 消息: chat=%s message_id=%s",
+                chat_jid,
+                data.get("messageId"),
+            )
+            return None
+        if not is_group and not private_session_id:
+            logger.warning(
+                "忽略私聊会话 ID 格式无效的 WhatsApp 消息: chat=%s message_id=%s",
+                chat_jid,
+                data.get("messageId"),
+            )
+            return None
 
         abm = AstrBotMessage()
         abm.type = MessageType.GROUP_MESSAGE if is_group else MessageType.FRIEND_MESSAGE
@@ -1311,7 +1428,12 @@ class WhatsAppPlatformAdapter(Platform):
         abm.message = self._message_chain(data, text)
         raw_self_jid = str(data.get("selfJid") or "")
         raw_self_lid = str(data.get("selfLid") or "")
-        abm.self_id = self._numeric_whatsapp_id(raw_self_jid or raw_self_lid) or "whatsapp"
+        abm.self_id = self._project_public_user_id(
+            raw_self_jid or raw_self_lid,
+            lid_jid=raw_self_lid or None,
+            pn_jid=raw_self_jid or None,
+            cache=identity_cache,
+        ) or "whatsapp"
         abm.session_id = _build_umo_session_id(
             is_group=is_group,
             group_id=group_id,
@@ -1404,7 +1526,11 @@ class WhatsAppPlatformAdapter(Platform):
             typing_indicator=bool(self.config.get("typing_indicator", True)),
             ack_done_emoji=str(self.config.get("pre_ack_done_emoji", "✅") or "✅"),
             streaming_edit_throttle=float(self.config.get("streaming_edit_throttle") or 1.0),
+            mention_resolver=self._delivery_target_from_session_id,
         )
+        # get_group() receives full transport identities from the Gateway and
+        # must use the same persistent PN/LID projection as inbound messages.
+        event.identity_projector = self._project_public_user_id
         # Match aiocqhttp's security boundary: platform group roles remain in
         # raw_message.sender.role, while AstrBot promotes only IDs configured in
         # its global admins_id list to event.role == "admin".
@@ -1485,8 +1611,12 @@ class WhatsAppPlatformAdapter(Platform):
 
         parts: list[str] = []
         first_self_processed = False
-        self_id = self._numeric_whatsapp_id(
-            str(data.get("selfJid") or data.get("selfLid") or ""),
+        raw_self_jid = str(data.get("selfJid") or "")
+        raw_self_lid = str(data.get("selfLid") or "")
+        self_id = self._project_public_user_id(
+            raw_self_jid or raw_self_lid,
+            lid_jid=raw_self_lid or None,
+            pn_jid=raw_self_jid or None,
         )
         for component in self._ordered_text_components(data, text):
             if isinstance(component, Plain):
@@ -1535,8 +1665,13 @@ class WhatsAppPlatformAdapter(Platform):
             mentioned_names = {}
         raw_self_jid = str(data.get("selfJid") or "")
         raw_self_lid = str(data.get("selfLid") or "")
-        standard_self_id = self._numeric_whatsapp_id(raw_self_jid or raw_self_lid)
         identity_cache = self._identity_mappings()
+        standard_self_id = self._project_public_user_id(
+            raw_self_jid or raw_self_lid,
+            lid_jid=raw_self_lid or None,
+            pn_jid=raw_self_jid or None,
+            cache=identity_cache,
+        )
         entries: list[dict[str, Any]] = []
         if data.get("mentionAll"):
             entries.append(
@@ -1556,7 +1691,12 @@ class WhatsAppPlatformAdapter(Platform):
             is_self = self._is_self_mention(jid, raw_self_jid, raw_self_lid)
             mapped_pn = identity_cache.pn_for_lid(jid) if _is_lid_jid(jid) else ""
             mapped_lid = identity_cache.lid_for_pn(jid) if _is_pn_jid(jid) else ""
-            standard_id = standard_self_id if is_self else self._numeric_whatsapp_id(mapped_pn or jid)
+            standard_id = standard_self_id if is_self else self._project_public_user_id(
+                mapped_pn or jid,
+                lid_jid=jid if _is_lid_jid(jid) else None,
+                pn_jid=mapped_pn or (jid if _is_pn_jid(jid) else None),
+                cache=identity_cache,
+            )
             if not standard_id:
                 standard_id = self._whatsapp_user_id(jid)
             display_name = str(
@@ -1660,7 +1800,13 @@ class WhatsAppPlatformAdapter(Platform):
         chain: list[Any] = []
         raw_self_jid = str(data.get("selfJid") or "")
         raw_self_lid = str(data.get("selfLid") or "")
-        standard_self_id = self._numeric_whatsapp_id(raw_self_jid or raw_self_lid) or "whatsapp"
+        identity_cache = self._identity_mappings()
+        standard_self_id = self._project_public_user_id(
+            raw_self_jid or raw_self_lid,
+            lid_jid=raw_self_lid or None,
+            pn_jid=raw_self_jid or None,
+            cache=identity_cache,
+        ) or "whatsapp"
         quoted_data = data.get("quoted")
         if quoted_data:
             quoted_data = dict(quoted_data)
@@ -1683,7 +1829,12 @@ class WhatsAppPlatformAdapter(Platform):
             if quoted_is_self:
                 quoted_sender_id = standard_self_id
             else:
-                quoted_sender_id = self._numeric_whatsapp_id(quoted_sender) if quoted_sender else "0"
+                quoted_sender_id = self._project_public_user_id(
+                    quoted_sender,
+                    lid_jid=quoted_sender if _is_lid_jid(quoted_sender) else None,
+                    pn_jid=quoted_sender if _is_pn_jid(quoted_sender) else None,
+                    cache=identity_cache,
+                ) if quoted_sender else "0"
             quoted_sender_name = str(quoted_data.get("participantName") or quoted_sender)
             quoted_message_str = self._qq_style_message_str(quoted_data, quoted_text)
             try:
@@ -1938,7 +2089,7 @@ class WhatsAppPlatformAdapter(Platform):
         return projected
 
     def _same_whatsapp_user(self, left: str, right: str) -> bool:
-        return self._whatsapp_user_id(left) == self._whatsapp_user_id(right)
+        return _same_whatsapp_identity(left, right, self._identity_mappings())
 
     def _is_self_mention(self, mentioned: str, self_id: str, self_lid: str) -> bool:
         return self._same_whatsapp_user(mentioned, self_id) or (
@@ -1967,7 +2118,6 @@ class WhatsAppPlatformAdapter(Platform):
             if not allow_list:
                 return False
             normalized = _normalize_phone(value)
-            normalized_jid = self._whatsapp_user_id(value)
             for item in allow_list:
                 item_str = str(item or "").strip()
                 if item_str == "*":
@@ -1977,7 +2127,7 @@ class WhatsAppPlatformAdapter(Platform):
                     return True
                 if item_str == value:
                     return True
-                if self._whatsapp_user_id(item_str) == normalized_jid:
+                if _same_whatsapp_identity(item_str, value, identity_cache):
                     return True
             return False
 
@@ -2002,7 +2152,9 @@ class WhatsAppPlatformAdapter(Platform):
                     pn = await asyncio.wait_for(self.client.resolve_lid(sender_jid), timeout=4)
                     if pn and _allowed_by(pn, allow_from):
                         _cache_lid_mapping(sender_jid, pn, identity_cache)
-                        _save_lid_mapping(self._auth_dir(), sender_jid, pn)
+                        _save_lid_mapping(
+                            self._auth_dir(), sender_jid, pn, identity_cache,
+                        )
                         return True
                 except Exception:
                     pass
@@ -2012,7 +2164,12 @@ class WhatsAppPlatformAdapter(Platform):
         if policy == "disabled":
             return False
         groups = self._coerce_str_list(self.config.get("groups"))
-        if groups and "*" not in groups and chat_jid not in groups:
+        normalized_groups = {
+            f"{group_id}@g.us"
+            for value in groups
+            if (group_id := _normalize_group_session_id(value))
+        }
+        if groups and "*" not in groups and chat_jid not in normalized_groups:
             return False
         if policy == "open":
             return True
@@ -2032,7 +2189,9 @@ class WhatsAppPlatformAdapter(Platform):
                 pn = await asyncio.wait_for(self.client.resolve_lid(sender_jid), timeout=4)
                 if pn and _allowed_by(pn, group_allow_from):
                     _cache_lid_mapping(sender_jid, pn, identity_cache)
-                    _save_lid_mapping(self._auth_dir(), sender_jid, pn)
+                    _save_lid_mapping(
+                        self._auth_dir(), sender_jid, pn, identity_cache,
+                    )
                     return True
             except Exception:
                 pass
@@ -2056,16 +2215,17 @@ class WhatsAppPlatformAdapter(Platform):
         text = str(data.get("text") or "")
         if "@" not in text:
             return False
-        self_tokens = {
-            self._numeric_whatsapp_id(value)
-            for value in (self_id, self_lid)
-            if value
-        }
+        self_public_id = self._project_public_user_id(
+            self_id or self_lid,
+            lid_jid=self_lid or None,
+            pn_jid=self_id or None,
+        )
+        self_tokens = {self_public_id} if self_public_id else set()
         if not self_tokens:
             return False
         for token in re.findall(r"@([^\s@,，。:：;；)）(（]+)", text):
-            token_digits = "".join(ch for ch in token if ch.isdigit())
-            if token_digits and token_digits in self_tokens:
+            token_id = token.strip().lstrip("+")
+            if token_id and token_id in self_tokens:
                 logger.info("WhatsApp @提及文本兜底命中: token=%s self_id=%s self_lid=%s", token, self_id, self_lid)
                 return True
         return False

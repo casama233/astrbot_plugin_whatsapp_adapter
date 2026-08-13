@@ -141,15 +141,21 @@ WhatsAppEdit(message_id="xxx", text="新内容")
 
 ## UMO 与 ID 归一化
 
-适配器只把数字公开 ID 放进 AstrBot UMO，WhatsApp JID 仅用于运输：
+适配器只把稳定公开 ID 放进 AstrBot UMO，WhatsApp JID 仅用于运输：
 
 - 私聊：`实例ID:FriendMessage:用户ID`
 - 普通群会话：`实例ID:GroupMessage:群ID`
 - 开启全局 `unique_session`：`实例ID:GroupMessage:用户ID_群ID`
 
-PN、LID、Hosted domain、设备后缀和 `@g.us` 不会进入新 UMO；同一个已解析
-联系人无论以 PN 还是 LID 到达，都会归入同一个数字私聊会话。旧 JID session
-仍可用于主动发送，适配器会在运输边界解析成正确 JID。
+已确认 PN 的用户使用纯数字 ID；暂时无法证明 PN 的 LID 使用独立的 `lid-数字`
+ID。首次进入 AstrBot 的公开 ID 会被持久化，之后即使补齐 PN/LID 映射也不改变，
+从而避免会话、权限与记忆键漂移。群 ID 保留 WhatsApp local part，兼容纯数字和
+旧式 `数字-数字`；Hosted domain、设备后缀与 `@g.us` 不进入新 UMO。
+
+`sender.user_id`、`self_id`、`group_id`、群成员/管理员和常用 OneBot 字段使用同一
+投影规则。主动发送仍接受旧 session 与完整 JID，且会优先恢复此前观察到的
+Hosted/标准运输域。正常刷新与重启不会改写已落盘投影；若同一账户曾在缺少映射时
+以 PN/LID 两个身份分别出现，首次取得明确映射时会按最早公开的投影合并一次。
 
 ## 流式输出
 
