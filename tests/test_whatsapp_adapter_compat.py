@@ -227,10 +227,16 @@ class WhatsAppAdapterCompatibilityTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.module = _adapter_module()
         cls._save_mapping_patcher = patch.object(cls.module, "_save_lid_mapping")
+        cls._save_projection_patcher = patch.object(
+            cls.module,
+            "_save_identity_projections",
+        )
         cls._save_mapping_patcher.start()
+        cls._save_projection_patcher.start()
 
     @classmethod
     def tearDownClass(cls) -> None:
+        cls._save_projection_patcher.stop()
         cls._save_mapping_patcher.stop()
 
     def test_numeric_ids_ordered_mentions_reply_and_raw_projection(self) -> None:
@@ -401,6 +407,35 @@ class WhatsAppAdapterCompatibilityTests(unittest.TestCase):
         self.assertEqual(message.group_id, "120363000000000001")
         self.assertEqual(message.session_id, "111_120363000000000001")
 
+    def test_legacy_hyphenated_group_id_is_stable_across_public_fields(self) -> None:
+        adapter = object.__new__(self.module.WhatsAppPlatformAdapter)
+        adapter.config = {"parse_inbound_formatting": False}
+        adapter._platform_settings = {"unique_session": True}
+        message = asyncio.run(
+            adapter.convert_message(
+                {
+                    "chatJid": "123456789-123345@g.us",
+                    "senderJid": "111@s.whatsapp.net",
+                    "senderPn": "111@s.whatsapp.net",
+                    "senderName": "Alice",
+                    "selfJid": "999@s.whatsapp.net",
+                    "messageId": "legacy-group",
+                    "text": "hello",
+                },
+            ),
+        )
+
+        self.assertEqual(message.group_id, "123456789-123345")
+        self.assertEqual(message.session_id, "111_123456789-123345")
+        self.assertEqual(message.raw_message["group_id"], "123456789-123345")
+        self.assertEqual(
+            adapter._delivery_target_from_session_id(
+                message.session_id,
+                is_group=True,
+            ),
+            "123456789-123345@g.us",
+        )
+
     def test_native_event_is_projected_as_detailed_plain_text(self) -> None:
         adapter = object.__new__(self.module.WhatsAppPlatformAdapter)
         adapter.config = {"parse_inbound_formatting": False}
@@ -535,6 +570,7 @@ class WhatsAppAdapterCompatibilityTests(unittest.TestCase):
                 self.assertEqual(event.is_at_or_wake_command, expected_wake)
                 self.assertEqual(event.reactions, expected_reactions)
                 self.assertNotIn("unsupported_streaming_strategy", event.__dict__)
+                self.assertTrue(callable(event.mention_resolver))
                 self.assertTrue(any(isinstance(item, _AtAll) for item in message.message))
 
     def test_quoting_bot_without_explicit_mention_does_not_wake_or_ack(self) -> None:
@@ -675,11 +711,13 @@ class WhatsAppAdapterCompatibilityTests(unittest.TestCase):
         }
         adapter.client = object()
         adapter._identity_cache = self.module.IdentityMappingCache()
-        adapter._identity_cache.remember("123@lid", "111@s.whatsapp.net")
+        adapter._identity_cache.remember("123@hosted.lid", "111@hosted")
         captured = []
+        mention_targets = []
 
         async def process(_client, target, _chain, **kwargs):
             captured.append(target)
+            mention_targets.append(kwargs["mention_resolver"]("111"))
             kwargs["quote_state"].sent_count += 1
             return None, []
 
@@ -701,7 +739,8 @@ class WhatsAppAdapterCompatibilityTests(unittest.TestCase):
                 ),
             )
 
-        self.assertEqual(captured, ["123@lid"])
+        self.assertEqual(captured, ["123@hosted.lid"])
+        self.assertEqual(mention_targets, ["111@hosted"])
 
     def test_private_pn_and_lid_addresses_share_one_numeric_session(self) -> None:
         with tempfile.TemporaryDirectory() as auth_dir:
@@ -744,6 +783,53 @@ class WhatsAppAdapterCompatibilityTests(unittest.TestCase):
         self.assertEqual(lid_message.sender.user_id, "111")
         self.assertEqual(pn_message.session_id, "111")
         self.assertEqual(lid_message.session_id, "111")
+
+    def test_malformed_transport_ids_never_create_empty_umo_sessions(self) -> None:
+        adapter = object.__new__(self.module.WhatsAppPlatformAdapter)
+        adapter.config = {"parse_inbound_formatting": False}
+
+        malformed_group = asyncio.run(
+            adapter.convert_message(
+                {
+                    "chatJid": "abc123@g.us",
+                    "senderJid": "111@s.whatsapp.net",
+                    "senderPn": "111@s.whatsapp.net",
+                    "selfJid": "999@s.whatsapp.net",
+                    "messageId": "invalid-group",
+                    "text": "hello",
+                },
+            ),
+        )
+        malformed_user = asyncio.run(
+            adapter.convert_message(
+                {
+                    "chatJid": "abc123@lid",
+                    "senderJid": "abc123@lid",
+                    "selfJid": "999@s.whatsapp.net",
+                    "messageId": "invalid-user",
+                    "text": "hello",
+                },
+            ),
+        )
+
+        self.assertIsNone(malformed_group)
+        self.assertIsNone(malformed_user)
+
+    def test_send_by_session_rejects_a_malformed_target_before_transport(self) -> None:
+        adapter = object.__new__(self.module.WhatsAppPlatformAdapter)
+        adapter.config = {}
+        session = types.SimpleNamespace(
+            session_id="abc123",
+            message_type=_MessageType.FRIEND_MESSAGE,
+        )
+
+        with self.assertRaisesRegex(ValueError, "ID 格式无效"):
+            asyncio.run(
+                adapter.send_by_session(
+                    session,
+                    self.module.MessageChain([_Plain("hello")]),
+                ),
+            )
 
     def test_phone_originated_direct_message_uses_remote_session_identity(self) -> None:
         adapter = object.__new__(self.module.WhatsAppPlatformAdapter)

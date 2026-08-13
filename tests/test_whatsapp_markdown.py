@@ -271,6 +271,117 @@ class GroupContractTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(client.calls, ["120363399820499653@g.us"])
 
+    async def test_legacy_hyphenated_group_id_round_trips_through_get_group(self) -> None:
+        class LegacyClient(self.Client):
+            async def group_info(inner_self, group_jid: str):
+                info = await super().group_info(group_jid)
+                info["groupId"] = "123456789-123345"
+                return info
+
+        client = LegacyClient()
+        event = types.SimpleNamespace(
+            message_obj=types.SimpleNamespace(group=None),
+            target_jid="15550009@s.whatsapp.net",
+            client=client,
+        )
+        for value in (
+            "123456789-123345",
+            "123456789-123345@g.us",
+            "111_123456789-123345",
+        ):
+            with self.subTest(value=value):
+                group = await event_module._get_group_compat(event, value)
+                self.assertEqual(group.group_id, "123456789-123345")
+        self.assertEqual(
+            client.calls,
+            ["123456789-123345@g.us"] * 3,
+        )
+
+    async def test_group_info_members_use_persistent_pn_lid_projection(self) -> None:
+        class IdentityClient(self.Client):
+            async def group_info(inner_self, group_jid: str):
+                inner_self.calls.append(group_jid)
+                return {
+                    "groupId": "120363399820499653",
+                    "subject": "Identity Group",
+                    "owner": "700",
+                    "ownerJid": "700:4@lid",
+                    "ownerPnJid": "15550001:7@s.whatsapp.net",
+                    "adminIdentities": [
+                        {"jid": "701:8@lid", "lidJid": "701:8@lid"},
+                    ],
+                    "participants": [
+                        {
+                            "jid": "700:4@lid",
+                            "pnJid": "15550001:7@s.whatsapp.net",
+                            "lidJid": "700:4@lid",
+                            "name": "Owner",
+                            "role": "owner",
+                        },
+                        {
+                            "jid": "701:8@lid",
+                            "lidJid": "701:8@lid",
+                            "name": "Unresolved Admin",
+                            "role": "admin",
+                        },
+                    ],
+                }
+
+        def projector(value, *, lid_jid=None, pn_jid=None):
+            if pn_jid:
+                return str(pn_jid).split("@", 1)[0].split(":", 1)[0]
+            return f"lid-{str(lid_jid or value).split('@', 1)[0].split(':', 1)[0]}"
+
+        client = IdentityClient()
+        event = types.SimpleNamespace(
+            message_obj=types.SimpleNamespace(group=None),
+            target_jid="15550009@s.whatsapp.net",
+            client=client,
+            identity_projector=projector,
+        )
+        group = await event_module._get_group_compat(
+            event,
+            "120363399820499653",
+        )
+
+        self.assertEqual(group.group_owner, "15550001")
+        self.assertEqual(group.group_admins, ["lid-701"])
+        self.assertEqual(
+            [(member.user_id, member.nickname) for member in group.members],
+            [
+                ("15550001", "Owner"),
+                ("lid-701", "Unresolved Admin"),
+            ],
+        )
+
+    async def test_group_info_batches_identity_projection_persistence(self) -> None:
+        class Projector:
+            def __init__(inner_self):
+                inner_self.calls = []
+                inner_self.persist_calls = 0
+
+            def project(inner_self, value, *, lid_jid=None, pn_jid=None, persist=True):
+                inner_self.calls.append(persist)
+                return str(pn_jid or lid_jid or value).split("@", 1)[0].split(":", 1)[0]
+
+            def _persist_identity_projections(inner_self):
+                inner_self.persist_calls += 1
+
+        projector = Projector()
+        client = self.Client()
+        event = types.SimpleNamespace(
+            message_obj=types.SimpleNamespace(group=None),
+            target_jid="15550009@s.whatsapp.net",
+            client=client,
+            identity_projector=projector.project,
+        )
+
+        await event_module._get_group_compat(event, "120363000000000001")
+
+        self.assertTrue(projector.calls)
+        self.assertTrue(all(persist is False for persist in projector.calls))
+        self.assertEqual(projector.persist_calls, 1)
+
 
 class ConverterTests(unittest.TestCase):
     def test_mention_jids_normalize_device_suffixes_and_hosted_domains(self) -> None:
@@ -286,6 +397,35 @@ class ConverterTests(unittest.TestCase):
             helpers.mention_jid_from_at(At(qq="85264362105:9@hosted")),
             "85264362105@hosted",
         )
+
+    def test_public_mentions_resolve_without_digit_scraping(self) -> None:
+        observed = {
+            "lid-123": "123:9@hosted.lid",
+            "85264362105": "85264362105:7@hosted",
+        }
+        resolver = observed.get
+
+        self.assertEqual(
+            helpers.mention_jid_from_at(At(qq="lid-123"), resolver),
+            "123@hosted.lid",
+        )
+        self.assertEqual(
+            helpers.mention_jid_from_at(At(qq="85264362105"), resolver),
+            "85264362105@hosted",
+        )
+        self.assertEqual(
+            helpers.mention_jid_from_at(At(qq="lid-456")),
+            "456@lid",
+        )
+        self.assertEqual(
+            helpers.mention_jid_from_at(At(qq="all"), resolver),
+            "all",
+        )
+        for invalid in ("abc123", "123@example.com", "lid-12x"):
+            with self.subTest(invalid=invalid):
+                self.assertIsNone(
+                    helpers.mention_jid_from_at(At(qq=invalid), resolver),
+                )
 
     def test_official_whatsapp_output_syntax(self) -> None:
         cases = {
@@ -312,6 +452,16 @@ class ConverterTests(unittest.TestCase):
         result = helpers.format_whatsapp_markdown(source)
         self.assertEqual(result, "- *Time:* Today | *Strength:* Typhoon\n\n")
         self.assertNotIn("|---", result)
+
+    def test_heading_does_not_double_wrap_existing_bold(self) -> None:
+        self.assertEqual(
+            helpers.format_whatsapp_markdown("# **Bold** heading"),
+            "*Bold* heading",
+        )
+        self.assertEqual(
+            helpers.format_whatsapp_markdown("**Bold** heading\n---"),
+            "*Bold* heading",
+        )
 
     def test_code_is_never_reformatted(self) -> None:
         cases = [
@@ -365,11 +515,79 @@ class ConverterTests(unittest.TestCase):
             expected,
         )
 
+    def test_complete_weather_log_cleans_tail_inside_outer_parenthesis(self) -> None:
+        source = (
+            "（大家定15号去深圳呀～那小白帮你们看看那天天气怎么样，之前不是说怕下雨嘛！"
+            "☔wttr.in只给到10号，小白换个接口帮你们看看15号的！哎呀～大家，小白帮你们查了"
+            "深圳15号的天气☔\n\n"
+            "*8月15日深圳：⛈️ 雷雨，25.7~27.5°C，降水概率94%！*\n\n"
+            "15、16、17号一连几天都有雷雨耶，温度倒是降下来了没之前那么热。之前你们不是说怕下雨"
+            "跑不了嘛～这个时间点看起来雨不小哦，要不要考虑提前或延后呀？🧐\n\n"
+            "不过雨天的深圳也别有一番风味，记得带伞带雨衣，鞋子穿防滑的！"
+            "小白帮你们把天气预报都存好～~*）"
+        )
+        rendered = helpers.format_whatsapp_markdown(source)
+
+        self.assertIn("25.7~27.5°C", rendered)
+        self.assertTrue(rendered.endswith("存好～）"))
+        self.assertNotIn("~*）", rendered)
+        chunks = helpers.split_whatsapp_text(rendered, 80)
+        self.assertTrue(all(not chunk.startswith("~") for chunk in chunks))
+        self.assertTrue(all(not chunk.endswith("~") for chunk in chunks))
+
+    def test_urls_do_not_consume_confirmed_format_closers(self) -> None:
+        cases = {
+            "**https://example.com/path**": "*https://example.com/path*",
+            "*https://example.com/path*": "_https://example.com/path_",
+            "~~https://example.com/path~~": "~https://example.com/path~",
+            "`https://example.com/path`": "`https://example.com/path`",
+            "**prefix _https://example.com/path_ suffix**": (
+                "*prefix _https://example.com/path_ suffix*"
+            ),
+        }
+        for source, expected in cases.items():
+            with self.subTest(source=source):
+                rendered = helpers.format_whatsapp_markdown(source)
+                self.assertEqual(rendered, expected)
+                chunks = helpers.split_whatsapp_text(rendered, 16)
+                if source != "**prefix _https://example.com/path_ suffix**":
+                    self.assertEqual(chunks, [expected])
+                self.assertTrue(all(helpers.has_visible_whatsapp_content(chunk) for chunk in chunks))
+
+        two_urls = "*https://a.example* plain *https://b.example*"
+        self.assertEqual(
+            helpers.split_whatsapp_text(two_urls, 16),
+            ["*https://a.example*", " plain ", "*https://b.example*"],
+        )
+        nested = "*_https://a.example_*"
+        self.assertEqual(helpers.split_whatsapp_text(nested, 16), [nested])
+
+    def test_unmatched_candidates_are_visible_but_transport_neutral(self) -> None:
+        word_joiner = "\u2060"
+        cases = {
+            "*start": f"*{word_joiner}start",
+            "end*": f"end*{word_joiner}",
+            "_start": f"_{word_joiner}start",
+            "end_": f"end_{word_joiner}",
+        }
+        for source, expected in cases.items():
+            with self.subTest(source=source):
+                self.assertEqual(helpers.format_whatsapp_markdown(source), expected)
+
     def test_unmatched_backtick_in_kaomoji_does_not_swallow_later_markdown(self) -> None:
         source = "被點名啦～(´▽`ʃ♡ƪ) 小白來解釋：\n\n**粥底火鍋**係粥湯底。"
-        expected = "被點名啦～(´▽`ʃ♡ƪ) 小白來解釋：\n\n*粥底火鍋*係粥湯底。"
+        expected = "被點名啦～(´▽`\u2060ʃ♡ƪ) 小白來解釋：\n\n*粥底火鍋*係粥湯底。"
         self.assertEqual(helpers.format_whatsapp_markdown(source), expected)
         self.assertNotIn("```", helpers.format_whatsapp_markdown(source))
+
+    def test_unmatched_backtick_does_not_capture_later_inline_code(self) -> None:
+        source = "face ` then **bold** and `code`"
+        expected = "face `\u2060 then *bold* and `code`"
+        rendered = helpers.format_whatsapp_markdown(source)
+
+        self.assertEqual(rendered, expected)
+        chunks = helpers.split_whatsapp_text(rendered, 16)
+        self.assertTrue(all(chunk.strip("`*_~\u2060 \n\r\t") for chunk in chunks))
 
     def test_split_balances_formatting_and_preserves_graphemes(self) -> None:
         text = "*" + ("A" * 40) + "* 👨‍👩‍👧‍👦"
@@ -378,6 +596,31 @@ class ConverterTests(unittest.TestCase):
         self.assertTrue(all(len(chunk) <= 20 for chunk in chunks))
         self.assertTrue(all(chunk.count("*") % 2 == 0 for chunk in chunks))
         self.assertTrue(any("👨‍👩‍👧‍👦" in chunk for chunk in chunks))
+
+    def test_split_degrades_excessive_nesting_without_exceeding_limit(self) -> None:
+        opening = "*_*_*_*_"
+        text = opening + "abcdefghij" + opening[::-1]
+
+        chunks = helpers.split_whatsapp_text(text, 16)
+
+        self.assertTrue(all(len(chunk) <= 16 for chunk in chunks))
+        visible = "".join(
+            chunk.replace("*", "").replace("_", "") for chunk in chunks
+        )
+        self.assertEqual(visible, "abcdefghij")
+
+    def test_split_keeps_keycaps_and_emoji_tag_flags_atomic(self) -> None:
+        keycap = "1\ufe0f\u20e3"
+        england_flag = (
+            "\U0001f3f4\U000e0067\U000e0062\U000e0065"
+            "\U000e006e\U000e0067\U000e007f"
+        )
+        for grapheme in (keycap, england_flag):
+            with self.subTest(grapheme=repr(grapheme)):
+                chunks = helpers.split_whatsapp_text("x" * 15 + grapheme + "y", 16)
+                self.assertEqual(chunks[0], "x" * 15)
+                self.assertTrue(any(grapheme in chunk for chunk in chunks))
+                self.assertEqual("".join(chunks), "x" * 15 + grapheme + "y")
 
     def test_mentions_are_filtered_per_chunk(self) -> None:
         refs = [
@@ -389,6 +632,13 @@ class ConverterTests(unittest.TestCase):
             return await helpers.mentions_for_text(None, "", "hello @Bob", refs)
 
         self.assertEqual(asyncio.run(run()), ["2@s.whatsapp.net"])
+
+    def test_mention_atomicity_uses_the_same_leading_boundary_as_delivery(self) -> None:
+        text = "x" * 13 + "@Bob tail"
+        self.assertEqual(
+            helpers.split_whatsapp_text(text, 16, atomic_texts=["@Bob"]),
+            helpers.split_whatsapp_text(text, 16),
+        )
 
 
 class ProcessChainTests(unittest.IsolatedAsyncioTestCase):
@@ -435,6 +685,24 @@ class ProcessChainTests(unittest.IsolatedAsyncioTestCase):
         )
         await helpers.flush_pending_text(client, "target", pending, mentions)
         self.assertEqual(client.sent, [("*bold*", [])])
+
+    async def test_nested_public_mentions_use_resolver_and_unknown_ids_stay_text_only(self) -> None:
+        client = self.Client()
+        nested = types.SimpleNamespace(
+            chain=[At(qq="lid-123", name="Alice"), At(qq="abc123")],
+        )
+        pending, mentions = await helpers.process_message_chain(
+            client,
+            "target",
+            [nested],
+            mention_resolver=lambda value: (
+                "123:8@hosted.lid" if value == "lid-123" else None
+            ),
+        )
+        await helpers.flush_pending_text(client, "target", pending, mentions)
+
+        self.assertEqual(client.sent[0][0], "@Alice @abc123 ")
+        self.assertEqual(client.sent[0][1], ["123@hosted.lid"])
 
     async def test_reply_component_is_transport_metadata_not_nested_output(self) -> None:
         client = self.Client()
@@ -561,6 +829,16 @@ class EventQuoteTests(unittest.IsolatedAsyncioTestCase):
     async def test_plain_outgoing_chain_does_not_quote_implicitly(self) -> None:
         await self.event().send(MessageChain([Plain("answer")]))
         self.assertIsNone(self.client.sent[0].get("quoted_message_id"))
+
+    async def test_normal_send_resolves_public_lid_mention(self) -> None:
+        await self.event(
+            mention_resolver=lambda value: (
+                "123:5@hosted.lid" if value == "lid-123" else None
+            ),
+        ).send(MessageChain([At(qq="lid-123", name="Alice")]))
+
+        self.assertEqual(self.client.sent[0]["text"], "@Alice ")
+        self.assertEqual(self.client.sent[0]["mentions"], ["123@hosted.lid"])
 
     async def test_only_reply_segment_quotes_current_source_message(self) -> None:
         event = self.event()
@@ -964,6 +1242,21 @@ class StreamingTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn("1@s.whatsapp.net", mentions)
             if "@Bob" not in text:
                 self.assertNotIn("2@s.whatsapp.net", mentions)
+
+    async def test_streaming_resolves_public_lid_mention(self) -> None:
+        async def chunks():
+            yield MessageChain([At(qq="lid-123", name="Alice")])
+
+        client = self.Client()
+        event = self.event(
+            client,
+            mention_resolver=lambda value: (
+                "123:6@hosted.lid" if value == "lid-123" else None
+            ),
+        )
+        await event._send_streaming_edit(chunks())
+
+        self.assertEqual(client.operations[0], ("send", "@Alice ", ["123@hosted.lid"]))
 
     async def test_reply_is_stream_metadata_and_does_not_reset_text_state(self) -> None:
         async def chunks():

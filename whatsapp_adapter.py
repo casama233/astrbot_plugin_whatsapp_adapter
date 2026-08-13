@@ -177,7 +177,7 @@ _original_convert_message = WhatsAppPlatformAdapter.convert_message
 
 async def _convert_message_with_group_name(self, data):
     message = await _original_convert_message(self, data)
-    message = _apply_group_name(message, data)
+    message = _apply_group_name(message, data, self._project_public_user_id)
     return _apply_album_caption_message(self, message, data)
 
 

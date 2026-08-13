@@ -4,9 +4,21 @@ export function chatMessageKey(chatJid, messageId) {
   return chat && id ? `${chat}:${id}` : null;
 }
 
-export function cacheChatMessage(cache, item, maxSize = 500) {
-  const key = chatMessageKey(item?.key?.remoteJid, item?.key?.id);
+export function chatMessageKeys(chatJid, messageId, identityRegistry = null) {
+  const chat = String(chatJid || "");
+  const id = String(messageId || "");
+  if (!chat || !id) return [];
+  const aliases = typeof identityRegistry?.aliases === "function"
+    ? identityRegistry.aliases(chat)
+    : [chat];
+  return [...new Set(aliases.map((alias) => chatMessageKey(alias, id)).filter(Boolean))];
+}
+
+export function cacheChatMessage(cache, item, maxSize = 500, identityRegistry = null) {
+  const keys = chatMessageKeys(item?.key?.remoteJid, item?.key?.id, identityRegistry);
+  const key = keys[0];
   if (!key || !item?.message) return false;
+  for (const aliasKey of keys) cache.delete(aliasKey);
   cache.set(key, item);
   const limit = Math.max(1, Number(maxSize) || 1);
   while (cache.size > limit) {
@@ -22,13 +34,19 @@ export function cacheChatMessage(cache, item, maxSize = 500) {
  * target the original message key. Preserve any cached metadata while storing
  * the final edited content under that original key.
  */
-export function cacheEditedMessage(cache, originalKey, editedMessage, maxSize = 500) {
+export function cacheEditedMessage(
+  cache,
+  originalKey,
+  editedMessage,
+  maxSize = 500,
+  identityRegistry = null,
+) {
   const chatJid = String(originalKey?.remoteJid || "");
   const messageId = String(originalKey?.id || "");
-  const cacheKey = chatMessageKey(chatJid, messageId);
-  if (!cacheKey || !editedMessage) return false;
+  const cacheKeys = chatMessageKeys(chatJid, messageId, identityRegistry);
+  if (!cacheKeys.length || !editedMessage) return false;
 
-  const current = cache.get(cacheKey);
+  const current = findChatMessage(cache, chatJid, messageId, identityRegistry);
   const item = {
     ...(current || {}),
     key: {
@@ -42,11 +60,14 @@ export function cacheEditedMessage(cache, originalKey, editedMessage, maxSize = 
 
   // Refresh the insertion order so a newly edited message is not immediately
   // evicted merely because its original version was cached a long time ago.
-  cache.delete(cacheKey);
-  return cacheChatMessage(cache, item, maxSize);
+  for (const cacheKey of cacheKeys) cache.delete(cacheKey);
+  return cacheChatMessage(cache, item, maxSize, identityRegistry);
 }
 
-export function findChatMessage(cache, chatJid, messageId) {
-  const key = chatMessageKey(chatJid, messageId);
-  return key ? cache.get(key) : undefined;
+export function findChatMessage(cache, chatJid, messageId, identityRegistry = null) {
+  for (const key of chatMessageKeys(chatJid, messageId, identityRegistry)) {
+    const item = cache.get(key);
+    if (item) return item;
+  }
+  return undefined;
 }
