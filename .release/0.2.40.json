@@ -1,0 +1,12 @@
+{
+  "version": "0.2.40",
+  "previous_version": "0.2.39",
+  "date": "2026-08-13",
+  "commit_subject": "Stabilize identities, mentions, and Markdown rendering",
+  "notes": [
+    "统一 PN、LID、Hosted domain、设备后缀、群组与公开 UMO 投影，持久化首次公开身份并恢复实际投递 JID。",
+    "重构 Markdown 清洗与安全分片，修复链接、代码、未配对控制符、深层格式以及天气回复尾部残留。",
+    "对齐 QQ 的 @ 提及与引用唤醒语义：原生提及显示昵称且不重复 ID，仅引用机器人消息不会单独触发回复。",
+    "加强群成员身份投影、allowlist、跨会话消息缓存、多实例隔离及畸形运输 ID 拒绝逻辑。"
+  ]
+}
