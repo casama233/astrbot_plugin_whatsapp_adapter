@@ -1,260 +1,68 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en-US">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>WhatsApp Adapter — 管理面板</title>
+    <title data-i18n="title">WhatsApp Adapter — Management</title>
     <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
     <div class="bg-orb"></div>
     <main class="shell">
-
-      <!-- Header -->
       <header class="header">
         <div class="header-brand">
-          <span class="brand-icon">
-            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#25D366" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-          </span>
-          <div>
-            <p class="eyebrow">AstrBot WhatsApp Adapter</p>
-            <h1>管理面板</h1>
-          </div>
+          <span class="brand-icon"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#25D366" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></span>
+          <div><p class="eyebrow">AstrBot WhatsApp Adapter</p><h1 data-i18n="heading">Management</h1></div>
         </div>
         <div class="header-meta">
-          <div id="liveDot" class="live-dot"></div>
-          <span id="refreshCountdown" class="countdown">5s</span>
-          <button id="refresh" class="btn-icon" title="立即刷新">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
-          </button>
+          <div id="liveDot" class="live-dot"></div><span id="refreshCountdown" class="countdown">5s</span>
+          <button id="refresh" class="btn-icon" data-i18n-title="refresh_now" title="Refresh now"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg></button>
         </div>
       </header>
 
-      <!-- Health Dashboard -->
       <section class="dashboard">
-        <div class="metric-card" id="metricStatus">
-          <div class="metric-label">连接状态</div>
-          <div class="metric-value-row">
-            <span class="status-dot" id="healthDot"></span>
-            <span class="metric-value" id="metricStatusText">-</span>
-          </div>
-          <div class="metric-sub" id="metricStatusSub">等待连接</div>
-        </div>
-        <div class="metric-card" id="metricGateway">
-          <div class="metric-label">Gateway 健康</div>
-          <div class="metric-value-row">
-            <span class="status-dot status-dot-sm" id="gatewayDot"></span>
-            <span class="metric-value" id="metricGatewayText">-</span>
-          </div>
-          <div class="metric-sub" id="metricGatewaySub">未检测</div>
-        </div>
-        <div class="metric-card" id="metricAccount">
-          <div class="metric-label">账号</div>
-          <div class="metric-value" id="metricAccountText">-</div>
-          <div class="metric-sub" id="metricAccountSub">WhatsApp 账号</div>
-        </div>
-        <div class="metric-card" id="metricUptime">
-          <div class="metric-label">最后活跃</div>
-          <div class="metric-value" id="metricUptimeText">-</div>
-          <div class="metric-sub" id="metricUptimeSub">上次在线状态</div>
-        </div>
+        <div class="metric-card" id="metricStatus"><div class="metric-label" data-i18n="metrics.connection">Connection</div><div class="metric-value-row"><span class="status-dot" id="healthDot"></span><span class="metric-value" id="metricStatusText">-</span></div><div class="metric-sub" id="metricStatusSub" data-i18n="metrics.waiting">Waiting</div></div>
+        <div class="metric-card" id="metricGateway"><div class="metric-label" data-i18n="metrics.gateway_health">Gateway health</div><div class="metric-value-row"><span class="status-dot status-dot-sm" id="gatewayDot"></span><span class="metric-value" id="metricGatewayText">-</span></div><div class="metric-sub" id="metricGatewaySub" data-i18n="metrics.not_checked">Not checked</div></div>
+        <div class="metric-card" id="metricAccount"><div class="metric-label" data-i18n="metrics.account">Account</div><div class="metric-value" id="metricAccountText">-</div><div class="metric-sub" id="metricAccountSub" data-i18n="metrics.whatsapp_account">WhatsApp account</div></div>
+        <div class="metric-card" id="metricUptime"><div class="metric-label" data-i18n="metrics.last_active">Last active</div><div class="metric-value" id="metricUptimeText">-</div><div class="metric-sub" id="metricUptimeSub" data-i18n="metrics.last_presence">Last presence</div></div>
       </section>
 
-      <!-- Main Grid -->
       <section class="grid">
-
-        <!-- QR Card -->
         <article class="card qr-card">
-          <div class="card-head">
-            <h2>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
-              扫码登录
-            </h2>
-            <span id="qrPhase" class="phase-badge">等待</span>
-          </div>
-          <div id="qrWrap" class="qr-wrap">
-            <div class="qr-placeholder">
-              <div class="spinner"></div>
-              <p>正在连接 Gateway...</p>
-            </div>
-          </div>
-          <div class="card-footer">
-            <p id="qrHint" class="hint">打开 WhatsApp 手机端，进入「已连接的设备」扫描二维码。</p>
-            <button id="refreshQr" class="btn btn-ghost" type="button">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
-              刷新二维码
-            </button>
-          </div>
-
+          <div class="card-head"><h2><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg><span data-i18n="qr.title">QR code login</span></h2><span id="qrPhase" class="phase-badge" data-i18n="qr.phase_waiting">Waiting</span></div>
+          <div id="qrWrap" class="qr-wrap"><div class="qr-placeholder"><div class="spinner"></div><p data-i18n="qr.connecting_gateway">Connecting to Gateway…</p></div></div>
+          <div class="card-footer"><p id="qrHint" class="hint" data-i18n="qr.scan_hint">On your phone, open WhatsApp → Linked devices and scan the QR code.</p><button id="refreshQr" class="btn btn-ghost" type="button"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg><span data-i18n="qr.refresh">Refresh QR code</span></button></div>
           <section id="pairCodePanel" class="pair-code-panel" aria-labelledby="pairCodeTitle" hidden>
-            <div class="pair-code-divider"><span>或使用手机号码配对</span></div>
+            <div class="pair-code-divider"><span data-i18n="pairing.divider">Or pair with a phone number</span></div>
             <form id="pairCodeForm" class="pair-code-form" novalidate>
-              <label id="pairCodeTitle" for="pairPhone">国际手机号码</label>
-              <div class="pair-code-controls">
-                <input
-                  id="pairPhone"
-                  class="pair-code-input"
-                  type="tel"
-                  inputmode="tel"
-                  autocomplete="off"
-                  autocapitalize="none"
-                  spellcheck="false"
-                  maxlength="24"
-                  placeholder="例如 +852 9123 4567"
-                  aria-describedby="pairCodeHelp pairCodeStatus"
-                  required
-                />
-                <button id="requestPairCode" class="btn btn-success" type="submit">获取配对码</button>
-              </div>
-              <p id="pairCodeHelp" class="hint">
-                请输入含国家或地区代码的号码；仅用于本次配对请求，不会在此页面保存。
-              </p>
-              <p id="pairCodeStatus" class="pair-code-status" role="status" aria-live="polite"></p>
+              <label id="pairCodeTitle" for="pairPhone" data-i18n="pairing.phone_label">International phone number</label>
+              <div class="pair-code-controls"><input id="pairPhone" class="pair-code-input" type="tel" inputmode="tel" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="24" data-i18n-placeholder="pairing.phone_placeholder" placeholder="For example +852 9123 4567" aria-describedby="pairCodeHelp pairCodeStatus" required /><button id="requestPairCode" class="btn btn-success" type="submit" data-i18n="pairing.request">Get pairing code</button></div>
+              <p id="pairCodeHelp" class="hint" data-i18n="pairing.help">Include the country or region code. The number is used only for this pairing request and is not stored by this page.</p><p id="pairCodeStatus" class="pair-code-status" role="status" aria-live="polite"></p>
             </form>
-
-            <div id="pairCodeResult" class="pair-code-result" role="region" aria-labelledby="pairCodeResultTitle" hidden>
-              <p id="pairCodeResultTitle" class="pair-code-result-title">在 WhatsApp 手机端输入此配对码</p>
-              <div class="pair-code-value-row">
-                <output id="pairCodeValue" class="pair-code-value mono" tabindex="-1"></output>
-                <button id="copyPairCode" class="btn btn-ghost btn-xs" type="button" aria-label="复制 WhatsApp 配对码">
-                  复制
-                </button>
-              </div>
-              <p class="pair-code-expiry hint">
-                配对码会在短时间内失效；失效后可在冷却结束时重新获取。重置会话、重启连接或登出时，本页面会立即清除显示。
-              </p>
-            </div>
+            <div id="pairCodeResult" class="pair-code-result" role="region" aria-labelledby="pairCodeResultTitle" hidden><p id="pairCodeResultTitle" class="pair-code-result-title" data-i18n="pairing.result_title">Enter this pairing code on your phone</p><div class="pair-code-value-row"><output id="pairCodeValue" class="pair-code-value mono" tabindex="-1"></output><button id="copyPairCode" class="btn btn-ghost btn-xs" type="button" data-i18n-aria-label="pairing.copy_aria" aria-label="Copy WhatsApp pairing code"><span data-i18n="pairing.copy">Copy</span></button></div><p class="pair-code-expiry hint" data-i18n="pairing.expiry">Pairing codes expire quickly. You can request another after the cooldown. This page clears the code on session reset, restart, or logout.</p></div>
           </section>
         </article>
 
-        <!-- Session & Config Card -->
         <article class="card">
-          <h2>
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/><line x1="21.17" y1="8" x2="12" y2="8"/><line x1="3.95" y1="6.06" x2="8.54" y2="14"/><line x1="10.88" y1="21.94" x2="15.46" y2="14"/></svg>
-            会话信息
-          </h2>
+          <h2><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/><line x1="21.17" y1="8" x2="12" y2="8"/><line x1="3.95" y1="6.06" x2="8.54" y2="14"/><line x1="10.88" y1="21.94" x2="15.46" y2="14"/></svg><span data-i18n="session.title">Session</span></h2>
           <dl class="info-list">
-            <div class="info-row">
-              <dt>连接状态</dt>
-              <dd><span class="status-tag" id="statusText">-</span></dd>
-            </div>
-            <div class="info-row">
-              <dt>账号 JID</dt>
-              <dd class="mono" id="selfJid">-</dd>
-            </div>
-            <div class="info-row">
-              <dt>LID</dt>
-              <dd class="mono" id="selfLid">-</dd>
-            </div>
-            <div class="info-row">
-              <dt>认证目录</dt>
-              <dd class="mono" id="authDir">-</dd>
-            </div>
-            <div class="info-row">
-              <dt>Gateway</dt>
-              <dd class="mono" id="gatewayUrl">-</dd>
-            </div>
-            <div class="info-row">
-              <dt>运行环境</dt>
-              <dd id="runtimeStatus">检测中…</dd>
-            </div>
-            <div class="info-row">
-              <dt>已配置</dt>
-              <dd id="configuredStatus">-</dd>
-            </div>
+            <div class="info-row"><dt data-i18n="session.connection">Connection</dt><dd><span class="status-tag" id="statusText">-</span></dd></div>
+            <div class="info-row"><dt data-i18n="session.account_jid">Account JID</dt><dd class="mono" id="selfJid">-</dd></div>
+            <div class="info-row"><dt>LID</dt><dd class="mono" id="selfLid">-</dd></div>
+            <div class="info-row"><dt data-i18n="session.auth_dir">Auth directory</dt><dd class="mono" id="authDir">-</dd></div>
+            <div class="info-row"><dt>Gateway</dt><dd class="mono" id="gatewayUrl">-</dd></div>
+            <div class="info-row"><dt data-i18n="session.runtime">Runtime</dt><dd id="runtimeStatus" data-i18n="session.checking">Checking…</dd></div>
+            <div class="info-row"><dt data-i18n="session.configured">Configured</dt><dd id="configuredStatus">-</dd></div>
           </dl>
-
-          <div class="section-divider"></div>
-
-          <h3 style="margin-bottom:0.75rem">访问策略</h3>
-          <dl class="info-list">
-            <div class="info-row">
-              <dt>私聊策略</dt>
-              <dd id="policyDm">-</dd>
-            </div>
-            <div class="info-row">
-              <dt>群聊策略</dt>
-              <dd id="policyGroup">-</dd>
-            </div>
-            <div class="info-row">
-              <dt>allow_from</dt>
-              <dd id="policyAllowFrom">-</dd>
-            </div>
-            <div class="info-row">
-              <dt>允许群组</dt>
-              <dd id="policyGroups">-</dd>
-            </div>
-          </dl>
-
-          <div class="actions">
-            <button id="restart" class="btn btn-warning" type="button">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
-              重启连接
-            </button>
-            <button id="logout" class="btn btn-danger" type="button">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 0-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
-              登出并重新扫码
-            </button>
-          </div>
+          <div class="section-divider"></div><h3 style="margin-bottom:0.75rem" data-i18n="policy.title">Access policy</h3>
+          <dl class="info-list"><div class="info-row"><dt data-i18n="policy.dm">DM policy</dt><dd id="policyDm">-</dd></div><div class="info-row"><dt data-i18n="policy.group">Group policy</dt><dd id="policyGroup">-</dd></div><div class="info-row"><dt>allow_from</dt><dd id="policyAllowFrom">-</dd></div><div class="info-row"><dt data-i18n="policy.groups">Allowed groups</dt><dd id="policyGroups">-</dd></div></dl>
+          <div class="actions"><button id="restart" class="btn btn-warning" type="button"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg><span data-i18n="actions.restart">Restart connection</span></button><button id="logout" class="btn btn-danger" type="button"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 0-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg><span data-i18n="actions.logout">Log out and scan again</span></button></div>
         </article>
-
       </section>
 
-      <!-- Independent updater -->
-      <section class="card update-card" aria-labelledby="updateTitle">
-        <div class="update-main">
-          <div class="card-head update-head">
-            <h2 id="updateTitle">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><polyline points="7 10 12 15 17 10"/><path d="M5 21h14"/></svg>
-              插件更新
-            </h2>
-            <span id="updatePhase" class="phase-badge">未检查</span>
-          </div>
-          <div class="update-versions">
-            <div>
-              <span class="update-label">当前版本</span>
-              <strong id="currentVersion" class="mono">-</strong>
-            </div>
-            <span class="update-arrow" aria-hidden="true">→</span>
-            <div>
-              <span class="update-label">GitHub 最新版</span>
-              <strong id="latestVersion" class="mono">-</strong>
-            </div>
-          </div>
-          <p id="updateMessage" class="hint update-message">
-            直接检查本项目 GitHub Release，不依赖官方插件市场缓存。
-          </p>
-          <details id="releaseNotesWrap" class="release-notes" hidden>
-            <summary>查看更新说明</summary>
-            <pre id="releaseNotes"></pre>
-          </details>
-        </div>
-        <div class="update-actions">
-          <button id="checkUpdate" class="btn btn-ghost" type="button">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
-            检查更新
-          </button>
-          <button id="installUpdate" class="btn btn-success" type="button" disabled>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><polyline points="7 10 12 15 17 10"/><path d="M5 21h14"/></svg>
-            立即更新
-          </button>
-        </div>
-      </section>
+      <section class="card update-card" aria-labelledby="updateTitle"><div class="update-main"><div class="card-head update-head"><h2 id="updateTitle"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><polyline points="7 10 12 15 17 10"/><path d="M5 21h14"/></svg><span data-i18n="update.title">Plugin update</span></h2><span id="updatePhase" class="phase-badge" data-i18n="update.phase.idle">Not checked</span></div><div class="update-versions"><div><span class="update-label" data-i18n="update.current_version">Current version</span><strong id="currentVersion" class="mono">-</strong></div><span class="update-arrow" aria-hidden="true">→</span><div><span class="update-label" data-i18n="update.latest_version">Latest on GitHub</span><strong id="latestVersion" class="mono">-</strong></div></div><p id="updateMessage" class="hint update-message" data-i18n="update.source_message">Checks this repository's GitHub Releases directly, without relying on plugin-market cache.</p><details id="releaseNotesWrap" class="release-notes" hidden><summary data-i18n="update.release_notes">View release notes</summary><pre id="releaseNotes"></pre></details></div><div class="update-actions"><button id="checkUpdate" class="btn btn-ghost" type="button"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg><span data-i18n="update.check">Check for updates</span></button><button id="installUpdate" class="btn btn-success" type="button" disabled><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><polyline points="7 10 12 15 17 10"/><path d="M5 21h14"/></svg><span data-i18n="update.install">Update now</span></button></div></section>
 
-      <!-- Event Log -->
-      <section class="log-section">
-        <div class="log-header">
-          <h2>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
-            事件日志
-          </h2>
-          <button id="clearLog" class="btn btn-ghost btn-xs" type="button">清空</button>
-        </div>
-        <div id="eventLog" class="event-log">
-          <div class="log-empty">等待事件...</div>
-        </div>
-      </section>
-
+      <section class="log-section"><div class="log-header"><h2><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg><span data-i18n="event_log.title">Event log</span></h2><button id="clearLog" class="btn btn-ghost btn-xs" type="button" data-i18n="event_log.clear">Clear</button></div><div id="eventLog" class="event-log"><div class="log-empty" data-i18n="event_log.waiting">Waiting for events…</div></div></section>
     </main>
     <script src="./sandbox-confirm.js"></script>
     <script type="module" src="./app.js"></script>

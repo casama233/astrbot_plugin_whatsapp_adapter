@@ -1,388 +1,189 @@
+<div align="center">
+
+<img src="./logo.png" alt="AstrBot WhatsApp Adapter" width="168" />
+
 # AstrBot WhatsApp Adapter
 
-基于 WhatsApp Web/Baileys 的 AstrBot 消息平台适配器。采用本地 Gateway 架构：Python 插件负责平台适配、事件转换和 WebUI 管理页，Node.js Gateway 负责 WhatsApp Web 连接、二维码／手机号配对登录、重连、媒体下载和消息投递。
+**让 AstrBot 通过本地 Gateway 接入 WhatsApp Web / Baileys**<br>
+扫码登录 · 私聊/群聊 · 富媒体 · 流式回复 · 多账号 · 管理页面
 
-支持**流式输出**（streaming）、**交互式按钮/列表/投票**、**预回应表情**、**打字指示**、**Markdown 格式互转**和**相册去抖**；指令与唤醒前缀直接沿用 AstrBot Core。
+**简体中文** · [繁體中文](README.zh-TW.md) · [English](README.en.md)
 
-## 功能特性
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/casama233/astrbot_plugin_whatsapp_adapter?label=version&color=ff69b4)](https://github.com/casama233/astrbot_plugin_whatsapp_adapter/releases)
+[![AstrBot](https://img.shields.io/badge/AstrBot-4.24.2%2B-orange.svg)](https://github.com/AstrBotDevs/AstrBot)
+[![Node.js](https://img.shields.io/badge/Node.js-20%2B-brightgreen.svg)](https://nodejs.org/)
+[![Python CI](https://img.shields.io/badge/Python_CI-3.11-blue.svg)](https://github.com/casama233/astrbot_plugin_whatsapp_adapter/actions/workflows/tests.yml)
+[![Tests](https://github.com/casama233/astrbot_plugin_whatsapp_adapter/actions/workflows/tests.yml/badge.svg)](https://github.com/casama233/astrbot_plugin_whatsapp_adapter/actions/workflows/tests.yml)
+[![GitHub Stars](https://img.shields.io/github/stars/casama233/astrbot_plugin_whatsapp_adapter?style=flat&logo=github)](https://github.com/casama233/astrbot_plugin_whatsapp_adapter/stargazers)
+![动态访问量](https://count.kjchmc.cn/get/@astrbot_plugin_whatsapp_adapter?theme=gelbooru)
 
-- 插件管理页内扫码或使用手机号配对码登录 WhatsApp Web
-- 私聊 & 群聊消息接入
-- 私聊访问控制：`allowlist` / `open` / `disabled`
-- 群聊访问控制：群 JID allowlist + 群成员 sender allowlist
-- 入站文本、图片、音频、视频、文档、贴纸、位置、联系人、按钮回应、列表回应、投票、活动
-- 出站文本（自动 Markdown ➜ WhatsApp 格式转换，长文本分片）、图片、音频、视频、文档、贴纸
-- 出站交互组件：`WhatsAppButtons`、`WhatsAppList`、`WhatsAppPoll`、`WhatsAppEdit`（消息编辑）
-- 当前会话专用的 AI 原生工具：投票、联系人名片、活动；工具不能指定其他收件人
-- **流式输出**（streaming）：首次回复作为新消息发送，后续更新通过编辑同一消息逐步追加（带节流）
-- **预回应表情**（pre-ack）：被 @ 或回复时先发一个 emoji 反应，降低 LLM 响应延迟感知
-- **打字指示**：回复期间显示 `composing`，发送完成后停止输入，并按在线状态开关恢复在线或离线
-- **媒体说明文字模式**：`separate`（分开发送）或 `caption`（作为媒体描述）
-- **相册去抖**：短时间内的连拍多图合并为一条消息
-- **Markdown 格式互转**：入站 WhatsApp `*粗体*` `_斜体_` `~删除线~` ```代码``` 自动转 Markdown
-- **链接预览控制**：仅单 URL 消息启用预览卡片
-- **已读回执 & 在线状态**
-- **入站表情回应事件**（可选）：将用户 emoji reaction 转为 AstrBot 事件
-- **稳定 UMO 身份**：PN 使用 QQ 风格数字 ID，暂时无法证明 PN 的 LID 使用独立 `lid-N` 命名空间，首次公开后不漂移
-- **健康检查 & 自动重连**
-- **热重载**：修改配置无需重启 AstrBot
-- Gateway 默认绑定 `127.0.0.1`，适合本地优先部署
+</div>
 
-## 插件结构
+> [!IMPORTANT]
+> 本项目基于 **WhatsApp Web 非官方协议栈 / Baileys**，不是 Meta 官方 WhatsApp Business Cloud API。WhatsApp Web 协议变化可能造成临时兼容问题；生产使用前请自行评估账号、稳定性与业务风险。
 
-```
-astrbot_plugin_whatsapp_adapter/
-├── main.py                      # 插件入口（Star 子类），注册 Web API 与公告板适配器
-├── plugin_updater.py            # Release-pinned Updater v2 验证／事务辅助
-├── whatsapp_adapter.py          # 平台适配器（Platform 子类），核心消息收发逻辑
-├── whatsapp_client.py           # Gateway HTTP 客户端 + 子进程管理
-├── whatsapp_event.py            # 消息事件（AstrMessageEvent 子类），流式输出
-├── whatsapp_ai_tools.py         # 当前会话原生投票／联系人／活动工具
-├── whatsapp_identity.py         # PN／LID／Hosted／多账号身份归一化
-├── whatsapp_components.py       # 自定义 WhatsApp 消息组件
-├── whatsapp_helpers.py          # 共享工具函数
-├── metadata.yaml                # 插件元数据
-├── _conf_schema.json            # WebUI 插件配置 Schema
-├── requirements.txt             # Python 依赖
-├── package.json                 # Node.js Gateway 依赖
-├── .astrbot-plugin/i18n/       # WebUI 国际化
-│   ├── en-US.json
-│   └── zh-CN.json
-├── pages/whatsapp-login/       # 插件管理页（扫码登录 UI）
-│   ├── index.html
-│   ├── app.js
-│   ├── two-step-action.js      # 无 modal 的两击确认状态机
-│   └── style.css
-├── gateway/
-│   └── whatsapp-gateway.mjs    # Node.js WhatsApp Web Gateway（Baileys）
-└── docs/
-    └── zh-CN.md                 # 中文文档
-```
+## ✨ 为什么用这个适配器？
 
-## 环境要求
+| 能力 | 说明 |
+| --- | --- |
+| 🔐 **扫码 / 手机号配对** | 在 AstrBot Plugin Page 中完成默认账号登录，也支持手机号配对码 |
+| 💬 **私聊与群聊** | 独立 allowlist / open / disabled 策略，支持成员级访问控制 |
+| 🖼️ **富媒体消息** | 图片、音频、视频、文档、贴纸、位置、联系人、按钮、列表、投票等 |
+| ⚡ **流式回复** | 首条消息发送后持续编辑；WhatsApp 不允许继续编辑时自动安全降级 |
+| 🧩 **引用 / @ / 身份兼容** | 处理 Reply、Mention、PN / LID 与群成员身份映射 |
+| 🆔 **稳定公开 UMO** | PN 使用数字 ID，未解析 LID 使用 `lid-N`；运输层 JID 不写入公开 session ID |
+| 🧠 **唤醒语义对齐 AstrBot** | 群聊仅引用机器人消息不会触发；真实 @、@全体、命令等才构成唤醒 |
+| 🖼️ **连续图片合并** | 私聊短时间连续图片可合并为一次 AstrBot 事件，并尽量保留 caption、提及与顺序 |
+| 👥 **多实例 / 多账号** | 内置 Gateway 自动隔离端口和认证目录，避免账号 session 串用 |
+| 🌐 **代理支持** | 支持 `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` |
+| 🔄 **Updater v2** | 锁定 Release candidate、校验 artifact digest、持久事务、健康检查与失败回滚 |
+| 🌍 **三语言 UI** | `zh-CN` / `zh-TW` / `en-US`，登录管理页支持运行时切换语言 |
 
-- AstrBot `>=4.24.2,<5`（使用新版插件 Pages 与 Cloud 元数据）
-- Python 依赖：`aiohttp>=3.9.0`
-- Node.js 20+，推荐 Node.js 22 LTS
-- 可以访问 WhatsApp Web 的网络环境
+> [!NOTE]
+> 当前 WhatsApp Login Page 主要管理**默认 / 基准 Gateway 实例**。secondary 内置实例的二维码目前主要通过 AstrBot / Gateway 日志获取。
 
-## 安装
+## 🚀 快速开始
+
+### 1. 安装插件
+
+优先使用 AstrBot 插件市场 / Cloud 安装。宿主环境需要提供 **Node.js 20+** 与 npm。
+
+<details>
+<summary><strong>手工安装</strong></summary>
 
 ```bash
 cd AstrBot/data/plugins
 git clone https://github.com/casama233/astrbot_plugin_whatsapp_adapter.git
 cd astrbot_plugin_whatsapp_adapter
-npm install --omit=dev
 pip install -r requirements.txt
+npm install --omit=dev
 ```
 
-从 AstrBot Cloud 安装时，Python 依赖由 AstrBot 处理；内置 Gateway 会在首次启动时自动安装 Node 生产依赖。无论采用哪种安装方式，都必须预先安装 Node.js 20+ 与 npm。登录管理页的「运行环境」会在启动 Gateway 前给出明确检查结果。
+完成后重启 AstrBot 或在 WebUI 重载插件。
 
-重启 AstrBot 或在 WebUI 重载插件。
+</details>
 
-## 快速开始
+### 2. 新增 WhatsApp 平台实例
 
-1. 在 AstrBot WebUI 启用插件
-2. 添加 `whatsapp` 平台适配器
-3. 保持 `auto_start_gateway=true`
-4. 在 WhatsApp 平台实例中填写 `allow_from`、`dm_policy` 等账号访问控制项
-5. 打开 `WhatsApp 登录` / `whatsapp-login` Page
-6. 使用 WhatsApp 手机端「已连接的设备」扫描二维码；也可在管理页输入含地区代码的手机号，再在手机端选择「使用手机号连接设备」并输入配对码
-7. 连接成功后启用平台实例
+首次测试建议：
 
-## 配置说明
-
-配置按职责分为三层：
-
-1. **固定行为**：WhatsApp/Gateway 的文字与媒体大小限制由代码和协议决定；指令唤醒完全使用 AstrBot 的 `wake_prefix` 与 `CommandFilter`，本插件不再重复配置。
-2. **插件全局默认**：Gateway 默认连接参数，以及所有 WhatsApp 实例共用的 `default_*` 消息行为。
-3. **平台实例配置**：某个 WhatsApp 账号独有的访问控制、媒体 caption、忽略自身消息、reaction 与消失消息行为。
-
-运行时优先级为：**内置默认 < 插件全局默认 < 平台实例显式配置**。
-
-### Gateway 连接
-
-这些字段只在插件配置页设置，登录管理页与所有 WhatsApp 平台实例共用同一组 Gateway 连接：
-
-| 键 | 类型 | 默认值 | 说明 |
-|---|---|---|---|
-| `gateway_host` | string | `127.0.0.1` | Gateway HTTP 绑定地址 |
-| `gateway_port` | int | `18789` | Gateway HTTP/SSE 端口 |
-| `auto_start_gateway` | bool | `true` | 自动启动内置 Node.js Gateway |
-| `node_executable` | string | `node` | Node.js 可执行文件路径 |
-| `auth_dir` | string | `""` | WhatsApp 登录态目录，留空自动选择插件数据目录 |
-| `log_level` | string | `info` | Gateway 日志级别 |
-
-### 网络代理
-
-无法直连 WhatsApp Web 时，可在 AstrBot／容器环境设置 `HTTPS_PROXY`（优先）或
-`HTTP_PROXY`，小写的 `https_proxy`／`http_proxy` 也受支持。`NO_PROXY`／
-`no_proxy` 支持 `*`、域名、域后缀和可选端口；WebSocket 与媒体请求会分别判断
-是否绕过代理。仅支持 `http://` 或 `https://` 代理 URL，Gateway 日志不会输出
-用户名、密码、路径或查询参数。
-
-```bash
-HTTPS_PROXY=http://host.docker.internal:7897
-NO_PROXY=localhost,127.0.0.1
-```
-
-### 插件全局消息默认
-
-| 键 | 默认值 | 说明 |
-|---|---|---|
-| `default_link_preview_single_url` | `true` | 纯文字仅包含一个 URL 时生成链接预览 |
-| `default_typing_indicator` | `true` | 回复期间发送 composing 状态 |
-| `default_send_read_receipts` | `true` | 对已接受消息发送已读回执 |
-| `default_mark_online` | `false` | 开启时维持在线；关闭时仅在回复期间短暂在线并刷新最后在线时间 |
-| `default_parse_inbound_formatting` | `true` | 将 WhatsApp 原生格式转为 Markdown |
-| `default_media_album_debounce_seconds` | `2.5` | 连续图片合并为相簿的等待时间；`0` 关闭 |
-| `default_streaming_edit_throttle` | `1.0` | 流式消息编辑的最小间隔（秒） |
-
-### 平台实例配置
-
-| 键 | 默认值 | 说明 |
-|---|---|---|
-| `dm_policy` | `allowlist` | 私聊策略：`allowlist` / `open` / `disabled` |
-| `allow_from` | `[]` | 私聊允许名单；`["*"]` 表示全部允许 |
-| `group_policy` | `disabled` | 群聊策略：`allowlist` / `open` / `disabled` |
-| `groups` | `[]` | 允许的群 JID；`["*"]` 表示全部允许 |
-| `group_allow_from` | `[]` | 群内允许的发送者，留空回退到 `allow_from` |
-| `media_caption_mode` | `separate` | `separate` 分开发送；`caption` 将紧邻媒体前的文字作为描述 |
-| `ignore_self_messages` | `false` | 忽略机器人账号自身发送的消息 |
-| `pre_ack_emoji` | `true` | 启用预回应 reaction |
-| `pre_ack_emojis` | `👀` | 预回应表情 |
-| `pre_ack_private` | `true` | 私聊触发预回应 |
-| `pre_ack_public` | `mentions` | 群聊：`always` / `mentions` / `never` |
-| `pre_ack_done_emoji` | `✅` | 回复完成时使用的 reaction |
-| `apply_ephemeral` | `false` | 外寄消息是否套用聊天室消失消息计时器 |
-
-`caption` 只影响普通富媒体 MessageChain；流式回复中途出现媒体时仍会先完成文字，再独立发送媒体。
-
-### 固定限制与 AstrBot 通用行为
-
-- 出站文字切片、图片/视频/音频/文档大小限制为内部常量，不接受插件或平台配置覆盖。
-- 指令前缀、指令启用状态和命令匹配由 AstrBot Core 的 `wake_prefix`、CommandFilter 和插件启用状态统一处理。旧版非 `/` 的 WhatsApp 专用前缀会兼容一个版本并输出迁移提示。
-- Gateway 健康检查间隔保持内部安全默认值。
-
-### UMO 与公开 ID 规范
-
-WhatsApp 的 PN、LID、Hosted domain、设备后缀和群 `@g.us` 都属于运输层，保留在
-`raw_message` 与事件的 `target_jid` 中，不直接写入 AstrBot 的 UMO。适配器沿用 QQ
-适配器的会话结构，并使用不会发生 PN/LID 碰撞的公开 ID：
-
-| 场景 | `session_id` | UMO 示例 |
-|---|---|---|
-| 私聊 | 对方稳定用户 ID | `实例ID:FriendMessage:用户ID` |
-| 群聊，会话隔离关闭 | 稳定群 ID | `实例ID:GroupMessage:群ID` |
-| 群聊，会话隔离开启 | `用户ID_群ID` | `实例ID:GroupMessage:用户ID_群ID` |
-
-已确认的 PN 投影为纯数字；无法确认 PN 的 LID 投影为 `lid-数字`。哪个公开 ID
-先进入 AstrBot，映射补齐后仍保持不变，因此不会把同一会话从 `lid-N` 静默迁移
-到另一个数字 ID。群 ID 保留 WhatsApp 的规范 local part，兼容现代纯数字格式和
-旧式 `数字-数字` 格式。`sender.user_id`、`self_id`、`group_id`、群成员/管理员以及
-常用 OneBot 投影字段都使用同一套规则。
-
-主动发送仍兼容 `@lid`、`@s.whatsapp.net`、Hosted domain、`@g.us` 和
-`用户ID_群JID` session。正常刷新、重启与 Hosted/标准域切换不会改写已落盘的
-公开投影；若同一账户曾在缺少映射时以 PN 和 LID 两个身份分别出现，首次取得明确
-PN↔LID 映射时会按最早公开的投影合并一次。
-多个 WhatsApp 账号依靠 UMO 的“平台实例 ID”部分隔离，不能共用相同实例 ID。
-
-## 自定义消息组件
-
-插件提供 6 个 WhatsApp 专用组件，可在 `MessageChain` 中使用：
-
-```python
-from whatsapp_components import WhatsAppButtons, WhatsAppButton, WhatsAppList, WhatsAppListRow, WhatsAppListSection, WhatsAppPoll, WhatsAppEdit
-
-# 按钮消息（最多 3 个按钮）
-WhatsAppButtons(
-    body="选择操作：",
-    buttons=[WhatsAppButton(text="确认", id="confirm"), WhatsAppButton(text="取消", id="cancel")],
-    footer="Powered by AstrBot",
-)
-
-# 列表消息
-WhatsAppList(
-    title="菜单",
-    description="请选择一个选项",
-    button_text="查看选项",
-    sections=[WhatsAppListSection(title="分组A", rows=[WhatsAppListRow(title="选项1", id="opt1")])],
-    footer="底部文字",
-)
-
-# 投票
-WhatsAppPoll(name="你喜欢的颜色？", options=["红", "蓝", "绿"], selectable_count=1)
-
-# 编辑已发送消息
-WhatsAppEdit(message_id="xxx", text="新的内容")
-```
-
-## AI 原生工具
-
-插件向 AstrBot 注册三个 LLM 工具，模型可在当前 WhatsApp 对话直接调用：
-
-- `whatsapp_create_poll`：发送 2–12 个选项的原生投票
-- `whatsapp_share_contact`：分享经过格式验证的联系人名片
-- `whatsapp_create_event`：建立含明确时区、地点和结束时间的原生活动
-
-这些工具没有目标 JID 参数，并会同时核对事件平台、当前 `target_jid` 与入站
-`chatJid`，因此不能由模型改发到其他会话。输入会在 Python 与 Gateway 两层验证；
-传输未成功时不会记录为已发送，也不会错误更新完成 reaction。
-
-## 流式输出
-
-适配器注册时声明了 `support_streaming_message=True`。当 AstrBot 调用 `send_streaming` 时：
-
-1. 首条文本通过 `POST /send/text` 发送为普通消息
-2. 后续增量通过 `POST /edit/text` 编辑同一条消息，0.8s 节流
-3. 遇到媒体组件（图片/按钮等）时先 flush 文字，再单独发送媒体
-4. 如果编辑失败（WhatsApp 限制消息编辑有时效），自动降级为发送新消息
-5. 支持 `type="break"` 的 MessageChain 分段
-
-## 推荐配置
-
-专用号码，仅私聊（Gateway 地址和端口在插件配置页设置）：
 ```json
 {
-  "allow_from": ["+15551234567"],
   "dm_policy": "allowlist",
+  "allow_from": ["+85212345678"],
   "group_policy": "disabled"
 }
 ```
 
-允许指定群聊：
-```json
-{
-  "allow_from": ["+15551234567"],
-  "dm_policy": "allowlist",
-  "group_policy": "allowlist",
-  "group_allow_from": ["+15551234567"],
-  "groups": ["120363000000000000@g.us"]
-}
+> [!TIP]
+> 第一次上线先只放行自己的测试号码。确认登录、回复、媒体和流式输出正常后，再逐步开放群聊或更多号码。
+
+### 3. 登录 WhatsApp
+
+1. 保持插件级 `auto_start_gateway=true`。
+2. 打开插件详情中的 **WhatsApp Login / WhatsApp 登录** Page。
+3. 使用手机 WhatsApp → **已连接的设备 / Linked devices** 扫描二维码；也可以申请手机号配对码。
+4. 页面显示 Connected / 已连接后，启用平台实例并发送测试消息。
+
+## 🧱 架构
+
+```text
+AstrBot
+  │ Python Platform Adapter / HTTP + SSE
+  ▼
+Local WhatsApp Gateway (Node.js)
+  │ Baileys / WhatsApp Web
+  ▼
+WhatsApp
 ```
 
-开放所有私聊（谨慎）：
-```json
-{
-  "dm_policy": "open",
-  "allow_from": ["*"]
-}
+默认 Gateway 监听 `127.0.0.1:18789`。
+
+> [!WARNING]
+> 不要把 Gateway HTTP/SSE 端口直接暴露到公网。`whatsapp-auth/` 包含 WhatsApp Web 登录凭证，也不要提交到 Git、上传到 Issue 或分享给他人。
+
+## ⚙️ 配置模型
+
+| 范围 | 典型字段 | 作用 |
+| --- | --- | --- |
+| 插件级 Gateway | `gateway_host`、`gateway_port`、`auto_start_gateway`、`auth_dir` | Gateway 连接、进程与基础认证目录 |
+| 插件级消息默认值 | `default_typing_indicator`、`default_streaming_edit_throttle` 等 | 所有 WhatsApp 实例共享的默认行为 |
+| 平台实例 | `dm_policy`、`groups`、`pre_ack_*`、`apply_ephemeral` | 单账号访问控制与消息行为 |
+
+> [!IMPORTANT]
+> `default_streaming_edit_throttle` 当前默认值是 **1.0 秒**。标准 WebUI 只有一组插件级 external Gateway endpoint；多个 external Gateway 账号建议拆分 AstrBot 进程 / 容器。
+
+完整字段见 [配置参考](docs/configuration.md)。
+
+## 🆔 UMO 与群聊唤醒
+
+WhatsApp 的 PN、LID、Hosted、设备 JID 与 `@g.us` 属于运输层身份，仍保留在 `raw_message` / `target_jid`。公开 ID 使用稳定投影：
+
+| 场景 | `session_id` |
+| --- | --- |
+| 私聊 | 已确认 PN 为数字 ID；未解析 LID 为 `lid-N` |
+| 群聊（会话隔离关闭） | 群 JID local part（数字或旧式 `数字-数字`） |
+| 群聊（会话隔离开启） | `用户ID_群ID` |
+
+公开投影以首次曝光为准持久化，后续补齐 PN/LID 映射不会让 UMO 漂移；若同一联系人曾分裂为两个投影，确认映射后只按最早投影合并一次。旧 PN / LID / 群 JID session 仍可用于主动发送兼容。
+
+> [!NOTE]
+> Reply 引用内容、昵称、message ID 会完整保留给其它插件读取，但**引用机器人消息本身不再被当作 @机器人**。群聊只有真实 @机器人、@全体、命令或 AstrBot 其它正常唤醒条件才会触发回复；pre-ack reaction 也不会反向改变唤醒状态。
+
+## 🌍 多语言与文档
+
+| 语言 | README | 使用指南 |
+| --- | --- | --- |
+| 简体中文 | **当前文档** | [docs/zh-CN.md](docs/zh-CN.md) |
+| 繁體中文 | [README.zh-TW.md](README.zh-TW.md) | [docs/zh-TW.md](docs/zh-TW.md) |
+| English | [README.en.md](README.en.md) | [docs/en/index.md](docs/en/index.md) |
+
+### 专题文档
+
+| 文档 | 内容 |
+| --- | --- |
+| [配置参考](docs/configuration.md) | 配置作用域、默认值、代理变量与迁移 |
+| [消息与流式行为](docs/messaging.md) | 入站/出站、UMO、唤醒、相簿、Reply、reaction、streaming |
+| [多实例 / 多账号](docs/multi-instance.md) | 端口、认证目录、实例隔离、external Gateway 限制 |
+| [故障排查](docs/troubleshooting.md) | 登录、群聊、代理、媒体、更新问题 |
+| [安全与隐私](docs/security.md) | Gateway 暴露、凭证、媒体、LLM 与 updater 信任边界 |
+| [开发指南](docs/development.md) | 代码结构、测试、Plugin Page i18n 与兼容层 |
+| [贡献指南](CONTRIBUTING.md) | Issue / PR 与 i18n 维护约定 |
+| [发布流程](RELEASING.md) | 版本 marker、CI、Release artifact 与恢复流程 |
+| [变更记录](CHANGELOG.md) | 历史版本功能与修复 |
+
+## ⚡ 消息行为重点
+
+- **Streaming**：默认每 `1.0s` 最多编辑一次；编辑失败时不会盲目重复整段回复。
+- **Reaction**：机器人可发送 pre-ack / done reaction；纯 reaction 入站消息当前会被忽略。
+- **Reply**：引用元数据会保留，但 Reply 本身不等于群聊唤醒。
+- **连续图片**：私聊短时间 burst 可合并；文字、回复、非图片消息会切断合并窗口以保持顺序。
+- **并发回复**：每个事件维护独立流状态，typing presence 会协调，避免互相提前停止。
+
+更多细节见 [消息与流式行为](docs/messaging.md)。
+
+## 🔄 Updater v2
+
+管理页可以直接检查并安装本仓库稳定 GitHub Release。当前流程会锁定精确 Release candidate / asset identity、校验正式 artifact digest 与压缩包安全、quiesce 当前 runtime、持久化 transaction 状态，并在 reload 后执行 health gate；失败时保留 rollback 路径。
+
+> [!CAUTION]
+> 自更新无法消除所有平台级断电窗口；生产环境请保留插件目录和 `plugin_data` 的独立备份，并阅读 [安全与隐私](docs/security.md) 与 [发布流程](RELEASING.md)。
+
+## 🛠️ 开发与验证
+
+CI 覆盖 Ubuntu 与 Windows；Python 测试环境为 3.11，Node.js 为 20。
+
+```bash
+python scripts/release_contract.py validate-repo
+python -m compileall -q .
+python -m unittest discover -v tests
+npm ci
+node --test gateway/*.test.mjs scripts/*.test.mjs
 ```
 
-## 插件管理页
+Plugin Page i18n 由 `tests/test_plugin_i18n_coverage.py` 防回归，新增用户可见配置 / Page 文案时应同步 `zh-CN`、`zh-TW`、`en-US`。
 
-`pages/whatsapp-login/` 提供完整的管理界面：
-- Gateway 运行状态 & 健康状态
-- 当前 WhatsApp 账号 JID
-- 二维码展示（扫码登录）
-- 手机号配对码登录（仅未登录 session，可复制且不会写入日志）
-- 手动刷新状态
-- 重启 WhatsApp Web 连接
-- 登出并重新扫码
-- 直接检查 GitHub Release 并手动安全更新（不依赖官方插件市场同步）
+## 📄 License
 
-内置 **Updater v2** 只接受本仓库稳定 GitHub Release 中名称精确匹配的正式 ZIP artifact。
-检查更新时会固定 Release ID、asset ID、目标版本与 GitHub 提供的 SHA-256 digest，并生成
-`candidateToken`；第二次点击确认时只允许安装这一候选，不会在后台悄悄改成更新的版本。
-下载过程逐跳限制在受信任的 GitHub HTTPS 主机，ZIP 下载完成后必须与 Release asset digest
-完全一致；不存在 source `zipball` fallback。
-
-安装前还会验证 ZIP 路径安全、metadata / `main.py` / `package.json` / `package-lock.json`
-版本一致性及 AstrBot 兼容范围。Node 依赖只在插件外的 staging 目录中预装；如果新版本修改
-`requirements.txt`，内置 updater 会 fail closed，要求改用 AstrBot 插件管理器并重启，避免
-自更新修改 AstrBot 全局 Python 环境后无法真实回滚。
-
-切换版本前会停止管理页 Gateway 与 active WhatsApp runtimes，staging 与 rollback backup
-存放在 `data/plugins` 扫描范围之外。Linux 且文件系统支持时使用
-`renameat2(RENAME_EXCHANGE)` 做单步目录交换；其他平台使用带异常回滚的双 rename。
-新版本 `manager.reload()` 成功后仍必须通过插件版本、adapter task 和内建 Gateway health gate，
-通过前不会删除旧版本 backup。认证目录与 WhatsApp 登录凭证位于 plugin data，不参与插件目录替换。
-
-> 边界：在 Windows 或不支持 `RENAME_EXCHANGE` 的文件系统上，主机若恰好在双 rename 之间
-> 硬断电，插件层无法提供完整 crash-atomicity；彻底消除此平台级窗口需要 AstrBot Core 提供
-> 外部 transaction coordinator 或 versioned plugin pointer。
-
-更新检查只在打开页面（最近 5 分钟没有检查记录时）或点击「检查更新」时发生，
-不会加入管理页每 5 秒一次的连接状态轮询。
-
-## Gateway API
-
-Python 插件通过 HTTP 与 Gateway（`127.0.0.1:18789`）通信：
-
-| 方法 | 路径 | 用途 |
-|---|---|---|
-| GET | `/health` | 健康检查 |
-| GET | `/status` | 完整状态（含连接状态、账号 JID、配置摘要） |
-| GET | `/qr` | 获取二维码 |
-| GET | `/events` | SSE 事件流 |
-| POST | `/config` | 推送访问控制配置 |
-| POST | `/pair-code` | 为未注册登录 session 生成手机号配对码（7–15 位国际号码、限流） |
-| POST | `/group/info` | 获取指定 WhatsApp 群的名称、群主、管理员与成员资料 |
-| POST | `/restart` | 重启 Baileys socket |
-| POST | `/logout` | 登出并清除认证 |
-| POST | `/session/reset` | 隔离失效认证并建立全新扫码 session |
-| POST | `/presence` | 设置回复期间的状态（composing / paused）；关闭常驻在线时会在回复结束后自动恢复离线 |
-| POST | `/send/text` | 发送文字（含引用回复、提及、链接预览） |
-| POST | `/edit/text` | 编辑已发送文字 |
-| POST | `/send/media` | 发送媒体（image/video/audio/document/sticker） |
-| POST | `/send/reaction` | 发送 emoji 反应 |
-| POST | `/send/buttons` | 发送交互按钮 |
-| POST | `/send/list` | 发送列表选择 |
-| POST | `/send/poll` | 发送投票 |
-| POST | `/send/contact` | 分享联系人名片 |
-| POST | `/send/event` | 建立活动 |
-| POST | `/mentions/resolve` | 解析 @提及为 JID |
-
-管理页调用的是受 AstrBot Dashboard 鉴权保护的同名插件 API；Gateway HTTP 仍应
-保持默认的 `127.0.0.1` 本地绑定，不应直接暴露到公网。
-
-## 数据目录
-
-插件数据遵循 AstrBot 官方规范，存储于 `data/plugin_data/astrbot_plugin_whatsapp_adapter/`：
-
-```
-<AstrBot Data>/plugin_data/astrbot_plugin_whatsapp_adapter/
-├── config.json          # 插件配置覆盖（手工编辑）
-├── whatsapp-auth/       # WhatsApp Web 登录态（删除后需重新扫码）
-└── media/               # 入站媒体文件
-```
-
-> 从旧版本 (`data/astrbot_plugin_whatsapp_adapter/`) 升级时，插件会在首次访问时自动将数据复制到新路径。
-
-## 安全建议
-
-- 首次测试使用 `dm_policy=allowlist` + `group_policy=disabled`
-- 不在公网暴露 Gateway 端口（默认绑定 `127.0.0.1`）
-- `allow_from=["*"]` 和 `groups=["*"]` 仅在明确知道风险时使用
-- 群聊建议同时配置 `groups` 和 `group_allow_from`
-- 使用个人号码时注意自发消息和授权边界
-
-## 冒烟测试清单
-
-1. 插件能在 WebUI 正常加载
-2. 插件详情页可见 `WhatsApp 登录` Page
-3. Page 能显示 Gateway 状态
-4. 首次启动显示二维码
-5. 扫码后状态变为 connected
-6. 配置 `allow_from` 为测试号码
-7. 测试号码发送文本，AstrBot 能收到并回复
-8. 测试图片消息接收
-9. 测试 AstrBot 回复文本
-10. 登出后重新生成二维码
-
-## 发布注意事项
-
-- 不提交 `node_modules/`、`__pycache__/`、`data/`
-- 插件市场 zip 限制 16MB，通过 `.gitignore` / `.gitattributes` 排除
-- 保留 `package-lock.json` 以复现 Node 依赖
-- `metadata.yaml` 中 `version` 字段不带 `v` 前缀，使用 semver 格式
-- `astrbot_version` 遵循 PEP 440 规范，不加 `v` 前缀
-
-## 致谢
-
-部分设计思路参考了 OpenClaw 项目。
-
-## 许可证
-
-MIT License。详见 `LICENSE`。
+本项目使用 [MIT License](LICENSE)。
