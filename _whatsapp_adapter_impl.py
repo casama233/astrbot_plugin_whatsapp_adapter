@@ -991,6 +991,37 @@ class WhatsAppPlatformAdapter(Platform):
         if cache is None:
             cache = IdentityMappingCache()
             self._identity_cache = cache
+        elif not all(
+            callable(getattr(cache, method, None))
+            for method in (
+                "project_public_id",
+                "pn_for_lid",
+                "lid_for_pn",
+                "pn_for_public_id",
+                "lid_for_public_id",
+            )
+        ):
+            stale_cache = cache
+            cache = IdentityMappingCache()
+            self._identity_cache = cache
+            auth_dir = self._auth_dir()
+            _load_lid_mappings(auth_dir, cache)
+            # Plugin hot reload replaces the adapter class in place. Instances
+            # created by v0.2.39 can therefore retain that release's cache
+            # object, which has no public-projection API. Preserve any aliases
+            # learned since the last disk write while upgrading the cache.
+            stale_mappings = getattr(stale_cache, "lid_to_pn", None)
+            if isinstance(stale_mappings, Mapping):
+                for lid_jid, pn_jid in sorted(
+                    stale_mappings.items(),
+                    key=lambda item: (str(item[0]), str(item[1])),
+                ):
+                    cache.remember(str(lid_jid), str(pn_jid))
+            self._identity_session_dir = _active_auth_session_dir(auth_dir)
+            if stale_cache is not None:
+                logger.info(
+                    "已将热重载遗留的 WhatsApp 身份缓存迁移到当前版本"
+                )
         if refresh_session:
             previous_dir = getattr(self, "_identity_session_dir", None)
             runtime_config = getattr(self, "config", {}) or {}
