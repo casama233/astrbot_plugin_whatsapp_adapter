@@ -1064,6 +1064,36 @@ class WhatsAppAdapterCompatibilityTests(unittest.TestCase):
             self.assertEqual(refreshed.pn_for_lid("123@lid"), "222@s.whatsapp.net")
             self.assertEqual(refreshed.lid_for_pn("111@s.whatsapp.net"), "")
 
+    def test_hot_reload_upgrades_legacy_identity_cache_without_losing_aliases(self) -> None:
+        class LegacyIdentityCache:
+            def __init__(inner_self) -> None:
+                inner_self.lid_to_pn = {
+                    "123@lid": "111@s.whatsapp.net",
+                }
+                inner_self.pn_to_lid = {
+                    "111@s.whatsapp.net": "123@lid",
+                }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            adapter = object.__new__(self.module.WhatsAppPlatformAdapter)
+            adapter.config = {"auth_dir": temp_dir}
+            legacy = LegacyIdentityCache()
+            adapter._identity_cache = legacy
+
+            upgraded = adapter._identity_mappings(refresh_session=True)
+
+            self.assertIsNot(upgraded, legacy)
+            self.assertIsInstance(upgraded, self.module.IdentityMappingCache)
+            self.assertEqual(
+                upgraded.project_public_id("123@lid"),
+                "111",
+            )
+            self.assertEqual(
+                upgraded.pn_for_lid("123:9@lid"),
+                "111@s.whatsapp.net",
+            )
+            self.assertIs(adapter._identity_mappings(), upgraded)
+
 
 if __name__ == "__main__":
     unittest.main()
