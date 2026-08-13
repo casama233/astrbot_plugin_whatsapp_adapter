@@ -1,39 +1,33 @@
 {
-  "metadata": {
-    "display_name": "WhatsApp Adapter",
-    "short_desc": "WhatsApp Web Gateway 平台適配器，支援掃碼登入。",
-    "desc": "基於本地 Gateway 和 WhatsApp Web/Baileys 的 AstrBot 訊息平台適配器，支援外掛管理頁掃碼登入、私聊、群聊、媒體收發和存取控制。"
+  "metadata":{"display_name":"WhatsApp Adapter","short_desc":"WhatsApp Web Gateway 平台適配器，支援掃碼登入。","desc":"基於本地 Gateway 和 WhatsApp Web/Baileys 的 AstrBot 訊息平台適配器，支援掃碼/手機號碼配對、私聊群聊存取控制、媒體、串流回覆與多實例。"},
+  "config":{
+    "gateway_host":{"description":"Gateway HTTP 綁定位址","hint":"內建 Gateway 的基準監聽位址。AstrBot 與 Gateway 同機/同容器時建議保持 127.0.0.1，不要直接暴露到公網。"},
+    "gateway_port":{"description":"Gateway HTTP 基準連接埠","hint":"預設實例使用的 HTTP/SSE 基準連接埠。內建多實例時，次要實例會自動從後續可用連接埠分配。"},
+    "auto_start_gateway":{"description":"自動啟動內建 Gateway","hint":"啟用後，外掛登入頁與平台執行階段會自動啟動 Node.js Gateway；多實例會自動隔離連接埠和認證目錄。關閉時視為使用外部 Gateway。"},
+    "node_executable":{"description":"Node.js 可執行檔","hint":"建議 Node.js 20+，例如 node 或 /usr/bin/node。"},
+    "auth_dir":{"description":"WhatsApp 基準登入狀態目錄","hint":"留空時預設使用 data/plugin_data/astrbot_plugin_whatsapp_adapter/whatsapp-auth；內建多實例的次要帳號會自動使用帶實例後綴的獨立目錄。"},
+    "log_level":{"description":"Gateway 日誌級別","hint":"可選：silent、fatal、error、warn、info、debug、trace。排障結束後建議恢復 info。","labels":["silent","fatal","error","warn","info","debug","trace"]},
+    "default_link_preview_single_url":{"description":"預設啟用單連結預覽","hint":"所有 WhatsApp 平台實例共用的預設行為；僅當純文字訊息只包含一個 URL 時產生預覽。"},
+    "default_typing_indicator":{"description":"預設傳送輸入狀態","hint":"所有 WhatsApp 平台實例共用的預設行為。並行回覆會協調 composing 狀態，避免過早停止。"},
+    "default_send_read_receipts":{"description":"預設傳送已讀回執","hint":"對通過存取控制並被接受處理的訊息傳送已讀回執。"},
+    "default_mark_online":{"description":"預設標記上線狀態","hint":"開啟時維持 available；關閉時仍可能在回覆期間短暫上線並傳送 composing，回覆完成後恢復 unavailable。"},
+    "default_parse_inbound_formatting":{"description":"預設解析入站格式","hint":"將 WhatsApp 原生粗體、斜體、刪除線和程式碼格式轉換為 Markdown 供 AstrBot 閱讀。"},
+    "default_media_album_debounce_seconds":{"description":"預設相簿去抖時間（秒）","hint":"同一傳送者短時間連續圖片的合併等待視窗；私聊 caption/提及會盡量保留，設為 0 關閉。"},
+    "default_streaming_edit_throttle":{"description":"預設串流編輯間隔（秒）","hint":"所有 WhatsApp 平台實例編輯串流文字的全域最小間隔；預設 1.0 秒，執行階段最低保護值為 0.1 秒。"}
   },
-  "config": {
-    "gateway_host": {
-      "description": "Gateway HTTP 綁定位址",
-      "hint": "除非 AstrBot 和 Gateway 分別執行在不同容器，否則建議保持 127.0.0.1。"
-    },
-    "gateway_port": {
-      "description": "Gateway HTTP 連接埠",
-      "hint": "Gateway HTTP/SSE 連接埠，預設 18789。"
-    },
-    "auto_start_gateway": {
-      "description": "自動啟動內建 Gateway",
-      "hint": "啟用後，開啟外掛登入頁時會自動啟動 Node.js Gateway；平台實例也有獨立的同名設定。"
-    },
-    "node_executable": {
-      "description": "Node.js 可執行檔",
-      "hint": "建議 Node.js 20+，例如 node 或 /usr/bin/node。"
-    },
-    "auth_dir": {
-      "description": "WhatsApp 登入狀態目錄",
-      "hint": "留空時使用 AstrBot 工作目錄下的 data/plugin_data/astrbot_plugin_whatsapp_adapter/whatsapp-auth。"
-    },
-    "log_level": {
-      "description": "Gateway 日誌級別",
-      "hint": "可選：silent、fatal、error、warn、info、debug、trace。"
-    }
-  },
-  "pages": {
-    "whatsapp-login": {
-      "title": "WhatsApp 登入",
-      "description": "查看 Gateway 狀態，掃描 WhatsApp Web 二維碼，重新啟動連線或登出工作階段。"
-    }
-  }
+  "pages":{"whatsapp-login":{
+    "title":"WhatsApp Adapter — 管理面板","description":"查看 Gateway 狀態、登入 WhatsApp Web、管理工作階段並安裝經過驗證的更新。","heading":"管理面板","refresh_now":"立即重新整理",
+    "metrics":{"connection":"連線狀態","waiting":"等待連線","gateway_health":"Gateway 健康狀態","not_checked":"未偵測","account":"帳號","whatsapp_account":"WhatsApp 帳號","last_active":"最後活動","last_presence":"上次上線狀態"},
+    "status":{"connected":"已連線","waiting":"等待連線","disconnected":"已中斷","healthy":"正常","unhealthy":"異常","running":"執行中","pending":"待連線","not_logged_in":"未登入","last_online":"最後上線","online":"上線","currently_online":"目前上線","no_data":"無資料","unreachable":"無法連線","unknown":"未知"},
+    "qr":{"title":"掃碼登入","phase_waiting":"等待","connecting_gateway":"正在連線 Gateway…","scan_hint":"開啟 WhatsApp 手機端，進入「已連結的裝置」掃描 QR Code。","refresh":"重新整理 QR Code","connected_title":"WhatsApp 已連線","connected_hint":"無需掃碼。如需更換帳號請點擊「登出」。","connected_action_hint":"如需更換帳號，請點擊「登出並重新掃碼」。","image_alt":"WhatsApp 登入 QR Code","waiting_scan":"等待掃碼","refresh_hint":"QR Code 會定期更新。掃碼失敗時請使用下方按鈕重新整理。","connection_failed":"連線失敗","connection_failed_hint":"無法連線到 WhatsApp 伺服器，請檢查網路後重試。","retry":"重試","retry_hint":"點擊重試按鈕重新建立登入工作階段。","pairing_title":"手機已掃碼，正在完成登入…","pairing_hint":"請保持手機連線，不要重新整理或重複掃碼。","connecting_title":"正在連線 WhatsApp Web…","connecting_hint":"首次啟動可能需要數秒才會產生 QR Code。","logging_in":"正在登入","connecting":"連線中","login_success_hint":"登入成功後頁面會自動切換為已連線。"},
+    "pairing":{"divider":"或使用手機號碼配對","phone_label":"國際手機號碼","phone_placeholder":"例如 +852 9123 4567","request":"取得配對碼","requesting":"正在取得…","cooldown":"請稍候 {seconds}s","help":"請輸入包含國家或地區碼的號碼；僅用於本次配對請求，不會在此頁面儲存。","result_title":"在 WhatsApp 手機端輸入此配對碼","copy":"複製","copy_aria":"複製 WhatsApp 配對碼","expiry":"配對碼會在短時間內失效；失效後可在冷卻結束時重新取得。重設工作階段、重新啟動連線或登出時，本頁面會立即清除顯示。","invalid_phone":"請輸入包含國家或地區碼的有效國際手機號碼。","request_pending":"正在向 WhatsApp 申請配對碼…","generated":"配對碼已產生，請盡快在手機端完成連線。","failed":"無法取得配對碼，請確認號碼與 Gateway 狀態後重試。","copied":"配對碼已複製。","copy_failed":"無法自動複製，請手動選取配對碼。"},
+    "session":{"title":"工作階段資訊","connection":"連線狀態","account_jid":"帳號 JID","auth_dir":"認證目錄","runtime":"執行環境","configured":"已設定","checking":"偵測中…","configured_yes":"✓ 已設定","configured_no":"✗ 未同步"},
+    "policy":{"title":"存取策略","dm":"私聊策略","group":"群聊策略","groups":"允許群組","numbers_count":"{count} 個號碼","groups_count":"{count} 個群組","none":"無"},
+    "actions":{"restart":"重新啟動連線","logout":"登出並重新掃碼"},
+    "runtime":{"ready":"✓ 已就緒","unavailable":"✗ 不可用","check_failed":"執行環境偵測失敗","baileys_installed":"Baileys 已安裝","baileys_pending":"Baileys 待安裝"},
+    "update":{"title":"外掛更新","current_version":"目前版本","latest_version":"GitHub 最新版","source_message":"檢查已鎖定的 GitHub Release 製品，並在安裝前驗證摘要。","release_notes":"查看更新說明","check":"檢查更新","install":"立即更新","installing":"更新處理中…","candidate":"此版本","phase":{"idle":"未檢查","queued":"已鎖定候選","checking":"檢查中","available":"可更新","up_to_date":"已是最新","check_failed":"檢查失敗","downloading":"下載並驗證","validating":"驗證中","installing_dependencies":"準備依賴","quiescing":"停止舊執行階段","installing":"切換版本","reloading":"重新載入中","health_checking":"健康檢查","rolling_back":"回復中","completed":"已完成","failed":"更新失敗"},"message":{"idle":"檢查已鎖定的 GitHub Release 製品，並在安裝前驗證摘要。","available":"發現經過驗證的穩定 Release 候選。","up_to_date":"目前外掛已是最新版本。","checking":"正在檢查 GitHub Release 與製品摘要…","check_failed":"無法驗證 GitHub Release 候選。","busy":"更新交易正在進行…","completed":"外掛更新完成並通過健康檢查。","failed":"外掛更新失敗或已回復，請查看 AstrBot 日誌了解詳情。","poll_timeout":"前端輪詢已在 30 分鐘後停止；持久化後端交易可能仍在執行，重新載入頁面可繼續讀取狀態。"},"confirm":{"armed":"再次點擊確認更新 {version}","helper":"已鎖定 {version} Release 製品；請在 10 秒內再次點擊，以安裝完全相同的已驗證候選。"}},
+    "event_log":{"title":"事件日誌","clear":"清除","waiting":"等待事件…","cleared":"日誌已清除"},
+    "log":{"page_loaded":"管理面板已載入","runtime_failed":"執行環境偵測失敗: {error}","status_refreshed":"狀態已重新整理: {status}","status_failed":"狀態請求失敗: {error}","qr_failed":"QR Code 請求失敗: {error}","refresh_failed":"重新整理失敗: {error}","session_expired":"登入狀態已失效，正在建立全新登入工作階段…","session_reset_created":"已建立全新登入工作階段，正在等待 QR Code…","session_reset_failed":"重新建立登入失敗: {error}","pair_generated":"已產生新的手機配對碼（敏感內容未記錄）","pair_failed":"配對碼請求失敗（敏感內容未記錄）","restart_start":"正在重新啟動連線…","restart_result":"重新啟動結果: {status}","restart_failed":"重新啟動失敗: {error}","logout_start":"正在登出…","logout_result":"登出結果: {status}","logout_failed":"登出失敗: {error}","update_check_start":"正在檢查 GitHub Release 與官方製品摘要…","update_check_done":"Release 候選檢查完成","update_check_failed":"更新檢查失敗: {error}","update_candidate_missing":"目前更新候選缺少身分權杖，正在重新檢查 Release","update_completed":"外掛更新完成並通過健康檢查","update_failed":"外掛更新失敗或已回復","update_install_start":"開始安裝已確認的 v{version} Release 製品…","update_transaction_started":"更新交易已啟動","update_request_interrupted":"更新請求已中斷，正在讀取持久化交易狀態: {error}","update_poll_timeout":"更新輪詢在 30 分鐘後停止，但沒有把後端交易標記為失敗","init_failed":"初始化失敗: {error}"},
+    "confirm":{"logout_armed":"再次點擊確認登出"}
+  }}
 }
