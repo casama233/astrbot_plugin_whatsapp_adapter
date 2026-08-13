@@ -57,7 +57,7 @@ from .whatsapp_ai_tools import (
 )
 
 PLUGIN_NAME = "astrbot_plugin_whatsapp_adapter"
-PLUGIN_VERSION = "0.2.40"
+PLUGIN_VERSION = "0.2.41"
 PLUGIN_DIR = Path(__file__).resolve().parent
 _UPDATE_BUSY_PHASES = {
     "queued",
