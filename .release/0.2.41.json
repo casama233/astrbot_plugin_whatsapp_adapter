@@ -1,0 +1,11 @@
+{
+  "version": "0.2.41",
+  "previous_version": "0.2.40",
+  "date": "2026-08-13",
+  "commit_subject": "Migrate identity caches safely across hot reloads",
+  "notes": [
+    "修复从 v0.2.39 热更新到 v0.2.40 后旧 IdentityMappingCache 实例缺少公开身份投影接口、导致入站事件流中断的问题。",
+    "热重载时自动重建当前版本身份缓存，同时合并磁盘映射和旧实例尚在内存中的 PN/LID 别名。",
+    "新增旧缓存迁移回归测试，确保映射、公开 ID 与后续事件流在热替换后保持可用。"
+  ]
+}
