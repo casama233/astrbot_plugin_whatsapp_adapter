@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
+import { patchGatewayGroupNames } from "./group-name-compat.mjs";
+import { patchGatewayPrivateMediaBursts } from "./private-media-burst-compat.mjs";
 import { patchGatewaySecurity } from "./security-hardening.mjs";
 
 const fixture = `import { buildWhatsAppProxyConfig } from "./proxy-compat.mjs";
@@ -81,4 +84,20 @@ test("patch is idempotent", () => {
   const twice = patchGatewaySecurity(once.content);
   assert.equal(twice.changed, false);
   assert.equal(twice.content, once.content);
+});
+
+test("security patch applies after the real compatibility patch chain", async () => {
+  const source = await readFile(
+    new URL("./whatsapp-gateway-impl.mjs", import.meta.url),
+    "utf8",
+  );
+  const groupPatched = patchGatewayGroupNames(source);
+  const privateMediaPatched = patchGatewayPrivateMediaBursts(groupPatched.content);
+  const secured = patchGatewaySecurity(privateMediaPatched.content);
+
+  assert.equal(secured.changed, true);
+  assert.match(secured.content, /const astrbotGatewaySecurityHardening = true;/);
+  assert.match(secured.content, /prepareSafeMediaSource/);
+  assert.match(secured.content, /isAuthorizedGatewayRequest/);
+  assert.doesNotMatch(secured.content, /passing message through without allowlist check/);
 });
