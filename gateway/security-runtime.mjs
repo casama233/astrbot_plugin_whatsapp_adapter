@@ -9,6 +9,20 @@ import path from "node:path";
 const DEFAULT_REMOTE_MAX_BYTES = 32 * 1024 * 1024;
 const DEFAULT_REMOTE_TIMEOUT_MS = 15_000;
 const MAX_REDIRECTS = 4;
+const BLOCKED_IPV6 = new net.BlockList();
+for (const [network, prefix] of [
+  ["::", 128],
+  ["::1", 128],
+  ["::ffff:0.0.0.0", 96],
+  ["2001::", 32],
+  ["2001:10::", 28],
+  ["2001:20::", 28],
+  ["2001:db8::", 32],
+  ["2002::", 16],
+  ["3fff::", 20],
+]) {
+  BLOCKED_IPV6.addSubnet(network, prefix, "ipv6");
+}
 
 function safeEqualText(left, right) {
   const a = Buffer.from(String(left || ""), "utf8");
@@ -35,6 +49,7 @@ function isPublicIpv4(address) {
   if (a === 172 && b >= 16 && b <= 31) return false;
   if (a === 192 && b === 0 && c === 0) return false;
   if (a === 192 && b === 0 && c === 2) return false;
+  if (a === 192 && b === 88 && c === 99) return false;
   if (a === 192 && b === 168) return false;
   if (a === 198 && (b === 18 || b === 19)) return false;
   if (a === 198 && b === 51 && c === 100) return false;
@@ -45,19 +60,11 @@ function isPublicIpv4(address) {
 
 function isPublicIpv6(address) {
   const value = String(address || "").split("%")[0].toLowerCase();
-  if (!value || value === "::" || value === "::1") return false;
-  if (value.startsWith("::ffff:")) {
-    const mapped = value.slice("::ffff:".length);
-    if (net.isIP(mapped) === 4) return isPublicIpv4(mapped);
-  }
+  if (net.isIP(value) !== 6 || BLOCKED_IPV6.check(value, "ipv6")) return false;
   const first = Number.parseInt(value.split(":")[0] || "0", 16);
-  if (Number.isFinite(first)) {
-    if ((first & 0xfe00) === 0xfc00) return false;
-    if ((first & 0xffc0) === 0xfe80) return false;
-    if ((first & 0xff00) === 0xff00) return false;
-  }
-  if (value === "2001:db8::" || value.startsWith("2001:db8:")) return false;
-  return true;
+  // For outbound media, allow only IPv6 global-unicast space. This
+  // intentionally rejects ULA/link-local/multicast/NAT64 and transition forms.
+  return Number.isFinite(first) && (first & 0xe000) === 0x2000;
 }
 
 export function isPublicIpAddress(address) {
@@ -97,7 +104,13 @@ function pinnedRequest(url, resolved, maxBytes, timeoutMs) {
           host: url.host,
           "user-agent": "astrbot-whatsapp-gateway/secure-media-fetch",
         },
-        lookup: (_hostname, _options, callback) => callback(null, resolved.address, resolved.family),
+        lookup: (_hostname, options, callback) => {
+          if (options?.all) {
+            callback(null, [{ address: resolved.address, family: resolved.family }]);
+            return;
+          }
+          callback(null, resolved.address, resolved.family);
+        },
       },
       (response) => {
         const status = Number(response.statusCode || 0);
@@ -183,7 +196,11 @@ async function downloadRemoteMedia(sourceUrl, tempDir) {
 
 function pathInside(candidate, root) {
   const relative = path.relative(root, candidate);
-  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+  return relative === "" || (
+    !path.isAbsolute(relative)
+    && relative !== ".."
+    && !relative.startsWith(`..${path.sep}`)
+  );
 }
 
 async function allowedLocalRoots(tempDir) {
