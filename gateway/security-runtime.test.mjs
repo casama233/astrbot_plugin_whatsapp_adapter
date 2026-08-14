@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -66,7 +66,7 @@ test("local media is limited to trusted roots and file URLs are rejected", async
 
   try {
     const prepared = await prepareSafeMediaSource(allowed, { tempDir });
-    assert.equal(prepared.pathOrUrl, allowed);
+    assert.equal(prepared.pathOrUrl, await realpath(allowed));
     await prepared.cleanup();
     await assert.rejects(
       () => prepareSafeMediaSource(outside, { tempDir }),
