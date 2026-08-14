@@ -35,22 +35,31 @@ test("Bearer authorization requires the exact token", () => {
   );
 });
 
-test("private and special IP ranges are rejected", () => {
+test("private, transition, mapped, and special IP ranges are rejected", () => {
   for (const address of [
     "127.0.0.1",
     "10.0.0.1",
     "172.16.0.1",
     "192.168.1.1",
     "169.254.1.2",
+    "192.88.99.1",
     "::1",
     "fc00::1",
     "fe80::1",
     "2001:db8::1",
+    "::ffff:127.0.0.1",
+    "::ffff:7f00:1",
+    "0:0:0:0:0:ffff:7f00:1",
+    "64:ff9b::7f00:1",
+    "2001::1",
+    "2002:7f00:1::",
+    "3fff::1",
   ]) {
     assert.equal(isPublicIpAddress(address), false, address);
   }
   assert.equal(isPublicIpAddress("1.1.1.1"), true);
   assert.equal(isPublicIpAddress("2606:4700:4700::1111"), true);
+  assert.equal(isPublicIpAddress("2001:4860:4860::8888"), true);
 });
 
 test("local media is limited to trusted roots and file URLs are rejected", async () => {
