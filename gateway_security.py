@@ -9,7 +9,7 @@ from urllib.parse import urlsplit
 
 _GATEWAY_TOKENS: dict[tuple[str, int], str] = {}
 _PROCESS_START_ENV_LOCK = asyncio.Lock()
-_INSTALLED = False
+_CLASS_PATCH_MARKER = "_astrbot_gateway_security_installed"
 
 
 def _endpoint_key(host: str, port: int) -> tuple[str, int]:
@@ -58,10 +58,12 @@ def install_gateway_transport_security(
 ) -> None:
     """Install per-process Bearer authentication without changing public APIs."""
 
-    global _INSTALLED
-    if _INSTALLED:
+    if getattr(client_cls, _CLASS_PATCH_MARKER, False) and getattr(
+        process_cls,
+        _CLASS_PATCH_MARKER,
+        False,
+    ):
         return
-    _INSTALLED = True
 
     original_process_init = process_cls.__init__
     original_process_start = process_cls.start
@@ -110,3 +112,5 @@ def install_gateway_transport_security(
     process_cls.start = secure_process_start
     client_cls._request = secure_client_request
     client_cls.events = secure_client_events
+    setattr(process_cls, _CLASS_PATCH_MARKER, True)
+    setattr(client_cls, _CLASS_PATCH_MARKER, True)
