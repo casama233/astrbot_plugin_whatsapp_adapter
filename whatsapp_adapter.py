@@ -7,6 +7,7 @@ from .album_caption_compat import (
     install_album_caption_compat as _install_album_caption_compat,
 )
 from .group_name_compat import apply_group_name as _apply_group_name
+from .member_tag_compat import apply_sender_member_tag as _apply_sender_member_tag
 from .whatsapp_multi_instance import (
     ensure_gateway_endpoint as _ensure_gateway_endpoint,
     instance_auth_dir as _instance_auth_dir,
@@ -178,6 +179,7 @@ _original_convert_message = WhatsAppPlatformAdapter.convert_message
 async def _convert_message_with_group_name(self, data):
     message = await _original_convert_message(self, data)
     message = _apply_group_name(message, data, self._project_public_user_id)
+    message = _apply_sender_member_tag(message, data)
     return _apply_album_caption_message(self, message, data)
 
 
