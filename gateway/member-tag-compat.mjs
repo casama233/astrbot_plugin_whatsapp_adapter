@@ -32,7 +32,7 @@ function memberTagIdentityKeys(...values) {
 }
 
 function memberTagCacheKey(groupJid, participantJid) {
-  return `${String(groupJid || "").trim()}\u0000${String(participantJid || "").trim()}`;
+  return String(groupJid || "").trim() + "\\u0000" + String(participantJid || "").trim();
 }
 
 function rememberGroupMemberTag(groupJid, label, timestamp = 0, ...identities) {
