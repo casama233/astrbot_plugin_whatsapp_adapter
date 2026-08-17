@@ -20,6 +20,9 @@
 
 </div>
 
+> [!CAUTION]
+> **本插件代码由 AI 生成，并经过人工审阅。** 即使经过审阅，仍可能存在未发现的缺陷、安全风险或兼容性问题。请谨慎使用；在重要账号、生产环境或敏感场景部署前，建议先自行审查代码并充分测试。
+
 > [!IMPORTANT]
 > 本项目基于 **WhatsApp Web 非官方协议栈 / Baileys**，不是 Meta 官方 WhatsApp Business Cloud API。WhatsApp Web 协议变化可能造成临时兼容问题；生产使用前请自行评估账号、稳定性与业务风险。
 
