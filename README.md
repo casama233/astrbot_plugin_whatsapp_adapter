@@ -16,7 +16,7 @@
 [![Python CI](https://img.shields.io/badge/Python_CI-3.11-blue.svg)](https://github.com/casama233/astrbot_plugin_whatsapp_adapter/actions/workflows/tests.yml)
 [![Tests](https://github.com/casama233/astrbot_plugin_whatsapp_adapter/actions/workflows/tests.yml/badge.svg)](https://github.com/casama233/astrbot_plugin_whatsapp_adapter/actions/workflows/tests.yml)
 [![GitHub Stars](https://img.shields.io/github/stars/casama233/astrbot_plugin_whatsapp_adapter?style=flat&logo=github)](https://github.com/casama233/astrbot_plugin_whatsapp_adapter/stargazers)
-![动态访问量](https://count.kjchmc.cn/get/@astrbot_plugin_whatsapp_adapter?theme=gelbooru)
+![动态访问量](https://count.kjchmc.cn/get/@astrbot_plugin_whatsapp_adapter?theme=minecraft)
 
 </div>
 
