@@ -1,0 +1,42 @@
+name: Temp AI README Warning
+
+on:
+  push:
+    branches:
+      - docs/ai-generated-code-warning
+    paths:
+      - ".github/workflows/_temp_ai_warning.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: docs/ai-generated-code-warning
+          fetch-depth: 0
+      - name: Add prominent AI code warning
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('README.md')
+          text = path.read_text(encoding='utf-8')
+          warning = '''> [!CAUTION]\n> **本插件代码由 AI 生成，并经过人工审阅。** 即使经过审阅，仍可能存在未发现的缺陷、安全风险或兼容性问题。请谨慎使用；在重要账号、生产环境或敏感场景部署前，建议先自行审查代码并充分测试。\n\n'''
+          if warning not in text:
+              anchor = '</div>\n\n'
+              if anchor not in text:
+                  raise SystemExit('README header anchor not found')
+              text = text.replace(anchor, anchor + warning, 1)
+              path.write_text(text, encoding='utf-8')
+          PY
+      - name: Commit documentation change and remove temp workflow
+        run: |
+          rm .github/workflows/_temp_ai_warning.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add README.md .github/workflows/_temp_ai_warning.yml
+          git commit -m "docs: warn that plugin code is AI-generated"
+          git push origin HEAD:docs/ai-generated-code-warning
