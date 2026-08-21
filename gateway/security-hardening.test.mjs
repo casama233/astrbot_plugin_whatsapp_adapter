@@ -39,13 +39,18 @@ const server = createServer(async (req, res) => {
       const options = quotedKey(body) || {};
       const ephemeral = getEphemeralExpiration(body.to);
       if (ephemeral) options.ephemeralExpiration = ephemeral;
+      const { mentions, mentionAll } = resolveExplicitMentions(body.mentions, body.to);
+      const renderedCaption = await renderOutboundMentionNames(
+        body.caption,
+        mentions,
+        body.to,
+      );
       const payload = resolveMediaPayload(
         body.type,
         body.pathOrUrl,
-        body.caption,
+        renderedCaption,
         body.fileName,
       );
-      const { mentions, mentionAll } = resolveExplicitMentions(body.mentions, body.to);
       if (mentions.length) payload.mentions = mentions;
       if (mentionAll) payload.mentionAll = true;
       const result = await socket.sendMessage(body.to, payload, options);
@@ -65,6 +70,8 @@ test("patch injects authentication, SSE limit, fail-closed policy, and safe medi
   assert.match(result.content, /dropping inbound message until policy is loaded/);
   assert.match(result.content, /prepareSafeMediaSource/);
   assert.match(result.content, /preparedMedia\.cleanup/);
+  assert.match(result.content, /renderOutboundMentionNames/);
+  assert.match(result.content, /renderedCaption/);
   assert.doesNotMatch(result.content, /passing message through without allowlist check/);
 });
 
