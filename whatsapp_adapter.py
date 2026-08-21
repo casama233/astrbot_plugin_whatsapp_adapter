@@ -6,6 +6,9 @@ from .album_caption_compat import (
     apply_album_caption_message as _apply_album_caption_message,
     install_album_caption_compat as _install_album_caption_compat,
 )
+from .gateway_security import (
+    install_gateway_transport_security as _install_gateway_transport_security,
+)
 from .group_name_compat import apply_group_name as _apply_group_name
 from .member_tag_compat import apply_sender_member_tag as _apply_sender_member_tag
 from .whatsapp_multi_instance import (
@@ -17,6 +20,7 @@ from .whatsapp_multi_instance import (
 
 _impl_path = _Path(__file__).with_name("_whatsapp_adapter_impl.py")
 exec(compile(_impl_path.read_text(encoding="utf-8"), str(_impl_path), "exec"), globals(), globals())
+_install_gateway_transport_security(WhatsAppGatewayClient, GatewayProcess)
 
 
 # Multi-instance runtime patch -------------------------------------------------
