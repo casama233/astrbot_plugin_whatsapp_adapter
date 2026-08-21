@@ -37,7 +37,7 @@ def _fake_classes(root: Path):
             self.node_executable = "node"
             self.script_path = root / "gateway" / "whatsapp-gateway.mjs"
             self.auth_dir = root / f"auth-{port}"
-            self.data_dir = root / f"data-{port}"
+            self.data_dir = root / "plugin_data" / f"adapter-{port}"
             self.log_level = "info"
             self.process = None
             self.stopped = False
@@ -98,6 +98,10 @@ class GatewaySecurityTests(unittest.IsolatedAsyncioTestCase):
             await process.start()
 
         self.assertEqual(captured_env["WA_GATEWAY_TOKEN"], token)
+        self.assertEqual(
+            captured_env["WA_MEDIA_ALLOWED_ROOTS"],
+            str(self.root.resolve()),
+        )
         self.assertEqual(os.environ["WA_GATEWAY_TOKEN"], "external-parent-token")
         self.assertEqual(
             (await client._request("GET", "/health"))["authorization"],
