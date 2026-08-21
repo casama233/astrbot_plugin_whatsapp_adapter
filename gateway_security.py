@@ -95,7 +95,8 @@ def install_gateway_transport_security(
         self.auth_dir.mkdir(parents=True, exist_ok=True)
         self.data_dir.mkdir(parents=True, exist_ok=True)
         env = os.environ.copy()
-        temp_dir = str(Path(self.data_dir).parent.parent / "temp")
+        astrbot_data_dir = Path(self.data_dir).parent.parent.resolve()
+        temp_dir = str(astrbot_data_dir / "temp")
         env.update(
             {
                 "WA_GATEWAY_HOST": self.host,
@@ -103,6 +104,11 @@ def install_gateway_transport_security(
                 "WA_AUTH_DIR": str(self.auth_dir),
                 "WA_DATA_DIR": str(self.data_dir),
                 "WA_TEMP_DIR": temp_dir,
+                # AstrBot plugins normally create outbound media under data/
+                # (for example temp/, temp_images/ or plugin_data/).  Keep the
+                # hardened Gateway compatible with those QQ-style component
+                # paths without granting access to arbitrary host files.
+                "WA_MEDIA_ALLOWED_ROOTS": str(astrbot_data_dir),
                 "WA_LOG_LEVEL": self.log_level,
                 "WA_GATEWAY_TOKEN": token,
             }
