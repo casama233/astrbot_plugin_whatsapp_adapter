@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 import unittest
 
 
@@ -24,6 +25,25 @@ class ReleaseWorkflowPolicyTests(unittest.TestCase):
         )
         self.assertNotIn("tests/test_whatsapp_config_policy.py .release", workflow)
         self.assertNotIn("npm version", workflow)
+
+    def test_github_actions_use_immutable_commit_shas(self) -> None:
+        for relative_path in (
+            ".github/workflows/tests.yml",
+            ".github/workflows/release.yml",
+        ):
+            workflow = (ROOT / relative_path).read_text("utf-8")
+            action_refs = re.findall(
+                r"^\s*-\s+uses:\s+([^#\s]+)",
+                workflow,
+                flags=re.MULTILINE,
+            )
+            self.assertTrue(action_refs, relative_path)
+            for action_ref in action_refs:
+                self.assertRegex(
+                    action_ref,
+                    r"^[^@\s]+@[0-9a-f]{40}$",
+                    f"{relative_path}: mutable GitHub Action ref {action_ref}",
+                )
 
     def test_release_archive_excludes_development_only_content(self) -> None:
         attributes = (ROOT / ".gitattributes").read_text("utf-8")
