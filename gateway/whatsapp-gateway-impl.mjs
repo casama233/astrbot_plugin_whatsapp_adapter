@@ -73,6 +73,10 @@ import {
   pairingCodeAvailability,
 } from "./pairing-code-compat.mjs";
 import { buildWhatsAppProxyConfig } from "./proxy-compat.mjs";
+import {
+  hasIdentityMentionLabels,
+  replaceIdentityMentionLabels,
+} from "./outbound-mention-names.mjs";
 
 const host = process.env.WA_GATEWAY_HOST || "127.0.0.1";
 const port = Number.parseInt(process.env.WA_GATEWAY_PORT || "18789", 10);
@@ -860,6 +864,51 @@ function resolveExplicitMentions(values, chatJid = null) {
     scopedDirectory: scoped,
     globalDirectory: mentionDirectory,
   });
+}
+
+function outboundMentionAliases(jid) {
+  const aliases = new Set();
+  const add = (value) => {
+    const raw = String(value || "").trim();
+    if (!raw) return;
+    aliases.add(raw);
+    const local = raw.split("@", 1)[0].split(":", 1)[0];
+    if (local) aliases.add(local);
+    if (isLidJid(raw) && local) aliases.add(`lid-${local}`);
+  };
+  add(jid);
+  for (const identity of mentionIdentityKeys(jid)) add(identity);
+  if (isLidJid(jid)) add(resolveLidToPn(jid));
+  return [...aliases];
+}
+
+function outboundMentionNameEntry(jid) {
+  const aliases = outboundMentionAliases(jid);
+  let name = mentionDisplayName(jid);
+  if (!name) {
+    name = aliases.map((alias) => mentionDisplayName(alias)).find(Boolean) || "";
+  }
+  return { aliases, name };
+}
+
+async function renderOutboundMentionNames(text, mentions, chatJid) {
+  const value = String(text || "");
+  if (!value || !(mentions || []).length) return value;
+  let entries = mentions.map(outboundMentionNameEntry);
+  if (!hasIdentityMentionLabels(value, entries)) return value;
+
+  let rendered = replaceIdentityMentionLabels(value, entries);
+  if (rendered !== value || !String(chatJid || "").endsWith("@g.us")) {
+    return rendered;
+  }
+
+  // Baileys does not render a visible nickname for protocol mentions.  Refresh
+  // the chat-scoped directory once when a plugin supplied only At.qq, then use
+  // the same participant/contact names exposed by inbound At.name.
+  await rememberGroupParticipants(chatJid);
+  entries = mentions.map(outboundMentionNameEntry);
+  rendered = replaceIdentityMentionLabels(value, entries);
+  return rendered;
 }
 
 function sameWhatsappUser(left, right) {
@@ -2527,7 +2576,8 @@ const server = createServer(async (req, res) => {
       const { mentions: resolvedExplicit, mentionAll } = resolveExplicitMentions(body.mentions, body.to);
       const autoMentions = body.resolveTextMentions ? resolveMentionTokens(mentionTokensFromText(text), body.to) : [];
       const mentions = [...new Set([...resolvedExplicit, ...autoMentions])];
-      const payload = { text };
+      const renderedText = await renderOutboundMentionNames(text, resolvedExplicit, body.to);
+      const payload = { text: renderedText };
       if (body.linkPreview === false) payload.linkPreview = null;
       if (mentions.length) payload.mentions = mentions;
       if (mentionAll) payload.mentionAll = true;
@@ -2549,6 +2599,8 @@ const server = createServer(async (req, res) => {
       const ephemeral = getEphemeralExpiration(body.to);
       const editOptions = ephemeral ? { ephemeralExpiration: ephemeral } : {};
       const { mentions: resolvedExplicit, mentionAll } = resolveExplicitMentions(body.mentions, body.to);
+      const renderedText = await renderOutboundMentionNames(text, resolvedExplicit, body.to);
+      payload.text = renderedText;
       if (resolvedExplicit.length) payload.mentions = resolvedExplicit;
       if (mentionAll) payload.mentionAll = true;
       const result = await socket.sendMessage(body.to, payload, editOptions);
@@ -2561,7 +2613,7 @@ const server = createServer(async (req, res) => {
         delete contextInfo.nonJidMentions;
         if (resolvedExplicit.length) contextInfo.mentionedJid = resolvedExplicit;
         if (mentionAll) contextInfo.nonJidMentions = 1;
-        const extendedTextMessage = { text };
+        const extendedTextMessage = { text: renderedText };
         if (Object.keys(contextInfo).length) extendedTextMessage.contextInfo = contextInfo;
         editedMessage = { extendedTextMessage };
       }
@@ -2579,13 +2631,18 @@ const server = createServer(async (req, res) => {
       const options = quotedKey(body) || {};
       const ephemeral = getEphemeralExpiration(body.to);
       if (ephemeral) options.ephemeralExpiration = ephemeral;
+      const { mentions, mentionAll } = resolveExplicitMentions(body.mentions, body.to);
+      const renderedCaption = await renderOutboundMentionNames(
+        body.caption,
+        mentions,
+        body.to,
+      );
       const payload = resolveMediaPayload(
         body.type,
         body.pathOrUrl,
-        body.caption,
+        renderedCaption,
         body.fileName,
       );
-      const { mentions, mentionAll } = resolveExplicitMentions(body.mentions, body.to);
       if (mentions.length) payload.mentions = mentions;
       if (mentionAll) payload.mentionAll = true;
       const result = await socket.sendMessage(body.to, payload, options);
