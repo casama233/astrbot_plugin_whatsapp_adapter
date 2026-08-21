@@ -6,6 +6,7 @@ from astrbot.api.platform import Group as _Group
 from astrbot.api.platform import MessageMember as _MessageMember
 
 from .group_name_compat import current_event_group as _current_event_group
+from .member_tag_compat import apply_group_member_tag as _apply_group_member_tag
 from .whatsapp_identity import (
     normalize_group_session_id as _normalize_group_session_id,
     strict_public_id as _strict_public_id,
@@ -118,12 +119,11 @@ def _group_from_gateway(
         if not user_id or user_id in seen_members:
             continue
         seen_members.add(user_id)
-        members.append(
-            _MessageMember(
-                user_id=user_id,
-                nickname=str(item.get("name") or user_id),
-            ),
+        member = _MessageMember(
+            user_id=user_id,
+            nickname=str(item.get("name") or user_id),
         )
+        members.append(_apply_group_member_tag(member, item))
 
         role = str(item.get("role") or "")
         if role == "owner" and not owner:
