@@ -12,7 +12,7 @@ Node.js Gateway 默认绑定：
 
 请尽量保持 loopback。
 
-Gateway HTTP 是插件内部协议，底层接口本身不应被理解成一套面向公网、带独立用户认证的 Web 服务。插件管理 Page 调用的是 AstrBot Dashboard 鉴权保护下的插件 API，但这不等于你可以把 Node Gateway 端口直接暴露出去。
+Gateway HTTP 是插件内部协议。由插件自动启动的 Gateway 会为当前进程生成随机 Bearer token，并要求所有 HTTP / SSE 请求携带相同 token；token 只在运行时传递，不写入插件配置。这个认证层用于降低端口被同机其它进程或错误网络暴露直接调用的风险，但它不应被理解成面向公网的完整身份系统，也不能替代网络隔离。
 
 如果必须跨容器 / 主机访问：
 
@@ -20,6 +20,7 @@ Gateway HTTP 是插件内部协议，底层接口本身不应被理解成一套�
 - 配置防火墙 / security group。
 - 不要直接映射到公网 `0.0.0.0:18789`。
 - 只允许 AstrBot 所在网络访问。
+- external Gateway 必须在 Gateway 与 AstrBot 侧配置相同的 `WA_GATEWAY_TOKEN`。
 
 ## 2. WhatsApp 认证目录就是账号凭证
 
@@ -66,6 +67,19 @@ data/plugin_data/astrbot_plugin_whatsapp_adapter/media/
 - 定期清理不再需要的媒体。
 - 不要把整个 plugin_data 当作普通日志目录同步到公共存储。
 
+### 出站媒体来源限制
+
+`/send/media` 不再接受任意本机文件或 `file://` URL。默认情况下，本机媒体必须位于 AstrBot / Gateway 临时目录下；如果确有其它受信任媒体目录，可通过 `WA_MEDIA_ALLOWED_ROOTS` 按操作系统路径分隔符配置额外允许根目录。
+
+HTTP / HTTPS 媒体会先由 Gateway 安全下载到临时目录，再交给 Baileys 发送。下载过程会：
+
+- 拒绝 loopback、私网、link-local、multicast、保留 / 文档地址等非公网 IP。
+- 对 DNS 解析结果做检查并把实际连接固定到已验证地址，降低 DNS rebinding 风险。
+- 手动处理重定向，并在每次重定向后重新验证目标。
+- 限制下载时间、重定向次数和大小；默认出站远程媒体上限为 32 MiB，可用 `WA_OUTBOUND_MEDIA_MAX_MB` 调整（实现仍设有硬上限）。
+
+因此，原本依赖内网 HTTP URL、localhost URL 或任意磁盘绝对路径作为出站媒体源的自定义集成需要改用受信任媒体目录或显式允许根目录。
+
 ## 5. AstrBot 与 LLM 提供商
 
 消息进入 AstrBot 后，是否会被发送到：
@@ -94,6 +108,8 @@ WhatsApp 端到端加密保护的是 WhatsApp 设备之间的传输，不会阻�
 这些是 AstrBot 接入层控制，用来决定哪些消息继续处理。
 
 它们不能阻止 WhatsApp 账号本身收到消息，也不能替代 WhatsApp 群权限、手机端账号安全或网络隔离。
+
+Gateway 在收到第一份有效 runtime 配置前会 fail closed：未配置阶段的入站消息不会再绕过 allowlist 直接进入事件流。
 
 建议默认：
 
@@ -126,6 +142,8 @@ group_policy=disabled
 - 认证目录混用
 
 不要关闭这个 owner 冲突保护。
+
+external Gateway 不会由插件自动注入运行时随机 token，因此部署者必须确保 Gateway 进程和 AstrBot 进程使用相同的 `WA_GATEWAY_TOKEN`。
 
 ## 9. HTTP / HTTPS 代理凭证
 
@@ -173,6 +191,8 @@ Gateway 日志会尽量只输出脱敏的代理元数据，不记录：
 - proxy 密码
 - LLM API key
 - 私聊 / 群聊正文和媒体 URL（除非已获授权）
+
+Gateway 对被访问策略拒绝的 SSE 事件只保留最少的拒绝原因 / message ID / 时间戳，不再把正文、手机号或发送者 JID广播给事件流订阅者。
 
 不要上传完整 `whatsapp-auth/` 来“方便复现”。
 
