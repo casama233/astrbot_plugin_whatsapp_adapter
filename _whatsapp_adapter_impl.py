@@ -1208,6 +1208,12 @@ class WhatsAppPlatformAdapter(Platform):
                                     )
                                 elif event.get("type") in {"qr", "status"}:
                                     self._log_gateway_event(event)
+                                else:
+                                    logger.warning(
+                                        "WhatsApp Gateway 未识别事件: 类型=%s keys=%s",
+                                        event.get("type"),
+                                        sorted(str(key) for key in event),
+                                    )
                         except asyncio.CancelledError:
                             raise
                 except asyncio.CancelledError:

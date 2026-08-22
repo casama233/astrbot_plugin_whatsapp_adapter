@@ -118,7 +118,8 @@ const INBOUND_MEMBER_TAG_ENRICHMENT = `  const senderMemberTagSnapshot = isGroup
   const senderMemberTag = isGroup
     ? groupMemberTagFor(chatJid, senderJid, senderPn, primary.key.participantAlt)
     : "";
-  broadcast({`;
+  broadcast({
+    type: "message",`;
 
 export function patchGatewayMemberTags(source) {
   if (source.includes(`const ${PATCH_MARKER} = true;`)) {
