@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import sqlite3
+import tempfile
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -42,11 +44,7 @@ def load_aliases(data_dir: Path) -> dict[str, str]:
 
 def canonical_id(value: str, aliases: dict[str, str]) -> str:
     raw = str(value).strip()
-    if raw in aliases:
-        return aliases[raw]
-    if raw.endswith("0") and raw[:-1] in set(aliases.values()):
-        return raw[:-1]
-    return raw
+    return aliases.get(raw, raw)
 
 
 def canonical_text(value: str, aliases: dict[str, str]) -> str:
@@ -59,9 +57,7 @@ def canonical_text(value: str, aliases: dict[str, str]) -> str:
         return f"whatsapp:{kind}:{session}"
 
     result = UMO_RE.sub(repl, value)
-    # Exact legacy IDs in structured config values are safe to project. Avoid
-    # replacing arbitrary digits embedded in prose or cryptographic payloads.
-    return aliases.get(result, result)
+    return result
 
 
 def canonical_memory_text(value: str, aliases: dict[str, str]) -> str:
@@ -80,11 +76,36 @@ def canonical_json(value: Any, aliases: dict[str, str]) -> Any:
     if isinstance(value, list):
         return [canonical_json(item, aliases) for item in value]
     if isinstance(value, dict):
-        return {
-            canonical_text(str(key), aliases): canonical_json(item, aliases)
-            for key, item in value.items()
-        }
+        # JSON object keys can be identifiers, secrets, or user-defined names.
+        # Rewriting them generically can collide and silently discard a value.
+        return {str(key): canonical_json(item, aliases) for key, item in value.items()}
     return value
+
+
+def canonical_origin_map(value: Any, aliases: dict[str, str]) -> Any:
+    """Project keys in unified_msg_origins without losing collisions."""
+
+    if not isinstance(value, dict):
+        return canonical_json(value, aliases)
+    projected: dict[str, Any] = {}
+    owners: dict[str, str] = {}
+    for raw_key, raw_value in value.items():
+        key = str(raw_key)
+        candidate = canonical_text(key, aliases)
+        candidate = aliases.get(candidate, candidate)
+        item = canonical_json(raw_value, aliases)
+        if candidate in projected and projected[candidate] != item:
+            # Keep the legacy key when two source records disagree. This is
+            # preferable to inventing precedence and destroying either value.
+            previous_key = owners[candidate]
+            if key == candidate and previous_key != candidate:
+                projected[previous_key] = projected[candidate]
+                owners[previous_key] = previous_key
+            else:
+                candidate = key
+        projected[candidate] = item
+        owners[candidate] = key
+    return projected
 
 
 def history_map(items: list[str]) -> dict[str, int]:
@@ -97,18 +118,37 @@ def history_map(items: list[str]) -> dict[str, int]:
 
 
 def merge_users(users: list[dict[str, Any]], group_id: str, aliases: dict[str, str]) -> list[dict[str, Any]]:
-    canonical_nicknames: dict[str, set[str]] = defaultdict(set)
+    proven_public_ids = set(aliases.values())
+    nickname_ids: dict[str, set[str]] = defaultdict(set)
     for user in users:
         uid = canonical_id(str(user.get("user_id", "")), aliases)
         if uid != group_id:
-            canonical_nicknames[str(user.get("nickname", ""))].add(uid)
+            nickname_ids[str(user.get("nickname", ""))].add(uid)
+    canonical_nicknames: dict[str, set[str]] = defaultdict(set)
+    for nickname, ids in nickname_ids.items():
+        for uid in ids:
+            if uid.endswith("0") and uid[:-1] in proven_public_ids and uid[:-1] in ids:
+                canonical_nicknames[nickname].add(uid[:-1])
+            else:
+                canonical_nicknames[nickname].add(uid)
 
     merged: dict[str, dict[str, Any]] = {}
     for original in users:
         item = dict(original)
         uid = canonical_id(str(item.get("user_id", "")), aliases)
+        # One historical adapter build appended a zero to projected PN IDs.
+        # Repair that shape only in statistics, and only when a proven PN plus
+        # the exact same nickname already exists. Never apply this heuristic to
+        # configs, UMO values, cron jobs, or memory text.
+        nickname_matches = canonical_nicknames.get(str(item.get("nickname", "")), set())
+        if (
+            uid.endswith("0")
+            and uid[:-1] in proven_public_ids
+            and uid[:-1] in nickname_matches
+        ):
+            uid = uid[:-1]
         if uid == group_id:
-            matches = canonical_nicknames.get(str(item.get("nickname", "")), set())
+            matches = nickname_matches
             if len(matches) == 1:
                 uid = next(iter(matches))
         item["user_id"] = uid
@@ -158,12 +198,36 @@ class Migration:
         target = self.backup_dir / path.relative_to(self.data_dir)
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(path, target)
-        path.write_text(new, "utf-8")
+        file_descriptor, temporary_name = tempfile.mkstemp(
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+        )
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(file_descriptor, "w", encoding="utf-8") as handle:
+                os.fchmod(handle.fileno(), path.stat().st_mode & 0o777)
+                handle.write(new)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
 
-    def migrate_json(self, path: Path, aliases: dict[str, str], *, stats: bool = False) -> None:
+    def migrate_json(
+        self,
+        path: Path,
+        aliases: dict[str, str],
+        *,
+        stats: bool = False,
+        origin_map: bool = False,
+    ) -> None:
         value = json.loads(path.read_text("utf-8-sig"))
         if stats:
             value["users"] = merge_users(value.get("users", []), str(value.get("group_id", "")), aliases)
+        elif origin_map:
+            value = canonical_origin_map(value, aliases)
         else:
             value = canonical_json(value, aliases)
         self.write_json(path, value)
@@ -305,16 +369,14 @@ def main() -> int:
         migration.migrate_json(path, aliases, stats=True)
     umo_aliases = stats_root / "unified_msg_origins.json"
     if umo_aliases.exists():
-        migration.migrate_json(umo_aliases, aliases)
+        migration.migrate_json(umo_aliases, aliases, origin_map=True)
 
     selected = [
         data_dir / "cmd_config.json",
-        data_dir / "config" / "abconf_c725aa87-01d0-4cf0-91d5-c4408ddfe6f3.json",
-        data_dir / "config" / "astrbot_plugin_model_router_config.json",
-        data_dir / "config" / "MCSManager服务器管理插件_config.json",
         data_dir / "plugin_data" / "astrbot_plugin_daily_ai_news" / "subscriptions.json",
         data_dir / "plugin_data" / "astrbot_plugin_rollpig_plus" / "pig_history.json",
     ]
+    selected.extend(sorted((data_dir / "config").glob("*.json")))
     for path in selected:
         if path.exists():
             migration.migrate_json(path, aliases)

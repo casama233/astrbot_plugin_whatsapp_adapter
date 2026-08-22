@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
+import { createServer } from "node:http";
 import path from "node:path";
 import test from "node:test";
 
 import {
   isAuthorizedGatewayRequest,
   isPublicIpAddress,
+  pinnedRequest,
   prepareSafeMediaSource,
 } from "./security-runtime.mjs";
 
@@ -87,5 +89,31 @@ test("local media is limited to trusted roots and file URLs are rejected", async
     );
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("remote media has an absolute deadline even while bytes keep arriving", async () => {
+  const server = createServer((_req, res) => {
+    res.writeHead(200, { "content-type": "application/octet-stream" });
+    const drip = setInterval(() => res.write("x"), 10);
+    res.on("close", () => clearInterval(drip));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.equal(typeof address, "object");
+  try {
+    await assert.rejects(
+      () => pinnedRequest(
+        new URL(`http://example.test:${address.port}/slow`),
+        { address: "127.0.0.1", family: 4 },
+        1024,
+        75,
+      ),
+      /timed out/,
+    );
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => (
+      error ? reject(error) : resolve()
+    )));
   }
 });

@@ -7,6 +7,8 @@ from .album_caption_compat import (
     install_album_caption_compat as _install_album_caption_compat,
 )
 from .gateway_security import (
+    bind_gateway_client as _bind_gateway_client,
+    clear_gateway_client_binding as _clear_gateway_client_binding,
     install_gateway_transport_security as _install_gateway_transport_security,
 )
 from .group_name_compat import apply_group_name as _apply_group_name
@@ -63,7 +65,7 @@ def _auth_dir_for_instance(self):
 
 def _create_gateway_process_for_instance(self):
     host, port = _ensure_gateway_endpoint(self)
-    return GatewayProcess(
+    process = GatewayProcess(
         node_executable=str(self.config["node_executable"]),
         script_path=PLUGIN_DIR / "gateway" / "whatsapp-gateway.mjs",
         host=host,
@@ -72,6 +74,8 @@ def _create_gateway_process_for_instance(self):
         log_level=str(self.config["log_level"]),
         data_dir=self._data_dir(),
     )
+    _bind_gateway_client(self.client, process)
+    return process
 
 
 def _init_with_gateway_lease(self, *args, **kwargs):
@@ -129,7 +133,9 @@ async def _reload_with_gateway_lease(self, platform_config):
     async with _gateway_lifecycle_lock(self):
         self._reconnect_event.set()
         await self._stop_health_monitor()
+        previous_process = getattr(self, "gateway_process", None)
         await self._shutdown_gateway_transport()
+        _clear_gateway_client_binding(self.client, previous_process)
         self._release_runtime_owner()
         _release_gateway_endpoint(self)
 
