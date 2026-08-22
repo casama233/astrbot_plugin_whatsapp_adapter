@@ -79,9 +79,11 @@ class GatewaySecurityTests(unittest.IsolatedAsyncioTestCase):
         process = process_cls()
         client = client_cls("http://127.0.0.1:18789")
 
+        self.assertNotIn(("127.0.0.1", 18789), security._GATEWAY_TOKENS)
+        token = security.bind_gateway_client(client, process)
+
         result = await client._request("GET", "/health")
-        self.assertTrue(result["authorization"].startswith("Bearer "))
-        token = result["authorization"].removeprefix("Bearer ")
+        self.assertEqual(result["authorization"], f"Bearer {token}")
         self.assertGreaterEqual(len(token), 40)
 
         os.environ["WA_GATEWAY_TOKEN"] = "external-parent-token"
@@ -120,11 +122,15 @@ class GatewaySecurityTests(unittest.IsolatedAsyncioTestCase):
 
         managed = process_cls(port=19001)
         managed_client = client_cls("http://127.0.0.1:19001")
-        managed_header = (
-            await managed_client._request("GET", "/health")
-        )["authorization"]
-        self.assertNotEqual(managed_header, "Bearer external-token")
-        self.assertTrue(managed_header.startswith("Bearer "))
+        self.assertEqual(
+            (await managed_client._request("GET", "/health"))["authorization"],
+            "Bearer external-token",
+        )
+        managed_token = security.bind_gateway_client(managed_client, managed)
+        self.assertEqual(
+            (await managed_client._request("GET", "/health"))["authorization"],
+            f"Bearer {managed_token}",
+        )
 
         await managed.stop()
         replacement_client = client_cls("http://127.0.0.1:19001")
@@ -136,8 +142,9 @@ class GatewaySecurityTests(unittest.IsolatedAsyncioTestCase):
     async def test_events_receive_authorization_header(self) -> None:
         client_cls, process_cls = _fake_classes(self.root)
         security.install_gateway_transport_security(client_cls, process_cls)
-        process_cls(port=18800)
+        process = process_cls(port=18800)
         client = client_cls("http://127.0.0.1:18800")
+        security.bind_gateway_client(client, process)
 
         events = [event async for event in client.events()]
         self.assertTrue(events[0]["authorization"].startswith("Bearer "))
@@ -154,10 +161,80 @@ class GatewaySecurityTests(unittest.IsolatedAsyncioTestCase):
             reloaded_client_cls,
             reloaded_process_cls,
         )
-        reloaded_process_cls(port=18801)
+        process = reloaded_process_cls(port=18801)
         client = reloaded_client_cls("http://127.0.0.1:18801")
+        security.bind_gateway_client(client, process)
         result = await client._request("GET", "/health")
         self.assertTrue(result["authorization"].startswith("Bearer "))
+
+    async def test_failed_spawn_does_not_replace_live_endpoint_token(self) -> None:
+        client_cls, process_cls = _fake_classes(self.root)
+        security.install_gateway_transport_security(client_cls, process_cls)
+        security._GATEWAY_TOKENS[("127.0.0.1", 18789)] = "live-token"
+        replacement = process_cls()
+
+        with patch(
+            "gateway_security.asyncio.create_subprocess_exec",
+            side_effect=OSError("spawn failed"),
+        ):
+            with self.assertRaisesRegex(OSError, "spawn failed"):
+                await replacement.start()
+
+        self.assertEqual(
+            security._GATEWAY_TOKENS[("127.0.0.1", 18789)],
+            "live-token",
+        )
+
+    async def test_explicit_binding_survives_registry_generation_loss(self) -> None:
+        client_cls, process_cls = _fake_classes(self.root)
+        security.install_gateway_transport_security(client_cls, process_cls)
+        process = process_cls(port=18802)
+        client = client_cls("http://127.0.0.1:18802")
+        token = security.bind_gateway_client(client, process)
+        security._GATEWAY_TOKENS.clear()
+
+        self.assertEqual(
+            (await client._request("GET", "/health"))["authorization"],
+            f"Bearer {token}",
+        )
+
+    async def test_binding_is_scoped_to_endpoint_and_can_be_cleared(self) -> None:
+        client_cls, process_cls = _fake_classes(self.root)
+        security.install_gateway_transport_security(client_cls, process_cls)
+        os.environ["WA_GATEWAY_TOKEN"] = "external-token"
+        process = process_cls(port=18804)
+        client = client_cls("http://127.0.0.1:18804")
+        token = security.bind_gateway_client(client, process)
+        self.assertGreaterEqual(len(token), 40)
+
+        client.base_url = "http://127.0.0.1:18805"
+        self.assertEqual(
+            (await client._request("GET", "/health"))["authorization"],
+            "Bearer external-token",
+        )
+        client.base_url = "http://127.0.0.1:18804"
+        self.assertTrue(security.clear_gateway_client_binding(client, process))
+        self.assertEqual(
+            (await client._request("GET", "/health"))["authorization"],
+            "Bearer external-token",
+        )
+
+    async def test_partial_reload_patches_only_the_unpatched_class(self) -> None:
+        old_client_cls, old_process_cls = _fake_classes(self.root)
+        security.install_gateway_transport_security(old_client_cls, old_process_cls)
+        old_process_start = old_process_cls.start
+
+        new_client_cls, _unused_process_cls = _fake_classes(self.root)
+        security.install_gateway_transport_security(new_client_cls, old_process_cls)
+
+        self.assertIs(old_process_cls.start, old_process_start)
+        process = old_process_cls(port=18803)
+        client = new_client_cls("http://127.0.0.1:18803")
+        token = security.bind_gateway_client(client, process)
+        self.assertEqual(
+            (await client._request("GET", "/health"))["authorization"],
+            f"Bearer {token}",
+        )
 
 
 if __name__ == "__main__":
