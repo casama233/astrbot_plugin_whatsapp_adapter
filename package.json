@@ -1,7 +1,7 @@
 {
   "name": "astrbot-plugin-whatsapp-adapter-gateway",
   "private": true,
-  "version": "0.2.42",
+  "version": "0.2.43",
   "type": "module",
   "engines": {
     "node": ">=20"

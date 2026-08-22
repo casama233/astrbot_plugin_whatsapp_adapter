@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.43] - 2026-08-22
+
+- Bind managed Gateway clients directly to process credentials and stop HTTP 401 responses from entering minute-long restart loops after AstrBot hot reloads.
+- Recreate stale clients during adapter class replacement, prevent dormant or failed processes from stealing endpoint credentials, and clean credentials after process exit.
+- Make legacy identity migration conservative, collision-safe, atomic, and portable while preserving the existing 159 proven mappings without further live-data rewrites.
+- Enforce an absolute deadline on remote media downloads and remove duplicate Gateway interruption warnings.
+
 ## [0.2.42] - 2026-08-21
 
 - 出站 @用户 现在像 QQ 一样保留稳定 user_id，并在 WhatsApp 文本、编辑消息与媒体说明中显示可用的群昵称。
