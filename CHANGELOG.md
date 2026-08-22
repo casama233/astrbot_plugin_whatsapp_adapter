@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.44] - 2026-08-23
+
+- Restore the required message event discriminator after member-tag enrichment so accepted WhatsApp messages reach AstrBot instead of being silently ignored.
+- Log malformed or unknown Gateway events and test the complete generated runtime patch chain to prevent this regression from returning.
+
 ## [0.2.43] - 2026-08-22
 
 - Bind managed Gateway clients directly to process credentials and stop HTTP 401 responses from entering minute-long restart loops after AstrBot hot reloads.
