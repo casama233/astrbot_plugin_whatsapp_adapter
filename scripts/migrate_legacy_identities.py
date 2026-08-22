@@ -205,11 +205,12 @@ class Migration:
         )
         temporary = Path(temporary_name)
         try:
+            original_mode = path.stat().st_mode & 0o777
             with os.fdopen(file_descriptor, "w", encoding="utf-8") as handle:
-                os.fchmod(handle.fileno(), path.stat().st_mode & 0o777)
                 handle.write(new)
                 handle.flush()
                 os.fsync(handle.fileno())
+            os.chmod(temporary, original_mode)
             os.replace(temporary, path)
         except BaseException:
             temporary.unlink(missing_ok=True)
