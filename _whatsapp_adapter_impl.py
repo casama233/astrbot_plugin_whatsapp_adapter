@@ -304,7 +304,6 @@ CONFIG_KEY_ALIASES: dict[str, str] = {
     "发送已读回执": "send_read_receipts",
     "标记在线状态": "mark_online",
     "Gateway 健康检查间隔": "gateway_health_check_interval",
-    "预回应表情": "pre_ack_emojis",
     "私聊启用手动回应": "pre_ack_private",
     "群组回应模式": "pre_ack_public",
     "解析入站格式": "parse_inbound_formatting",
@@ -1221,7 +1220,6 @@ class WhatsAppPlatformAdapter(Platform):
                         logger.debug("WhatsApp Gateway 事件流空闲超时，正在重连: %s", exc)
                         self._quiet_next_gateway_connect = True
                     else:
-                        logger.warning("WhatsApp Gateway 事件流中断: %s", exc)
                         self._record_gateway_error(f"WhatsApp Gateway 事件流中断: {exc}", exc_info=exc)
                     try:
                         await self._ensure_gateway_running()
@@ -2471,12 +2469,17 @@ class WhatsAppPlatformAdapter(Platform):
         last_error: Exception | None = None
         for attempt in range(1, 61):
             try:
-                health = await self.client.health()
+                await self.client.health()
                 log = logger.debug if quiet else logger.info
                 log("WhatsApp Gateway: 连接正常 (第%s次尝试)", attempt)
                 return
             except Exception as exc:
                 last_error = exc
+                if isinstance(exc, WhatsAppGatewayError) and exc.status_code == 401:
+                    # Retrying cannot change a rejected credential, and a
+                    # replacement process on the same endpoint would race the
+                    # healthy Gateway that returned this response.
+                    raise
                 if attempt in {1, 5, 15, 30, 60}:
                     logger.debug("等待 WhatsApp Gateway 健康检查第 %s 次失败: %s", attempt, exc)
                 await asyncio.sleep(1)
@@ -2497,9 +2500,13 @@ class WhatsAppPlatformAdapter(Platform):
             health = await self.client.health()
             if not health.get("configured", False):
                 logger.info("WhatsApp Gateway 已就绪但未配置，正在下发配置")
-                configured = await self.client.configure(self._gateway_config())
+                await self.client.configure(self._gateway_config())
                 logger.info("WhatsApp Gateway 配置已完成")
                 return
+        except WhatsAppGatewayError as exc:
+            if exc.status_code == 401:
+                raise
+            needs_restart = True
         except Exception:
             needs_restart = True
         if not needs_restart:
@@ -2512,7 +2519,7 @@ class WhatsAppPlatformAdapter(Platform):
         self.gateway_process = self._create_gateway_process()
         await self.gateway_process.start()
         await self._wait_for_gateway()
-        configured = await self.client.configure(self._gateway_config())
+        await self.client.configure(self._gateway_config())
         logger.info("WhatsApp Gateway: 已重新配置（重启后）")
         self._mark_running()
 
@@ -2527,8 +2534,12 @@ class WhatsAppPlatformAdapter(Platform):
             self._force_gateway_restart = False
             if not force_restart:
                 try:
-                    health = await self.client.health()
+                    await self.client.health()
                     logger.debug("WhatsApp Gateway 已就绪")
+                except WhatsAppGatewayError as exc:
+                    if exc.status_code == 401:
+                        raise
+                    force_restart = True
                 except Exception:
                     force_restart = True
             if force_restart:

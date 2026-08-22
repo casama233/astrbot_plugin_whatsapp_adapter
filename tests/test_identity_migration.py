@@ -40,6 +40,40 @@ class IdentityMigrationTests(unittest.TestCase):
             "2026-08-01:3", "2026-08-02:2", "2026-08-03:1", "2026-08-04:4"
         ])
 
+    def test_trailing_zero_is_not_globally_treated_as_an_alias(self):
+        aliases = {"123": "85200000000"}
+        self.assertEqual(
+            self.migration.canonical_id("852000000000", aliases),
+            "852000000000",
+        )
+        self.assertEqual(
+            self.migration.canonical_text("852000000000", aliases),
+            "852000000000",
+        )
+
+    def test_generic_json_preserves_keys_and_unrelated_exact_numbers(self):
+        aliases = {"123": "85200000000"}
+        value = {
+            "123": "123",
+            "whatsapp:FriendMessage:123": "whatsapp:FriendMessage:123",
+        }
+        projected = self.migration.canonical_json(value, aliases)
+        self.assertEqual(set(projected), set(value))
+        self.assertEqual(projected["123"], "123")
+        self.assertEqual(
+            projected["whatsapp:FriendMessage:123"],
+            "whatsapp:FriendMessage:85200000000",
+        )
+
+    def test_origin_map_keeps_disagreeing_collision_instead_of_overwriting(self):
+        aliases = {"123": "85200000000"}
+        projected = self.migration.canonical_origin_map(
+            {"123": "first", "85200000000": "second"},
+            aliases,
+        )
+        self.assertEqual(projected["123"], "first")
+        self.assertEqual(projected["85200000000"], "second")
+
     def test_apply_backs_up_and_is_idempotent(self):
         with tempfile.TemporaryDirectory() as root:
             data = Path(root)
@@ -53,6 +87,7 @@ class IdentityMigrationTests(unittest.TestCase):
             runner.migrate_json(target, aliases)
             self.assertEqual(json.loads(target.read_text("utf-8"))["admins"], ["whatsapp:FriendMessage:85200000000"])
             self.assertTrue((runner.backup_dir / "cmd_config.json").exists())
+            self.assertEqual(list(data.glob(".cmd_config.json.*.tmp")), [])
             again = self.migration.Migration(data, True)
             again.migrate_json(target, aliases)
             self.assertEqual(again.changed, [])
