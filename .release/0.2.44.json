@@ -1,0 +1,10 @@
+{
+  "version": "0.2.44",
+  "previous_version": "0.2.43",
+  "date": "2026-08-23",
+  "commit_subject": "restore inbound WhatsApp event dispatch",
+  "notes": [
+    "Restore the required message event discriminator after member-tag enrichment so accepted WhatsApp messages reach AstrBot instead of being silently ignored.",
+    "Log malformed or unknown Gateway events and test the complete generated runtime patch chain to prevent this regression from returning."
+  ]
+}
