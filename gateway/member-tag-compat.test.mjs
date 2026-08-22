@@ -4,6 +4,8 @@ import test from "node:test";
 
 import { patchGatewayGroupNames } from "./group-name-compat.mjs";
 import { patchGatewayMemberTags } from "./member-tag-compat.mjs";
+import { patchGatewayPrivateMediaBursts } from "./private-media-burst-compat.mjs";
+import { patchGatewaySecurity } from "./security-hardening.mjs";
 
 function patchedGateway() {
   const source = readFileSync(
@@ -20,6 +22,10 @@ test("bridges group member tags into inbound events and group info", () => {
   assert.match(result.content, /group\.member-tag\.update/);
   assert.match(result.content, /memberTagSnapshotFromMessagePayload\(primary\.message\)/);
   assert.match(result.content, /senderMemberTag,/);
+  assert.match(
+    result.content,
+    /broadcast\(\{\n    type: "message",\n    messageId:/,
+  );
   assert.match(
     result.content,
     /memberTag: groupMemberTagFor\(groupJid, jid, pnJid, identity\?\.lidJid\)/,
@@ -56,4 +62,15 @@ test("is idempotent after the member-tag compatibility marker is present", () =>
   const second = patchGatewayMemberTags(first.content);
   assert.equal(second.changed, false);
   assert.equal(second.content, first.content);
+});
+
+test("complete runtime patch chain preserves the inbound message discriminator", () => {
+  const memberPatched = patchedGateway();
+  const privateMediaPatched = patchGatewayPrivateMediaBursts(memberPatched.content);
+  const secured = patchGatewaySecurity(privateMediaPatched.content);
+
+  assert.match(
+    secured.content,
+    /broadcast\(\{\n    type: "message",\n    messageId:/,
+  );
 });
