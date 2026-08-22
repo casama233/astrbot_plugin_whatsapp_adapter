@@ -16,6 +16,8 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, register
 from astrbot.api.web import json_response, request
 
+from .gateway_security import bind_gateway_client
+
 try:
     from astrbot.core.utils.astrbot_path import (
         get_astrbot_data_path as _get_astrbot_data_path,
@@ -1270,12 +1272,36 @@ class WhatsAppAdapterPlugin(Star):
         async with self._page_gateway_lock:
             await self._ensure_page_gateway_unlocked()
 
+    def _bind_page_client_to_managed_gateway(self) -> GatewayProcess | None:
+        """Prefer the credential of the process already owning this endpoint."""
+
+        candidates: list[GatewayProcess | None] = [self.page_gateway_process]
+        from .whatsapp_adapter import get_active_whatsapp_adapters
+
+        for adapter in get_active_whatsapp_adapters():
+            if str(getattr(adapter, "_base_url", "")).rstrip("/") != self._base_url:
+                continue
+            candidates.append(getattr(adapter, "gateway_process", None))
+        for process in candidates:
+            child = getattr(process, "process", None) if process else None
+            if child is not None and child.returncode is None:
+                bind_gateway_client(self.page_client, process)
+                return process
+        return None
+
     async def _ensure_page_gateway_unlocked(self) -> None:
+        self._bind_page_client_to_managed_gateway()
         await self.page_client.start()
         try:
             health = await self.page_client.health()
             logger.debug("WhatsApp Gateway 已就绪（管理页）: %s", self._safe_status(health))
             return
+        except WhatsAppGatewayError as exc:
+            # A 401 proves a Gateway already owns the endpoint. Starting a
+            # second process would only produce an address-in-use loop and can
+            # never repair an unknown credential.
+            if exc.status_code == 401:
+                raise
         except Exception:
             pass
         if not self.config.get("auto_start_gateway", True):
@@ -1295,10 +1321,12 @@ class WhatsAppAdapterPlugin(Star):
             log_level=str(self.config["log_level"]),
             data_dir=self._data_dir(),
         )
+        bind_gateway_client(self.page_client, self.page_gateway_process)
         logger.info("正在启动 WhatsApp Gateway（管理页）: %s", self._base_url)
         await self.page_gateway_process.start()
         # 輪詢 Gateway 健康狀態，最長等待 30 秒
         health_client = WhatsAppGatewayClient(self._base_url, timeout=5.0)
+        bind_gateway_client(health_client, self.page_gateway_process)
         try:
             last_error: Exception | None = None
             for attempt in range(1, 31):
@@ -1485,7 +1513,10 @@ class WhatsAppAdapterPlugin(Star):
                 inst._platform_config = sanitized_config
                 inst._platform_settings = self.context.get_config().get("platform_settings", {})
                 inst.config = inst._merged_config(sanitized_config)
-                inst.client.update_base_url(inst._base_url)
+                # terminate() closed the previous-generation client. Recreate
+                # it from the current module so its transport wrappers and
+                # per-process credential binding cannot straddle hot reloads.
+                inst.client = WhatsAppGatewayClient(inst._base_url)
                 inst._legacy_command_prefix = extract_legacy_command_prefix(sanitized_config)
                 inst._registered_commands = []
                 inst._refresh_registered_commands()

@@ -89,8 +89,18 @@ async function resolvePinnedPublicAddress(hostname) {
   return resolved[0];
 }
 
-function pinnedRequest(url, resolved, maxBytes, timeoutMs) {
+export function pinnedRequest(url, resolved, maxBytes, timeoutMs) {
   return new Promise((resolve, reject) => {
+    let settled = false;
+    let deadline;
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      callback(value);
+    };
+    const succeed = (value) => finish(resolve, value);
+    const fail = (error) => finish(reject, error);
     const transport = url.protocol === "https:" ? https : http;
     const request = transport.request(
       {
@@ -117,18 +127,18 @@ function pinnedRequest(url, resolved, maxBytes, timeoutMs) {
         const location = response.headers.location;
         if ([301, 302, 303, 307, 308].includes(status) && location) {
           response.resume();
-          resolve({ status, location, body: null });
+          succeed({ status, location, body: null });
           return;
         }
         if (status < 200 || status >= 300) {
           response.resume();
-          reject(new Error(`remote media request failed with HTTP ${status}`));
+          fail(new Error(`remote media request failed with HTTP ${status}`));
           return;
         }
         const contentLength = Number(response.headers["content-length"] || 0);
         if (Number.isFinite(contentLength) && contentLength > maxBytes) {
           response.resume();
-          reject(new Error("remote media exceeds the outbound size limit"));
+          fail(new Error("remote media exceeds the outbound size limit"));
           return;
         }
         const chunks = [];
@@ -141,11 +151,21 @@ function pinnedRequest(url, resolved, maxBytes, timeoutMs) {
           }
           chunks.push(chunk);
         });
-        response.on("end", () => resolve({ status, location: null, body: Buffer.concat(chunks) }));
+        response.on("end", () => succeed({ status, location: null, body: Buffer.concat(chunks) }));
+        response.on("error", fail);
+        response.on("aborted", () => fail(new Error("remote media response was aborted")));
       },
     );
+    // request.setTimeout is an inactivity timeout and can be defeated by an
+    // endpoint that drips bytes indefinitely. Enforce the same limit as an
+    // absolute deadline as well.
+    deadline = setTimeout(
+      () => request.destroy(new Error("remote media request timed out")),
+      timeoutMs,
+    );
+    deadline.unref?.();
     request.setTimeout(timeoutMs, () => request.destroy(new Error("remote media request timed out")));
-    request.on("error", reject);
+    request.on("error", fail);
     request.end();
   });
 }
