@@ -57,7 +57,7 @@ class GatewayStabilityTests(unittest.IsolatedAsyncioTestCase):
                 ),
                 patch(
                     "gateway_stability._terminate_process_tree",
-                    side_effect=lambda process: self._mark_killed(process),
+                    side_effect=self._mark_killed,
                 ),
             ):
                 with self.assertRaisesRegex(Error, "timed out"):
