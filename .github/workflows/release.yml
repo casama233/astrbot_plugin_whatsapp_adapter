@@ -184,6 +184,7 @@ jobs:
           set -euo pipefail
           python scripts/release_contract.py validate-archive "$RELEASE_ASSET" \
             --expected-version "$RELEASE_VERSION"
+          python scripts/verify-release-runtime.py "$RELEASE_ASSET"
           (
             cd "$RUNNER_TEMP"
             sha256sum -c "$RELEASE_CHECKSUM_NAME"
