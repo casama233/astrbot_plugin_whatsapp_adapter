@@ -27,7 +27,9 @@ export function patchGatewayStability(source) {
     return { content: source, changed: false };
   }
 
-  let content = source;
+  // Git may check the implementation out with CRLF on Windows. Normalize only
+  // the generated runtime content so exact source anchors remain portable.
+  let content = source.replace(/\r\n/g, "\n");
   content = replaceRequired(
     content,
     HEALTH_ROUTE,
