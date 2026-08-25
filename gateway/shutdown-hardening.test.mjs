@@ -40,6 +40,31 @@ test("shutdown patch exposes authenticated graceful stop and final credential fl
   assert.match(source, /if \(shuttingDown\) return Promise\.resolve/);
 });
 
+test("socket generations cannot overlap credential persistence and auth reload", async () => {
+  const source = await patchedSource();
+  const barrierIndex = source.indexOf(
+    "const previousCredsSettled = await settleWithin([activeCredsSaveQueue], 5000);",
+  );
+  const generationIndex = source.indexOf("const generation = ++socketGeneration;", barrierIndex);
+  const authLoadIndex = source.indexOf(
+    "await useMultiFileAuthState(currentAuthDir)",
+    generationIndex,
+  );
+  const socketCreateIndex = source.indexOf("const socketForGeneration = makeWASocket", authLoadIndex);
+  assert.ok(barrierIndex >= 0);
+  assert.ok(generationIndex > barrierIndex);
+  assert.ok(authLoadIndex > generationIndex);
+  assert.ok(socketCreateIndex > authLoadIndex);
+  assert.match(
+    source,
+    /previous credential persistence queue did not settle before socket restart/,
+  );
+  assert.match(
+    source.slice(authLoadIndex, socketCreateIndex),
+    /if \(shuttingDown\) return \{ ok: false, status: "stopping" \};/,
+  );
+});
+
 test("shutdown patch is idempotent and portable across CRLF input", async () => {
   const stable = await stabilityPatchedSource();
   const first = patchGatewayShutdown(stable.replace(/\r?\n/g, "\r\n"));
