@@ -7,6 +7,7 @@ import { patchGatewayGroupNames } from "./group-name-compat.mjs";
 import { patchGatewayMemberTags } from "./member-tag-compat.mjs";
 import { patchGatewayPrivateMediaBursts } from "./private-media-burst-compat.mjs";
 import { patchGatewaySecurity } from "./security-hardening.mjs";
+import { patchGatewayShutdown } from "./shutdown-hardening.mjs";
 import { patchGatewayStability } from "./stability-hardening.mjs";
 
 const gatewayDir = path.dirname(fileURLToPath(import.meta.url));
@@ -17,7 +18,8 @@ const groupPatched = patchGatewayGroupNames(source);
 const memberTagPatched = patchGatewayMemberTags(groupPatched.content);
 const privateMediaPatched = patchGatewayPrivateMediaBursts(memberTagPatched.content);
 const stabilityPatched = patchGatewayStability(privateMediaPatched.content);
-const securityPatched = patchGatewaySecurity(stabilityPatched.content);
+const shutdownPatched = patchGatewayShutdown(stabilityPatched.content);
+const securityPatched = patchGatewaySecurity(shutdownPatched.content);
 const patched = securityPatched;
 
 let current = "";
