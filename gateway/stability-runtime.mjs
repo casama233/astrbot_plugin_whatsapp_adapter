@@ -10,8 +10,10 @@ export async function withDeadline(promise, timeoutMs, label) {
     return await Promise.race([
       Promise.resolve(promise),
       new Promise((_, reject) => {
+        // A deadline is part of the operation's correctness contract. Keep the
+        // timer referenced so a stalled promise cannot outlive the watchdog just
+        // because no other event-loop handles happen to be active.
         timer = setTimeout(() => reject(new Error(`${label} timed out`)), timeoutMs);
-        timer.unref?.();
       }),
     ]);
   } finally {
@@ -57,14 +59,12 @@ export function pipeWithWatchdog(
         () => finish(new Error("inbound media stream idle timed out")),
         idleTimeoutMs,
       );
-      idleTimer.unref?.();
     };
 
     totalTimer = setTimeout(
       () => finish(new Error("inbound media total download timed out")),
       totalTimeoutMs,
     );
-    totalTimer.unref?.();
     armIdleTimer();
 
     writeStream.on("error", finish);
@@ -103,7 +103,6 @@ export async function settleWithin(promises, timeoutMs) {
       Promise.allSettled(promises).then(() => true),
       new Promise((resolve) => {
         timer = setTimeout(() => resolve(false), timeoutMs);
-        timer.unref?.();
       }),
     ]);
     return Boolean(result);
