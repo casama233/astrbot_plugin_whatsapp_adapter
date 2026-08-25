@@ -33,6 +33,7 @@ _original_run = WhatsAppPlatformAdapter.run
 _original_terminate = WhatsAppPlatformAdapter.terminate
 _original_connect_gateway = WhatsAppPlatformAdapter._connect_gateway
 _original_ensure_gateway_running = WhatsAppPlatformAdapter._ensure_gateway_running
+_original_wait_for_gateway = WhatsAppPlatformAdapter._wait_for_gateway
 
 
 def _gateway_lifecycle_lock(self):
@@ -102,6 +103,34 @@ def _recover_bind_race(self) -> bool:
         replacement,
     )
     return True
+
+
+async def _wait_for_gateway_with_fatal_health(self, quiet: bool = False) -> None:
+    """Fail fast when a live Gateway reports a terminal runtime error."""
+
+    last_error: Exception | None = None
+    for attempt in range(1, 61):
+        child = getattr(getattr(self, "gateway_process", None), "process", None)
+        if child is not None and child.returncode is not None:
+            raise WhatsAppGatewayError(
+                f"WhatsApp Gateway exited during startup with code {child.returncode}"
+            )
+        try:
+            await self.client.health()
+            log = logger.debug if quiet else logger.info
+            log("WhatsApp Gateway: 连接正常 (第%s次尝试)", attempt)
+            return
+        except Exception as exc:
+            last_error = exc
+            if isinstance(exc, WhatsAppGatewayError) and exc.status_code in {401, 503}:
+                # 401 proves endpoint ownership by another credential. 503 on
+                # /health is reserved by the hardened Gateway for a terminal
+                # internal error. Neither condition can improve by waiting.
+                raise
+            if attempt in {1, 5, 15, 30, 60}:
+                logger.debug("等待 WhatsApp Gateway 健康检查第 %s 次失败: %s", attempt, exc)
+            await asyncio.sleep(1)
+    raise WhatsAppGatewayError(f"WhatsApp Gateway did not become healthy: {last_error}")
 
 
 async def _connect_gateway_with_gateway_lease(self):
@@ -174,6 +203,7 @@ WhatsAppPlatformAdapter._base_url = property(_base_url_for_instance)
 WhatsAppPlatformAdapter._auth_dir = _auth_dir_for_instance
 WhatsAppPlatformAdapter._create_gateway_process = _create_gateway_process_for_instance
 WhatsAppPlatformAdapter.__init__ = _init_with_gateway_lease
+WhatsAppPlatformAdapter._wait_for_gateway = _wait_for_gateway_with_fatal_health
 WhatsAppPlatformAdapter._connect_gateway = _connect_gateway_with_gateway_lease
 WhatsAppPlatformAdapter._ensure_gateway_running = _ensure_gateway_running_with_gateway_lease
 WhatsAppPlatformAdapter.reload = _reload_with_gateway_lease
