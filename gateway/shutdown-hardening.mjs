@@ -13,6 +13,10 @@ const STATUS_ROUTE_ANCHOR = `    if (req.method === "GET" && url.pathname === "/
 const SOCKET_START_BLOCK = `function requestSocketStart(opts = {}) {
   return enqueueSocketTransition("start", () => startSocket(opts));
 }`;
+const START_SOCKET_BLOCK = `async function startSocket(opts = {}) {
+  const generation = ++socketGeneration;`;
+const AUTH_STATE_BLOCK = `  const { state, saveCreds } = await useMultiFileAuthState(currentAuthDir);
+  const socketForGeneration = makeWASocket({`;
 const CREDS_QUEUE_BLOCK = `  let credsSaveQueue = Promise.resolve();
   socketForGeneration.ev.on("creds.update", () => {
     if (generation !== socketGeneration) return;
@@ -58,6 +62,34 @@ export function patchGatewayShutdown(source) {
   return enqueueSocketTransition("start", () => startSocket(opts));
 }`,
     "socket start shutdown guard",
+  );
+  content = replaceRequired(
+    content,
+    START_SOCKET_BLOCK,
+    `async function startSocket(opts = {}) {
+  if (shuttingDown) return { ok: false, status: "stopping" };
+  // A reconnect must never load the auth directory while the previous socket
+  // generation is still persisting credentials into it. Treat credential
+  // durability as a barrier between generations rather than best-effort I/O.
+  const previousCredsSettled = await settleWithin([activeCredsSaveQueue], 5000);
+  if (!previousCredsSettled) {
+    throw new Error("previous credential persistence queue did not settle before socket restart");
+  }
+  activeSaveCreds = null;
+  activeCredsSaveQueue = Promise.resolve();
+  if (shuttingDown) return { ok: false, status: "stopping" };
+  const generation = ++socketGeneration;`,
+    "cross-generation credential persistence barrier",
+  );
+  content = replaceRequired(
+    content,
+    AUTH_STATE_BLOCK,
+    `  const { state, saveCreds } = await useMultiFileAuthState(currentAuthDir);
+  // Shutdown can begin while auth state is being read from disk. Do not create
+  // a fresh WebSocket after the graceful-stop sequence has already started.
+  if (shuttingDown) return { ok: false, status: "stopping" };
+  const socketForGeneration = makeWASocket({`,
+    "post-auth shutdown guard",
   );
   content = replaceRequired(
     content,
