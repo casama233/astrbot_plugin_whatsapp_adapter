@@ -17,13 +17,16 @@ import { patchGatewayStability } from "./stability-hardening.mjs";
 const execFileAsync = promisify(execFile);
 const gatewayDir = path.dirname(fileURLToPath(import.meta.url));
 
-async function patchedSource() {
+async function stabilityPatchedSource() {
   const source = await readFile(path.join(gatewayDir, "whatsapp-gateway-impl.mjs"), "utf8");
   const group = patchGatewayGroupNames(source);
   const member = patchGatewayMemberTags(group.content);
   const media = patchGatewayPrivateMediaBursts(member.content);
-  const stability = patchGatewayStability(media.content);
-  const shutdown = patchGatewayShutdown(stability.content);
+  return patchGatewayStability(media.content).content;
+}
+
+async function patchedSource() {
+  const shutdown = patchGatewayShutdown(await stabilityPatchedSource());
   return patchGatewaySecurity(shutdown.content).content;
 }
 
@@ -38,12 +41,8 @@ test("shutdown patch exposes authenticated graceful stop and final credential fl
 });
 
 test("shutdown patch is idempotent and portable across CRLF input", async () => {
-  const source = await readFile(path.join(gatewayDir, "whatsapp-gateway-impl.mjs"), "utf8");
-  const group = patchGatewayGroupNames(source.replace(/\r?\n/g, "\r\n"));
-  const member = patchGatewayMemberTags(group.content);
-  const media = patchGatewayPrivateMediaBursts(member.content);
-  const stability = patchGatewayStability(media.content);
-  const first = patchGatewayShutdown(stability.content);
+  const stable = await stabilityPatchedSource();
+  const first = patchGatewayShutdown(stable.replace(/\r?\n/g, "\r\n"));
   assert.equal(first.changed, true);
   const second = patchGatewayShutdown(first.content);
   assert.equal(second.changed, false);
