@@ -13,16 +13,19 @@ async function implementationSource() {
 }
 
 test("stability patch makes terminal Gateway errors fail health checks", async () => {
-  const patched = patchGatewayStability(await implementationSource());
-  assert.equal(patched.changed, true);
-  assert.match(patched.content, /const gatewayHealthy = connectionStatus !== "error";/);
-  assert.match(patched.content, /sendJson\(res, gatewayHealthy \? 200 : 503,/);
-  assert.match(patched.content, /status: connectionStatus,/);
-  assert.match(patched.content, /lastError,/);
+  const source = await implementationSource();
+  for (const candidate of [source, source.replace(/\r?\n/g, "\r\n")]) {
+    const patched = patchGatewayStability(candidate);
+    assert.equal(patched.changed, true);
+    assert.match(patched.content, /const gatewayHealthy = connectionStatus !== "error";/);
+    assert.match(patched.content, /sendJson\(res, gatewayHealthy \? 200 : 503,/);
+    assert.match(patched.content, /status: connectionStatus,/);
+    assert.match(patched.content, /lastError,/);
 
-  const second = patchGatewayStability(patched.content);
-  assert.equal(second.changed, false);
-  assert.equal(second.content, patched.content);
+    const second = patchGatewayStability(patched.content);
+    assert.equal(second.changed, false);
+    assert.equal(second.content, patched.content);
+  }
 });
 
 test("stability patch deletes disabled ephemeral settings instead of retaining stale entries", async () => {
