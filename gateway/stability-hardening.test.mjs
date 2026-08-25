@@ -41,6 +41,21 @@ test("stability patch deletes disabled ephemeral settings instead of retaining s
   assert.ok(setIndex > deleteIndex);
 });
 
+test("stability patch bounds inbound media acquisition and stream stalls", async () => {
+  const patched = patchGatewayStability(await implementationSource());
+  assert.match(patched.content, /inboundMediaIdleTimeoutMs/);
+  assert.match(patched.content, /inboundMediaTotalTimeoutMs/);
+  assert.match(patched.content, /await withDeadline\(/);
+  assert.match(patched.content, /await pipeWithWatchdog\(/);
+});
+
+test("stability patch bounds each SSE client buffer", async () => {
+  const patched = patchGatewayStability(await implementationSource());
+  assert.match(patched.content, /maxSseBufferedBytes/);
+  assert.match(patched.content, /writeBoundedSse\(client, payload, maxSseBufferedBytes\)/);
+  assert.match(patched.content, /writeBoundedSse\(res, ": keepalive\\n\\n", maxSseBufferedBytes\)/);
+});
+
 test("Gateway wrapper writes generated runtime atomically", async () => {
   const wrapper = await readFile(path.join(gatewayDir, "whatsapp-gateway.mjs"), "utf8");
   assert.match(wrapper, /\.tmp-\$\{process\.pid\}-\$\{randomUUID\(\)\}/);
