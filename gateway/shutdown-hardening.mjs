@@ -51,7 +51,7 @@ export function patchGatewayShutdown(source) {
   content = replaceRequired(
     content,
     RUNTIME_QUEUE_ANCHOR,
-    `${RUNTIME_QUEUE_ANCHOR}\nlet activeCredsSaveQueue = Promise.resolve();\nlet activeSaveCreds = null;\nlet shuttingDown = false;`,
+    `${RUNTIME_QUEUE_ANCHOR}\nlet activeCredsSaveQueue = Promise.resolve();\nlet activeSaveCreds = null;\nlet activeCredsSaveFailure = null;\nlet shuttingDown = false;`,
     "shutdown persistence queue anchor",
   );
   content = replaceRequired(
@@ -75,8 +75,13 @@ export function patchGatewayShutdown(source) {
   if (!previousCredsSettled) {
     throw new Error("previous credential persistence queue did not settle before socket restart");
   }
+  if (activeCredsSaveFailure) {
+    const detail = String(activeCredsSaveFailure?.message || activeCredsSaveFailure);
+    throw new Error(\`previous credential persistence failed before socket restart: \${detail}\`);
+  }
   activeSaveCreds = null;
   activeCredsSaveQueue = Promise.resolve();
+  activeCredsSaveFailure = null;
   if (shuttingDown) return { ok: false, status: "stopping" };
   const generation = ++socketGeneration;`,
     "cross-generation credential persistence barrier",
@@ -100,8 +105,12 @@ export function patchGatewayShutdown(source) {
   socketForGeneration.ev.on("creds.update", () => {
     if (generation !== socketGeneration) return;
     activeCredsSaveQueue = credsSaveQueue = credsSaveQueue
-      .then(() => saveCreds())
+      .then(async () => {
+        await saveCreds();
+        activeCredsSaveFailure = null;
+      })
       .catch((error) => {
+        activeCredsSaveFailure = error;
         if (generation !== socketGeneration || socketForGeneration !== socket) return;
         lastError = \`保存登录凭证失败: \${String(error?.message || error)}\`;
         log.error({ error, generation, sessionId: currentSessionId }, "failed to persist auth credentials");
@@ -138,14 +147,26 @@ ${STATUS_ROUTE_ANCHOR}`,
   if (activeSaveCreds) {
     activeCredsSaveQueue = activeCredsSaveQueue
       .catch(() => {})
-      .then(() => activeSaveCreds())
-      .catch((error) => log.warn({ error }, "final credential flush failed"));
+      .then(async () => {
+        await activeSaveCreds();
+        activeCredsSaveFailure = null;
+      })
+      .catch((error) => {
+        activeCredsSaveFailure = error;
+        log.warn({ error }, "final credential flush failed");
+      });
   }
   const persisted = await settleWithin([
     activeCredsSaveQueue,
     runtimeIdentityPersistQueue,
   ], 3000);
   if (!persisted) log.warn({ reason }, "Gateway persistence flush timed out during shutdown");
+  if (activeCredsSaveFailure) {
+    log.warn(
+      { reason, error: activeCredsSaveFailure },
+      "Gateway credential persistence failed during shutdown",
+    );
+  }
 
   ++socketGeneration;
   const retiringSocket = socket;
