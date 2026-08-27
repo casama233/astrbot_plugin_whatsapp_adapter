@@ -13,15 +13,11 @@ if old not in text:
     raise SystemExit("InlinePiece marker not found")
 text = text.replace(old, new, 1)
 
-anchor = dedent(
-    '''\
-    def _delimiter_sizes(marker: str, count: int) -> tuple[list[int], int]:
-        if marker == "~":
-            return [2] * (count // 2), count % 2
-        return ([1] if count % 2 else []) + ([2] * (count // 2)), 0
-
-
-    ''',
+anchor = (
+    'def _delimiter_sizes(marker: str, count: int) -> tuple[list[int], int]:\n'
+    '    if marker == "~":\n'
+    '        return [2] * (count // 2), count % 2\n'
+    '    return ([1] if count % 2 else []) + ([2] * (count // 2)), 0\n\n\n'
 )
 helpers = dedent(
     '''\
@@ -139,78 +135,67 @@ if old not in text:
     raise SystemExit("render init anchor not found")
 text = text.replace(old, new, 1)
 
-old = dedent(
-    '''\
-                opening = delimiter_stack.pop()
-                opening.structural = True
-                closing = _InlinePiece(
-                    "delimiter",
-                    char * opening.size,
-                    marker=char,
-                    size=opening.size,
-                    candidate=True,
-                    structural=True,
-                )
-                pieces.append(closing)
-                remaining -= opening.size
-    ''',
+old = (
+    "            opening = delimiter_stack.pop()\n"
+    "            opening.structural = True\n"
+    "            closing = _InlinePiece(\n"
+    '                "delimiter",\n'
+    "                char * opening.size,\n"
+    "                marker=char,\n"
+    "                size=opening.size,\n"
+    "                candidate=True,\n"
+    "                structural=True,\n"
+    "            )\n"
+    "            pieces.append(closing)\n"
+    "            remaining -= opening.size\n"
 )
-new = dedent(
-    '''\
-                opening = delimiter_stack.pop()
-                opening.structural = True
-                opening.pair_id = next_pair_id
-                closing = _InlinePiece(
-                    "delimiter",
-                    char * opening.size,
-                    marker=char,
-                    size=opening.size,
-                    candidate=True,
-                    structural=True,
-                    pair_id=next_pair_id,
-                )
-                next_pair_id += 1
-                pieces.append(closing)
-                remaining -= opening.size
-    ''',
+new = (
+    "            opening = delimiter_stack.pop()\n"
+    "            opening.structural = True\n"
+    "            opening.pair_id = next_pair_id\n"
+    "            closing = _InlinePiece(\n"
+    '                "delimiter",\n'
+    "                char * opening.size,\n"
+    "                marker=char,\n"
+    "                size=opening.size,\n"
+    "                candidate=True,\n"
+    "                structural=True,\n"
+    "                pair_id=next_pair_id,\n"
+    "            )\n"
+    "            next_pair_id += 1\n"
+    "            pieces.append(closing)\n"
+    "            remaining -= opening.size\n"
 )
 if old not in text:
     raise SystemExit("pairing anchor not found")
 text = text.replace(old, new, 1)
 
 old = "    output: list[str] = []\n    for piece_index, piece in enumerate(pieces):\n"
-new = dedent(
-    '''\
-        unsafe_pairs = _unsafe_whatsapp_pair_ids(
-            pieces,
-            trailing_unmatched,
-            streaming=streaming,
-        )
-
-        output: list[str] = []
-        for piece_index, piece in enumerate(pieces):
-    ''',
+new = (
+    "    unsafe_pairs = _unsafe_whatsapp_pair_ids(\n"
+    "        pieces,\n"
+    "        trailing_unmatched,\n"
+    "        streaming=streaming,\n"
+    "    )\n\n"
+    "    output: list[str] = []\n"
+    "    for piece_index, piece in enumerate(pieces):\n"
 )
 if old not in text:
     raise SystemExit("output anchor not found")
 text = text.replace(old, new, 1)
 
-old = dedent(
-    '''\
-            if piece.marker == "~":
-                output.append("~")
-            elif piece.size == 2:
-                output.append("*")
-            else:
-                output.append("_")
-    ''',
+old = (
+    '        if piece.marker == "~":\n'
+    '            output.append("~")\n'
+    "        elif piece.size == 2:\n"
+    '            output.append("*")\n'
+    "        else:\n"
+    '            output.append("_")\n'
 )
-new = dedent(
-    '''\
-            if piece.pair_id in unsafe_pairs:
-                continue
-            output.append(_whatsapp_style_marker(piece))
-    ''',
+new = (
+    "        if piece.pair_id in unsafe_pairs:\n"
+    "            continue\n"
+    "        output.append(_whatsapp_style_marker(piece))\n"
 )
 if old not in text:
     raise SystemExit("style rendering anchor not found")
