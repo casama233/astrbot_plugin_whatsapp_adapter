@@ -1,4 +1,5 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -6,6 +7,8 @@ import { patchGatewayGroupNames } from "./group-name-compat.mjs";
 import { patchGatewayMemberTags } from "./member-tag-compat.mjs";
 import { patchGatewayPrivateMediaBursts } from "./private-media-burst-compat.mjs";
 import { patchGatewaySecurity } from "./security-hardening.mjs";
+import { patchGatewayShutdown } from "./shutdown-hardening.mjs";
+import { patchGatewayStability } from "./stability-hardening.mjs";
 
 const gatewayDir = path.dirname(fileURLToPath(import.meta.url));
 const implementationPath = path.join(gatewayDir, "whatsapp-gateway-impl.mjs");
@@ -14,7 +17,9 @@ const source = await readFile(implementationPath, "utf8");
 const groupPatched = patchGatewayGroupNames(source);
 const memberTagPatched = patchGatewayMemberTags(groupPatched.content);
 const privateMediaPatched = patchGatewayPrivateMediaBursts(memberTagPatched.content);
-const securityPatched = patchGatewaySecurity(privateMediaPatched.content);
+const stabilityPatched = patchGatewayStability(privateMediaPatched.content);
+const shutdownPatched = patchGatewayShutdown(stabilityPatched.content);
+const securityPatched = patchGatewaySecurity(shutdownPatched.content);
 const patched = securityPatched;
 
 let current = "";
@@ -24,7 +29,13 @@ try {
   // Generated runtime file does not exist yet.
 }
 if (current !== patched.content) {
-  await writeFile(generatedPath, patched.content, "utf8");
+  const temporaryPath = `${generatedPath}.tmp-${process.pid}-${randomUUID()}`;
+  try {
+    await writeFile(temporaryPath, patched.content, "utf8");
+    await rename(temporaryPath, generatedPath);
+  } finally {
+    await unlink(temporaryPath).catch(() => {});
+  }
 }
 
 await import(pathToFileURL(generatedPath).href);
