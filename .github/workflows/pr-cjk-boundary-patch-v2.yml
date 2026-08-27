@@ -21,7 +21,9 @@ jobs:
         with:
           python-version: '3.11'
       - name: Apply patch
-        run: python scripts/pr_cjk_boundary_patch.py
+        run: |
+          python scripts/pr_cjk_boundary_patch.py
+          python scripts/pr_cjk_boundary_adjust_tests.py
       - name: Validate focused tests
         run: |
           python -m compileall -q _whatsapp_helpers_impl.py tests/test_whatsapp_markdown_cjk_boundaries.py
