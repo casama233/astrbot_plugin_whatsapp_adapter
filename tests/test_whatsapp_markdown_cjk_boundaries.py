@@ -58,6 +58,21 @@ class CJKWhatsAppBoundaryRegressionTests(unittest.TestCase):
             "中文粗體 _斜體_，",
         )
 
+    def test_escaped_marker_before_safe_style_keeps_style(self) -> None:
+        word_joiner = "\u2060"
+        cases = {
+            r"\***bold**": f"*{word_joiner}*bold*",
+            r"\_**bold**": f"_{word_joiner}*bold*",
+            r"\~**bold**": f"~{word_joiner}*bold*",
+        }
+        for source, expected in cases.items():
+            with self.subTest(source=source):
+                self.assertEqual(helpers.format_whatsapp_markdown(source), expected)
+                self.assertEqual(
+                    helpers.format_whatsapp_markdown(source, streaming=True),
+                    expected,
+                )
+
     def test_native_whatsapp_source_is_not_rewritten(self) -> None:
         native = "中文*使用者原生粗體*中文"
         self.assertEqual(
