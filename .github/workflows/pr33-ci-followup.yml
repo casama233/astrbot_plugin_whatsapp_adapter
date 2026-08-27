@@ -1,0 +1,46 @@
+name: PR 33 CI follow-up
+
+on:
+  push:
+    branches:
+      - fix/whatsapp-cjk-markdown-boundaries
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: fix/whatsapp-cjk-markdown-boundaries
+          fetch-depth: 0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - name: Update legacy regression expectation
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('tests/test_whatsapp_markdown.py')
+          text = path.read_text(encoding='utf-8')
+          old = 'expected = "被點名啦～(´▽`\\u2060ʃ♡ƪ) 小白來解釋：\\n\\n*粥底火鍋*係粥湯底。"'
+          new = 'expected = "被點名啦～(´▽`\\u2060ʃ♡ƪ) 小白來解釋：\\n\\n粥底火鍋係粥湯底。"'
+          if old not in text:
+              raise SystemExit('legacy kaomoji expectation not found')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+          python -m unittest -v \
+            tests.test_whatsapp_markdown.ConverterTests.test_unmatched_backtick_in_kaomoji_does_not_swallow_later_markdown \
+            tests.test_whatsapp_markdown_cjk_boundaries
+      - name: Commit follow-up
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tests/test_whatsapp_markdown.py
+          git diff --cached --quiet && exit 0
+          git commit -m "test: align markdown regression with WhatsApp boundary safety"
+          git push origin HEAD:fix/whatsapp-cjk-markdown-boundaries
