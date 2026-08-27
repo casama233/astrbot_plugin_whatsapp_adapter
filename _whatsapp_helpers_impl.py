@@ -527,7 +527,12 @@ def _whatsapp_outer_boundary_safe(char: str) -> bool:
     mobile clients. Whitespace, punctuation/symbols and string boundaries
     are safe; adjacent letters/numbers are not.
     """
-    return not char or char.isspace() or _markdown_punctuation(char)
+    return (
+        not char
+        or char == _WORD_JOINER
+        or char.isspace()
+        or _markdown_punctuation(char)
+    )
 
 
 def _unsafe_whatsapp_pair_ids(
