@@ -100,7 +100,7 @@ export function patchGatewayStability(source) {
     content,
     HEALTH_ROUTE,
     `    if (req.method === "GET" && url.pathname === "/health") {
-      const gatewayHealthy = connectionStatus !== "error";
+      const gatewayHealthy = !["error", "stopping"].includes(connectionStatus);
       sendJson(res, gatewayHealthy ? 200 : 503, {
         ok: gatewayHealthy,
         ready,
