@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.45] - 2026-08-27
+
+- Harden Gateway startup, graceful shutdown, socket-generation credential durability, concurrent runtime generation, and failure recovery.
+- Fail closed while the Gateway is stopping or after credential persistence errors so startup and reconnect cannot accept stale or dying runtime state.
+- Bound dependency installation, auxiliary requests, inbound media downloads, and SSE buffering, and validate runtime-critical files in release archives.
+- Prevent WhatsApp inline Markdown markers from leaking around CJK, Latin, or numeric word boundaries while preserving safe nested and native formatting.
+- Expand CI coverage across Ubuntu and Windows with Python 3.11/3.12 and Node 20/22 runtime bands.
+
 ## [0.2.44] - 2026-08-23
 
 - Restore the required message event discriminator after member-tag enrichment so accepted WhatsApp messages reach AstrBot instead of being silently ignored.
