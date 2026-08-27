@@ -256,6 +256,7 @@ class _InlinePiece:
     size: int = 0
     candidate: bool = False
     structural: bool = False
+    pair_id: int = -1
 
 
 def _append_inline_text(pieces: list[_InlinePiece], text: str) -> None:
@@ -495,10 +496,104 @@ def _delimiter_sizes(marker: str, count: int) -> tuple[list[int], int]:
     return ([1] if count % 2 else []) + ([2] * (count // 2)), 0
 
 
+def _whatsapp_style_marker(piece: _InlinePiece) -> str:
+    if piece.marker == "~":
+        return "~"
+    if piece.size == 2:
+        return "*"
+    return "_"
+
+
+def _render_piece_for_boundary(piece: _InlinePiece, *, streaming: bool) -> str:
+    if piece.kind != "delimiter":
+        return piece.text
+    if piece.structural:
+        return _whatsapp_style_marker(piece)
+    if streaming and piece.candidate:
+        return ""
+    return (
+        _escaped_whatsapp_literal(piece.text)
+        if piece.candidate
+        else piece.text
+    )
+
+
+def _whatsapp_outer_boundary_safe(char: str) -> bool:
+    """Return whether native WhatsApp styling is reliable at this boundary.
+
+    WhatsApp's native ``*bold*``/``_italic_``/``~strike~`` parser is
+    stricter around adjacent word characters than CommonMark. Rendered
+    spans such as ``中文*bold*中文`` can therefore be displayed literally by
+    mobile clients. Whitespace, punctuation/symbols and string boundaries
+    are safe; adjacent letters/numbers are not.
+    """
+    return not char or char.isspace() or _markdown_punctuation(char)
+
+
+def _unsafe_whatsapp_pair_ids(
+    pieces: Sequence[_InlinePiece],
+    ignored_indices: set[int],
+    *,
+    streaming: bool,
+) -> set[int]:
+    """Find style pairs that would render with unsafe outer boundaries.
+
+    This is a fixpoint: dropping an unsafe outer style can expose an inner
+    style directly to a word character, so nested pairs are re-evaluated
+    until no newly unsafe pair remains.
+    """
+    pair_indices: dict[int, list[int]] = {}
+    for index, piece in enumerate(pieces):
+        if piece.structural and piece.pair_id >= 0:
+            pair_indices.setdefault(piece.pair_id, []).append(index)
+    pairs = {
+        pair_id: (indices[0], indices[-1])
+        for pair_id, indices in pair_indices.items()
+        if len(indices) == 2
+    }
+    disabled: set[int] = set()
+
+    def nearest_char(start: int, step: int) -> str:
+        index = start
+        while 0 <= index < len(pieces):
+            if index in ignored_indices:
+                index += step
+                continue
+            piece = pieces[index]
+            if piece.structural and piece.pair_id in disabled:
+                index += step
+                continue
+            rendered = _render_piece_for_boundary(
+                piece,
+                streaming=streaming,
+            )
+            if rendered:
+                return rendered[-1] if step < 0 else rendered[0]
+            index += step
+        return ""
+
+    while True:
+        changed = False
+        for pair_id, (opening, closing) in pairs.items():
+            if pair_id in disabled:
+                continue
+            previous = nearest_char(opening - 1, -1)
+            following = nearest_char(closing + 1, 1)
+            if (
+                not _whatsapp_outer_boundary_safe(previous)
+                or not _whatsapp_outer_boundary_safe(following)
+            ):
+                disabled.add(pair_id)
+                changed = True
+        if not changed:
+            return disabled
+
+
 def _render_markdown_inline(value: str, *, streaming: bool = False) -> str:
     """Render the supported inline subset using paired delimiter tokens."""
     pieces: list[_InlinePiece] = []
     delimiter_stack: list[_InlinePiece] = []
+    next_pair_id = 0
     index = 0
 
     while index < len(value):
@@ -585,6 +680,7 @@ def _render_markdown_inline(value: str, *, streaming: bool = False) -> str:
         ):
             opening = delimiter_stack.pop()
             opening.structural = True
+            opening.pair_id = next_pair_id
             closing = _InlinePiece(
                 "delimiter",
                 char * opening.size,
@@ -592,7 +688,9 @@ def _render_markdown_inline(value: str, *, streaming: bool = False) -> str:
                 size=opening.size,
                 candidate=True,
                 structural=True,
+                pair_id=next_pair_id,
             )
+            next_pair_id += 1
             pieces.append(closing)
             remaining -= opening.size
 
@@ -653,6 +751,12 @@ def _render_markdown_inline(value: str, *, streaming: bool = False) -> str:
     if len(tail_text) >= 2 and all(char in "*_~" for char in tail_text):
         trailing_unmatched.update(tail)
 
+    unsafe_pairs = _unsafe_whatsapp_pair_ids(
+        pieces,
+        trailing_unmatched,
+        streaming=streaming,
+    )
+
     output: list[str] = []
     for piece_index, piece in enumerate(pieces):
         if piece_index in trailing_unmatched:
@@ -672,12 +776,9 @@ def _render_markdown_inline(value: str, *, streaming: bool = False) -> str:
                     else piece.text
                 )
             continue
-        if piece.marker == "~":
-            output.append("~")
-        elif piece.size == 2:
-            output.append("*")
-        else:
-            output.append("_")
+        if piece.pair_id in unsafe_pairs:
+            continue
+        output.append(_whatsapp_style_marker(piece))
     return "".join(output)
 
 
