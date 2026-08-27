@@ -14,3 +14,4 @@ RELEASING.md export-ignore
 gateway/*.test.mjs export-ignore
 scripts/*.test.mjs export-ignore
 scripts/release_contract.py export-ignore
+scripts/verify-release-runtime.py export-ignore
