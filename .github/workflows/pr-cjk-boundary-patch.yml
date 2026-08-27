@@ -1,0 +1,242 @@
+name: PR CJK markdown boundary patch
+
+on:
+  push:
+    branches:
+      - fix/whatsapp-cjk-markdown-boundaries
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: fix/whatsapp-cjk-markdown-boundaries
+          fetch-depth: 0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - name: Patch formatter and add regressions
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path('_whatsapp_helpers_impl.py')
+          text = path.read_text(encoding='utf-8')
+
+          old = '''    candidate: bool = False\n    structural: bool = False\n'''
+          new = '''    candidate: bool = False\n    structural: bool = False\n    pair_id: int = -1\n'''
+          if old not in text:
+              raise SystemExit('InlinePiece marker not found')
+          text = text.replace(old, new, 1)
+
+          anchor = '''def _delimiter_sizes(marker: str, count: int) -> tuple[list[int], int]:\n    if marker == "~":\n        return [2] * (count // 2), count % 2\n    return ([1] if count % 2 else []) + ([2] * (count // 2)), 0\n\n\n'''
+          helpers = r'''def _whatsapp_style_marker(piece: _InlinePiece) -> str:
+              if piece.marker == "~":
+                  return "~"
+              if piece.size == 2:
+                  return "*"
+              return "_"
+
+
+          def _render_piece_for_boundary(piece: _InlinePiece, *, streaming: bool) -> str:
+              if piece.kind != "delimiter":
+                  return piece.text
+              if piece.structural:
+                  return _whatsapp_style_marker(piece)
+              if streaming and piece.candidate:
+                  return ""
+              return (
+                  _escaped_whatsapp_literal(piece.text)
+                  if piece.candidate
+                  else piece.text
+              )
+
+
+          def _whatsapp_outer_boundary_safe(char: str) -> bool:
+              """Return whether WhatsApp can reliably start/end native styling here.
+
+              WhatsApp's native ``*bold*``/``_italic_``/``~strike~`` parser is
+              stricter about surrounding word characters than CommonMark.  In
+              particular, rendered spans such as ``中文*bold*中文`` may be shown
+              literally on mobile clients.  Whitespace, punctuation/symbols and
+              string boundaries are transport-safe; adjacent letters/numbers are
+              not.
+              """
+              return not char or char.isspace() or _markdown_punctuation(char)
+
+
+          def _unsafe_whatsapp_pair_ids(
+              pieces: Sequence[_InlinePiece],
+              ignored_indices: set[int],
+              *,
+              streaming: bool,
+          ) -> set[int]:
+              """Find structural style pairs whose rendered outer boundary is unsafe.
+
+              The calculation is a fixpoint: removing one unsafe outer style can
+              expose an inner style directly to a word character, so nested pairs
+              are re-evaluated until no newly unsafe pair remains.
+              """
+              pair_indices: dict[int, list[int]] = {}
+              for index, piece in enumerate(pieces):
+                  if piece.structural and piece.pair_id >= 0:
+                      pair_indices.setdefault(piece.pair_id, []).append(index)
+              pairs = {
+                  pair_id: (indices[0], indices[-1])
+                  for pair_id, indices in pair_indices.items()
+                  if len(indices) == 2
+              }
+              disabled: set[int] = set()
+
+              def nearest_char(start: int, step: int) -> str:
+                  index = start
+                  while 0 <= index < len(pieces):
+                      if index in ignored_indices:
+                          index += step
+                          continue
+                      piece = pieces[index]
+                      if piece.structural and piece.pair_id in disabled:
+                          index += step
+                          continue
+                      rendered = _render_piece_for_boundary(
+                          piece,
+                          streaming=streaming,
+                      )
+                      if rendered:
+                          return rendered[-1] if step < 0 else rendered[0]
+                      index += step
+                  return ""
+
+              while True:
+                  changed = False
+                  for pair_id, (opening, closing) in pairs.items():
+                      if pair_id in disabled:
+                          continue
+                      previous = nearest_char(opening - 1, -1)
+                      following = nearest_char(closing + 1, 1)
+                      if (
+                          not _whatsapp_outer_boundary_safe(previous)
+                          or not _whatsapp_outer_boundary_safe(following)
+                      ):
+                          disabled.add(pair_id)
+                          changed = True
+                  if not changed:
+                      return disabled
+
+
+          '''
+          helpers = '\n'.join(line[10:] if line.startswith('          ') else line for line in helpers.splitlines()) + '\n'
+          if anchor not in text:
+              raise SystemExit('delimiter helper anchor not found')
+          text = text.replace(anchor, anchor + helpers, 1)
+
+          old = '''    pieces: list[_InlinePiece] = []\n    delimiter_stack: list[_InlinePiece] = []\n    index = 0\n'''
+          new = '''    pieces: list[_InlinePiece] = []\n    delimiter_stack: list[_InlinePiece] = []\n    next_pair_id = 0\n    index = 0\n'''
+          if old not in text:
+              raise SystemExit('render init anchor not found')
+          text = text.replace(old, new, 1)
+
+          old = '''            opening = delimiter_stack.pop()\n            opening.structural = True\n            closing = _InlinePiece(\n                "delimiter",\n                char * opening.size,\n                marker=char,\n                size=opening.size,\n                candidate=True,\n                structural=True,\n            )\n            pieces.append(closing)\n            remaining -= opening.size\n'''
+          new = '''            opening = delimiter_stack.pop()\n            opening.structural = True\n            opening.pair_id = next_pair_id\n            closing = _InlinePiece(\n                "delimiter",\n                char * opening.size,\n                marker=char,\n                size=opening.size,\n                candidate=True,\n                structural=True,\n                pair_id=next_pair_id,\n            )\n            next_pair_id += 1\n            pieces.append(closing)\n            remaining -= opening.size\n'''
+          if old not in text:
+              raise SystemExit('pairing anchor not found')
+          text = text.replace(old, new, 1)
+
+          old = '''    output: list[str] = []\n    for piece_index, piece in enumerate(pieces):\n'''
+          new = '''    unsafe_pairs = _unsafe_whatsapp_pair_ids(\n        pieces,\n        trailing_unmatched,\n        streaming=streaming,\n    )\n\n    output: list[str] = []\n    for piece_index, piece in enumerate(pieces):\n'''
+          if old not in text:
+              raise SystemExit('output anchor not found')
+          text = text.replace(old, new, 1)
+
+          old = '''        if piece.marker == "~":\n            output.append("~")\n        elif piece.size == 2:\n            output.append("*")\n        else:\n            output.append("_")\n'''
+          new = '''        if piece.pair_id in unsafe_pairs:\n            continue\n        output.append(_whatsapp_style_marker(piece))\n'''
+          if old not in text:
+              raise SystemExit('style rendering anchor not found')
+          text = text.replace(old, new, 1)
+          path.write_text(text, encoding='utf-8')
+
+          test = Path('tests/test_whatsapp_markdown_cjk_boundaries.py')
+          test.write_text(r'''from __future__ import annotations
+
+import unittest
+
+from tests import test_whatsapp_markdown as base
+
+helpers = base.helpers
+
+
+class CJKWhatsAppBoundaryRegressionTests(unittest.TestCase):
+    def test_screenshot_samples_degrade_unsafe_inline_bold_cleanly(self) -> None:
+        cases = {
+            "只要有**正式診斷**，躁鬱症、PTSD": "只要有正式診斷，躁鬱症、PTSD",
+            "核心使命，為**殘疾人士提供職業訓練及就業機會**，推廣傷健共融": (
+                "核心使命，為殘疾人士提供職業訓練及就業機會，推廣傷健共融"
+            ),
+            "身體部分機能失常、畸形**或**外觀上的毀損": "身體部分機能失常、畸形或外觀上的毀損",
+            "也包括**曾經存在、將來可能存在、或被認為存在**的。": (
+                "也包括曾經存在、將來可能存在、或被認為存在的。"
+            ),
+        }
+        for source, expected in cases.items():
+            with self.subTest(source=source):
+                self.assertEqual(helpers.format_whatsapp_markdown(source), expected)
+                self.assertEqual(
+                    helpers.format_whatsapp_markdown(source, streaming=True),
+                    expected,
+                )
+
+    def test_unsafe_inline_italic_and_strike_also_degrade(self) -> None:
+        cases = {
+            "中文*斜體*中文": "中文斜體中文",
+            "中文~~刪除~~中文": "中文刪除中文",
+            "pre**bold**post": "preboldpost",
+        }
+        for source, expected in cases.items():
+            with self.subTest(source=source):
+                self.assertEqual(helpers.format_whatsapp_markdown(source), expected)
+
+    def test_safe_whitespace_and_punctuation_boundaries_keep_formatting(self) -> None:
+        cases = {
+            "**正式診斷**，才算成立": "*正式診斷*，才算成立",
+            "重點：**正式診斷**；下一項": "重點：*正式診斷*；下一項",
+            "（**正式診斷**）": "（*正式診斷*）",
+            "文字 **正式診斷** 文字": "文字 *正式診斷* 文字",
+            "文字 *斜體* 文字": "文字 _斜體_ 文字",
+            "文字 ~~刪除~~ 文字": "文字 ~刪除~ 文字",
+        }
+        for source, expected in cases.items():
+            with self.subTest(source=source):
+                self.assertEqual(helpers.format_whatsapp_markdown(source), expected)
+
+    def test_nested_styles_recheck_boundaries_after_outer_degrades(self) -> None:
+        source = "中文**粗體 _斜體_**中文"
+        self.assertEqual(helpers.format_whatsapp_markdown(source), "中文粗體 斜體中文")
+
+    def test_native_whatsapp_source_is_not_rewritten(self) -> None:
+        native = "中文*使用者原生粗體*中文"
+        self.assertEqual(
+            helpers.format_whatsapp_markdown(native, source_format="whatsapp"),
+            native,
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()
+''', encoding='utf-8')
+      - name: Validate focused tests
+        run: |
+          python -m compileall -q _whatsapp_helpers_impl.py tests/test_whatsapp_markdown_cjk_boundaries.py
+          python -m unittest -v tests.test_whatsapp_markdown_cjk_boundaries
+      - name: Commit patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add _whatsapp_helpers_impl.py tests/test_whatsapp_markdown_cjk_boundaries.py
+          git diff --cached --quiet && exit 0
+          git commit -m "fix: degrade unsafe WhatsApp inline markdown boundaries"
+          git push origin HEAD:fix/whatsapp-cjk-markdown-boundaries
