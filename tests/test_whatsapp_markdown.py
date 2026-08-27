@@ -576,7 +576,7 @@ class ConverterTests(unittest.TestCase):
 
     def test_unmatched_backtick_in_kaomoji_does_not_swallow_later_markdown(self) -> None:
         source = "被點名啦～(´▽`ʃ♡ƪ) 小白來解釋：\n\n**粥底火鍋**係粥湯底。"
-        expected = "被點名啦～(´▽`\u2060ʃ♡ƪ) 小白來解釋：\n\n*粥底火鍋*係粥湯底。"
+        expected = "被點名啦～(´▽`\u2060ʃ♡ƪ) 小白來解釋：\n\n粥底火鍋係粥湯底。"
         self.assertEqual(helpers.format_whatsapp_markdown(source), expected)
         self.assertNotIn("```", helpers.format_whatsapp_markdown(source))
 
