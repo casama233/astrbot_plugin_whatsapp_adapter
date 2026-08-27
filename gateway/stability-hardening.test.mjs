@@ -12,12 +12,15 @@ async function implementationSource() {
   return readFile(path.join(gatewayDir, "whatsapp-gateway-impl.mjs"), "utf8");
 }
 
-test("stability patch makes terminal Gateway errors fail health checks", async () => {
+test("stability patch makes terminal and stopping Gateway states fail health checks", async () => {
   const source = await implementationSource();
   for (const candidate of [source, source.replace(/\r?\n/g, "\r\n")]) {
     const patched = patchGatewayStability(candidate);
     assert.equal(patched.changed, true);
-    assert.match(patched.content, /const gatewayHealthy = connectionStatus !== "error";/);
+    assert.match(
+      patched.content,
+      /const gatewayHealthy = !\["error", "stopping"\]\.includes\(connectionStatus\);/,
+    );
     assert.match(patched.content, /sendJson\(res, gatewayHealthy \? 200 : 503,/);
     assert.match(patched.content, /status: connectionStatus,/);
     assert.match(patched.content, /lastError,/);
