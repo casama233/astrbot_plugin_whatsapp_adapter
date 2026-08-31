@@ -11,6 +11,7 @@ from .whatsapp_identity import (
     normalize_group_session_id as _normalize_group_session_id,
     strict_public_id as _strict_public_id,
 )
+from .whatsapp_reaction_journal import reaction_journal as _reaction_journal
 from .whatsapp_streaming_concurrency import (
     response_presence_leases as _response_presence_leases,
 )
@@ -205,7 +206,48 @@ async def _stop_typing_when_chat_idle(self) -> None:
     await _original_stop_typing(self)
 
 
+async def _react_with_reaction_journal(self, emoji: str) -> None:
+    """Send a reaction and record it only after the Gateway accepts it."""
+
+    if not self.source_message_id:
+        return
+    try:
+        await self.client.react(
+            self.target_jid,
+            self.source_message_id,
+            emoji,
+            self.source_participant,
+        )
+        _reaction_journal.record(
+            chat_id=self.target_jid,
+            message_id=self.source_message_id,
+            sender_id=self.get_self_id(),
+            emoji=emoji,
+        )
+    except Exception as exc:
+        logger.warning(
+            "WhatsApp 表情回应发送失败: target=%s message_id=%s error=%s",
+            self.target_jid,
+            self.source_message_id,
+            exc,
+        )
+
+
+async def _get_arbiter_reaction_users(self, emoji: str) -> list[str]:
+    """Return observed reaction participants for distributed arbitration."""
+
+    if not self.source_message_id:
+        return []
+    return _reaction_journal.users(
+        chat_id=self.target_jid,
+        message_id=self.source_message_id,
+        emoji=emoji,
+    )
+
+
 WhatsAppMessageEvent.get_group = _get_group_compat
 WhatsAppMessageEvent.send = _send_with_response_presence
 WhatsAppMessageEvent.send_streaming = _send_streaming_with_response_presence
 WhatsAppMessageEvent.stop_typing = _stop_typing_when_chat_idle
+WhatsAppMessageEvent.react = _react_with_reaction_journal
+WhatsAppMessageEvent.get_arbiter_reaction_users = _get_arbiter_reaction_users
