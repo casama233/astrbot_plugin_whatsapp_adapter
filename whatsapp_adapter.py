@@ -22,6 +22,7 @@ from .whatsapp_multi_instance import (
     reallocate_after_bind_conflict as _reallocate_after_bind_conflict,
     release_gateway_endpoint as _release_gateway_endpoint,
 )
+from .whatsapp_reaction_journal import reaction_journal as _reaction_journal
 
 _impl_path = _Path(__file__).with_name("_whatsapp_adapter_impl.py")
 exec(compile(_impl_path.read_text(encoding="utf-8"), str(_impl_path), "exec"), globals(), globals())
@@ -38,6 +39,7 @@ _original_terminate = WhatsAppPlatformAdapter.terminate
 _original_connect_gateway = WhatsAppPlatformAdapter._connect_gateway
 _original_ensure_gateway_running = WhatsAppPlatformAdapter._ensure_gateway_running
 _original_wait_for_gateway = WhatsAppPlatformAdapter._wait_for_gateway
+_original_handle_msg = WhatsAppPlatformAdapter.handle_msg
 
 
 def _gateway_lifecycle_lock(self):
@@ -203,6 +205,50 @@ async def _terminate_with_gateway_lease(self):
         _release_gateway_endpoint(self)
 
 
+async def _handle_msg_with_reaction_journal(self, message):
+    """Observe reaction-only events before the legacy handler discards them."""
+
+    raw = getattr(message, "raw_message", None) or {}
+    should_record = False
+    try:
+        should_record = bool(self._is_reaction_only(raw))
+        if should_record and self.config.get("ignore_self_messages", False):
+            sender_jid = str(raw.get("senderJid") or "")
+            self_id = str(raw.get("selfJid") or "")
+            self_lid = str(raw.get("selfLid") or "")
+            if sender_jid and self._is_self_mention(sender_jid, self_id, self_lid):
+                should_record = False
+    except Exception as exc:
+        logger.debug("WhatsApp 表情仲裁事件识别失败: %s", exc)
+        should_record = False
+
+    if should_record:
+        reaction = (raw.get("extras") or {}).get("reaction") or {}
+        target_key = reaction.get("key") or {}
+        recorded = _reaction_journal.record(
+            chat_id=(
+                raw.get("chatJid")
+                or target_key.get("remoteJid")
+                or getattr(message, "session_id", None)
+            ),
+            message_id=target_key.get("id"),
+            sender_id=(
+                getattr(getattr(message, "sender", None), "user_id", None)
+                or raw.get("senderJid")
+            ),
+            emoji=reaction.get("text"),
+        )
+        logger.debug(
+            "已记录表情回应事件: session=%s target=%s sender=%s recorded=%s",
+            getattr(message, "session_id", None),
+            target_key.get("id"),
+            getattr(getattr(message, "sender", None), "user_id", None),
+            recorded,
+        )
+
+    return await _original_handle_msg(self, message)
+
+
 WhatsAppPlatformAdapter._base_url = property(_base_url_for_instance)
 WhatsAppPlatformAdapter._auth_dir = _auth_dir_for_instance
 WhatsAppPlatformAdapter._create_gateway_process = _create_gateway_process_for_instance
@@ -213,6 +259,7 @@ WhatsAppPlatformAdapter._ensure_gateway_running = _ensure_gateway_running_with_g
 WhatsAppPlatformAdapter.reload = _reload_with_gateway_lease
 WhatsAppPlatformAdapter.run = _run_with_gateway_lease
 WhatsAppPlatformAdapter.terminate = _terminate_with_gateway_lease
+WhatsAppPlatformAdapter.handle_msg = _handle_msg_with_reaction_journal
 
 
 # Existing compatibility patches ----------------------------------------------
