@@ -1,6 +1,6 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { lookup } from "node:dns/promises";
-import { mkdir, realpath, stat, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readdir, realpath, stat, unlink, writeFile } from "node:fs/promises";
 import http from "node:http";
 import https from "node:https";
 import net from "node:net";
@@ -241,6 +241,42 @@ async function allowedLocalRoots(tempDir) {
   return resolved;
 }
 
+async function protectedLocalRoots() {
+  // Match the Gateway's effective defaults, including standalone deployments.
+  const dataDir = process.env.WA_DATA_DIR || path.join(
+    process.cwd(), "data", "plugin_data", "astrbot_plugin_whatsapp_adapter",
+  );
+  const authDir = process.env.WA_AUTH_DIR || path.join(dataDir, "whatsapp-auth");
+  const roots = [authDir];
+  // Default secondary accounts are siblings, not children of this account's
+  // auth directory. Protect their credentials even when data/ is trusted.
+  try {
+    const names = await readdir(dataDir);
+    for (const name of names) {
+      if (name === "whatsapp-auth" || name.startsWith("whatsapp-auth-")) {
+        roots.push(path.join(dataDir, name));
+      }
+    }
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      throw new Error("cannot verify protected WhatsApp credential directories");
+    }
+  }
+  const resolved = new Set();
+  for (const root of roots) {
+    try {
+      resolved.add(await realpath(path.resolve(root)));
+    } catch (error) {
+      // A missing credential directory cannot contain the existing source.
+      // Permission and other filesystem errors must not silently disable it.
+      if (error?.code !== "ENOENT") {
+        throw new Error("cannot verify protected WhatsApp credential directories");
+      }
+    }
+  }
+  return [...resolved];
+}
+
 export async function prepareSafeMediaSource(pathOrUrl, { tempDir }) {
   const value = String(pathOrUrl || "").trim();
   if (!value) throw new Error("pathOrUrl is required");
@@ -255,6 +291,10 @@ export async function prepareSafeMediaSource(pathOrUrl, { tempDir }) {
   const candidate = await realpath(path.resolve(value));
   const info = await stat(candidate);
   if (!info.isFile()) throw new Error("local media source must be a regular file");
+  const protectedRoots = await protectedLocalRoots();
+  if (protectedRoots.some((root) => pathInside(candidate, root))) {
+    throw new Error("local media source is inside a protected WhatsApp credential directory");
+  }
   const roots = await allowedLocalRoots(tempDir);
   if (!roots.some((root) => pathInside(candidate, root))) {
     throw new Error("local media source is outside the allowed media roots");
