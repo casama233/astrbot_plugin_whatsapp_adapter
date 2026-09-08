@@ -19,7 +19,7 @@ test('canonical Gateway authenticates, preserves media policy, sends through the
   const port = reservation.address().port;
   await new Promise((resolve) => reservation.close(resolve));
   const token = 'synthetic-fixture-token';
-  const child = spawn(process.execPath, ['--import', path.join(root, 'tests/gateway-fixtures/register.mjs'), path.join(root, 'gateway/whatsapp-gateway.mjs')], {
+  const child = spawn(process.execPath, ['--import', new URL('../tests/gateway-fixtures/register.mjs', import.meta.url).href, path.join(root, 'gateway/whatsapp-gateway.mjs')], {
     cwd: root, stdio: ['ignore', 'pipe', 'pipe'],
     env: { ...process.env, WA_GATEWAY_HOST: '127.0.0.1', WA_GATEWAY_PORT: String(port), WA_GATEWAY_TOKEN: token,
       WA_DATA_DIR: directory, WA_AUTH_DIR: path.join(directory, 'whatsapp-auth'), WA_TEMP_DIR: directory,

@@ -15,3 +15,10 @@ gateway/*.test.mjs export-ignore
 scripts/*.test.mjs export-ignore
 scripts/release_contract.py export-ignore
 scripts/verify-release-runtime.py export-ignore
+
+# Canonical source has stable line endings on every supported checkout.
+*.py text eol=lf
+*.mjs text eol=lf
+*.js text eol=lf
+*.json text eol=lf
+*.yaml text eol=lf
