@@ -23,33 +23,16 @@ def load_security_module():
 
 class GatewayMediaEnvironmentTests(unittest.IsolatedAsyncioTestCase):
     async def _start_with_environment(self, explicit):
-        module = load_security_module()
+        import whatsapp_client as module
 
-        class Client:
-            async def _request(self, *args, **kwargs):
-                return {}
-
-            async def events(self):
-                if False:
-                    yield {}
-
-        class Process:
+        class Process(module.GatewayProcess):
             def __init__(self, root):
-                self.host = "127.0.0.1"
-                self.port = 18789
-                self.node_executable = "node"
-                self.script_path = root / "plugins" / "adapter" / "gateway" / "main.mjs"
-                self.data_dir = root / "data" / "plugin_data" / "adapter"
-                self.auth_dir = self.data_dir / "whatsapp-auth"
-                self.log_level = "info"
-                self.process = None
+                super().__init__("node", root / "plugins/adapter/gateway/main.mjs",
+                                 "127.0.0.1", 18789, root / "data/plugin_data/adapter/whatsapp-auth",
+                                 "info", root / "data/plugin_data/adapter")
                 self._ensure_node_runtime = AsyncMock()
                 self._ensure_node_dependencies = AsyncMock()
 
-            async def stop(self):
-                self.process = None
-
-        module.install_gateway_transport_security(Client, Process)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             process = Process(root)
@@ -69,6 +52,7 @@ class GatewayMediaEnvironmentTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(child_env["WA_DATA_DIR"], str(process.data_dir))
                 expected = str((root / "data").resolve()) if explicit is None else explicit
                 self.assertEqual(child_env["WA_MEDIA_ALLOWED_ROOTS"], expected)
+                process.process.returncode = 0
                 await process.stop()
 
     async def test_default_keeps_astrbot_plugin_output_roots(self):

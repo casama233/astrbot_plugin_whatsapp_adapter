@@ -14,7 +14,7 @@ class ReactionEntry:
 
 
 class ReactionJournal:
-    """Keep short-lived reaction observations for cross-plugin arbitration.
+    """Keep bounded, short-lived observations shared across accounts in this process.
 
     WhatsApp exposes only one current reaction per sender. During a distributed
     claim/confirm protocol, replacing the claim emoji with a confirmation emoji
@@ -23,8 +23,9 @@ class ReactionJournal:
     the final WhatsApp UI state.
     """
 
-    def __init__(self, ttl_seconds: float = 30.0) -> None:
+    def __init__(self, ttl_seconds: float = 30.0, max_entries: int = 4096) -> None:
         self.ttl_seconds = max(1.0, float(ttl_seconds))
+        self.max_entries = max(1, int(max_entries))
         self._entries: dict[tuple[str, str, str, str], ReactionEntry] = {}
         self._lock = threading.RLock()
 
@@ -63,7 +64,12 @@ class ReactionJournal:
             self._prune_locked(observed_at)
             if normalized_emoji:
                 key = (chat, message, sender, normalized_emoji)
+                # Reinsert refreshed observations so capacity eviction removes
+                # the least recently observed key, even when a sender repeats.
+                self._entries.pop(key, None)
                 self._entries[key] = ReactionEntry(normalized_emoji, observed_at)
+                while len(self._entries) > self.max_entries:
+                    self._entries.pop(next(iter(self._entries)))
             else:
                 # A native empty reaction means the sender removed its current
                 # reaction. Clear every retained observation for that sender.

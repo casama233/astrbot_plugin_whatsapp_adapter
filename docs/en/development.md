@@ -4,10 +4,8 @@
 
 ```text
 main.py                         plugin registration, Page APIs, Updater v2, AI tools
-whatsapp_adapter.py             Platform wrapper and runtime patches
-_whatsapp_adapter_impl.py       main platform-adapter implementation
-whatsapp_event.py               MessageEvent wrapper
-_whatsapp_event_impl.py         normal and streaming delivery
+whatsapp_adapter.py             platform adapter and explicit lifecycle methods
+whatsapp_event.py               normal and streaming delivery
 whatsapp_client.py              Gateway HTTP client/process management
 whatsapp_config_policy.py       configuration scopes and migration
 whatsapp_identity.py            PN/LID identity helpers

@@ -211,7 +211,7 @@ class GroupContractTests(unittest.IsolatedAsyncioTestCase):
             target_jid="120363399820499653@g.us",
             client=client,
         )
-        self.assertIs(await event_module._get_group_compat(event), current)
+        self.assertIs(await event_module.WhatsAppMessageEvent.get_group(event), current)
         self.assertEqual(client.calls, [])
 
         private_event = types.SimpleNamespace(
@@ -219,7 +219,7 @@ class GroupContractTests(unittest.IsolatedAsyncioTestCase):
             target_jid="15550009@s.whatsapp.net",
             client=client,
         )
-        self.assertIsNone(await event_module._get_group_compat(private_event))
+        self.assertIsNone(await event_module.WhatsAppMessageEvent.get_group(private_event))
         self.assertEqual(client.calls, [])
 
     async def test_explicit_numeric_group_query_works_from_private_event(self) -> None:
@@ -229,7 +229,7 @@ class GroupContractTests(unittest.IsolatedAsyncioTestCase):
             target_jid="15550009@s.whatsapp.net",
             client=client,
         )
-        group = await event_module._get_group_compat(
+        group = await event_module.WhatsAppMessageEvent.get_group(
             event,
             "120363399820499653",
         )
@@ -259,7 +259,7 @@ class GroupContractTests(unittest.IsolatedAsyncioTestCase):
             target_jid="15550009@s.whatsapp.net",
             client=client,
         )
-        group = await event_module._get_group_compat(
+        group = await event_module.WhatsAppMessageEvent.get_group(
             event,
             "120363399820499653@g.us",
         )
@@ -267,7 +267,7 @@ class GroupContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.calls, ["120363399820499653@g.us"])
 
         self.assertIsNone(
-            await event_module._get_group_compat(event, "not-a-group"),
+            await event_module.WhatsAppMessageEvent.get_group(event, "not-a-group"),
         )
         self.assertEqual(client.calls, ["120363399820499653@g.us"])
 
@@ -290,7 +290,7 @@ class GroupContractTests(unittest.IsolatedAsyncioTestCase):
             "111_123456789-123345",
         ):
             with self.subTest(value=value):
-                group = await event_module._get_group_compat(event, value)
+                group = await event_module.WhatsAppMessageEvent.get_group(event, value)
                 self.assertEqual(group.group_id, "123456789-123345")
         self.assertEqual(
             client.calls,
@@ -339,7 +339,7 @@ class GroupContractTests(unittest.IsolatedAsyncioTestCase):
             client=client,
             identity_projector=projector,
         )
-        group = await event_module._get_group_compat(
+        group = await event_module.WhatsAppMessageEvent.get_group(
             event,
             "120363399820499653",
         )
@@ -376,7 +376,7 @@ class GroupContractTests(unittest.IsolatedAsyncioTestCase):
             identity_projector=projector.project,
         )
 
-        await event_module._get_group_compat(event, "120363000000000001")
+        await event_module.WhatsAppMessageEvent.get_group(event, "120363000000000001")
 
         self.assertTrue(projector.calls)
         self.assertTrue(all(persist is False for persist in projector.calls))

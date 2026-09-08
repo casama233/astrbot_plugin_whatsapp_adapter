@@ -6,10 +6,8 @@
 
 ```text
 main.py                         插件注册、Page API、Updater v2、AI 工具
-whatsapp_adapter.py             Platform wrapper 与运行时 patch
-_whatsapp_adapter_impl.py       平台适配器主体
-whatsapp_event.py               MessageEvent wrapper
-_whatsapp_event_impl.py         普通发送 / 流式发送主体
+whatsapp_adapter.py             平台适配器及明确的生命周期方法
+whatsapp_event.py               普通发送 / 流式发送主体
 whatsapp_client.py              Gateway HTTP client 与子进程管理
 whatsapp_config_policy.py       配置作用域、默认值与迁移
 whatsapp_identity.py            PN / LID 身份归一化
@@ -31,7 +29,7 @@ scripts/*.test.mjs              Node / Page / 脚本回归测试
 - 插件级 `default_*` 行为；
 - 单个账号可以不同的平台实例行为。
 
-相关逻辑主要在 `_conf_schema.json`、`whatsapp_config_policy.py` 与 `_whatsapp_adapter_impl.py`。不要重新把已经收回插件层的 Gateway 字段暴露成普通实例字段。
+相关逻辑主要在 `_conf_schema.json`、`whatsapp_config_policy.py` 与 `whatsapp_adapter.py`。不要重新把已经收回插件层的 Gateway 字段暴露成普通实例字段。
 
 ## 多实例
 
@@ -41,7 +39,7 @@ scripts/*.test.mjs              Node / Page / 脚本回归测试
 
 ## 流式回复
 
-核心在 `_whatsapp_event_impl.py`。需要保持：partial stream 已真实投递后立即标记 sent；编辑失败不得重复完整前缀；Message ID 缺失要区分已发送但不可编辑与未发送；并发 event 不共享 streaming state；typing presence 不得被另一个先结束的 stream 提前停止。
+核心在 `whatsapp_event.py`。需要保持：partial stream 已真实投递后立即标记 sent；编辑失败不得重复完整前缀；Message ID 缺失要区分已发送但不可编辑与未发送；并发 event 不共享 streaming state；typing presence 不得被另一个先结束的 stream 提前停止。
 
 ## Plugin Page i18n
 
