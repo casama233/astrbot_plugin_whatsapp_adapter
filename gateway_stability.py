@@ -11,18 +11,20 @@ from typing import Any
 
 try:
     from .gateway_dependencies import (
-        assert_dependency_directory_idle, dependencies_current,
+        RECEIPT_NAME, assert_dependency_directory_idle, dependencies_current,
         dependency_fingerprint, record_dependency_install,
     )
 except ImportError:  # Standalone tests.
     from gateway_dependencies import (
-        assert_dependency_directory_idle, dependencies_current,
+        RECEIPT_NAME, assert_dependency_directory_idle, dependencies_current,
         dependency_fingerprint, record_dependency_install,
     )
 
 _PROCESS_PATCH_MARKER = "_astrbot_gateway_stability_process_installed"
 _CLIENT_PATCH_MARKER = "_astrbot_gateway_stability_client_installed"
 _NODE_DEPENDENCY_INSTALL_LOCK = asyncio.Lock()
+MINIMUM_NODE_VERSION = (20, 9, 0)
+RECOMMENDED_NODE_MAJORS = (22, 24)
 
 
 def _env_seconds(name: str, default: float, minimum: float, maximum: float) -> float:
@@ -130,7 +132,7 @@ async def _run_node_command(*command: str, cwd: Path | None = None, timeout: flo
     return stdout
 
 
-async def probe_node_runtime(node: str) -> dict[str, Any]:
+async def inspect_node_runtime(node: str) -> dict[str, Any]:
     output = await _run_node_command(
         node, "--eval",
         "console.log(JSON.stringify({version:process.versions.node,"
@@ -139,13 +141,27 @@ async def probe_node_runtime(node: str) -> dict[str, Any]:
     try:
         info = json.loads(output.decode().strip())
         version = tuple(int(part) for part in info["version"].split("."))
-        if len(version) != 3 or version < (20, 9, 0):
-            raise ValueError("unsupported Node version")
+        if len(version) != 3 or any(part < 0 for part in version):
+            raise ValueError("invalid Node version")
+        if any(not isinstance(info.get(key), str) or not info[key] for key in ("abi", "platform", "arch")):
+            raise ValueError("incomplete Node identity")
         # Patch updates with an unchanged ABI need not reinstall native modules.
-        return {"major": version[0], "abi": str(info["abi"]),
-                "platform": str(info["platform"]), "arch": str(info["arch"])}
+        return {
+            "version": info["version"],
+            "supported": version >= MINIMUM_NODE_VERSION,
+            "recommended": version[0] in RECOMMENDED_NODE_MAJORS,
+            "identity": {"major": version[0], "abi": info["abi"],
+                         "platform": info["platform"], "arch": info["arch"]},
+        }
     except (ValueError, KeyError, TypeError, AttributeError) as exc:
         raise RuntimeError("Node.js >=20.9.0 is required; Node 22/24 LTS is recommended") from exc
+
+
+async def probe_node_runtime(node: str) -> dict[str, Any]:
+    info = await inspect_node_runtime(node)
+    if not info["supported"]:
+        raise RuntimeError("Node.js >=20.9.0 is required; Node 22/24 LTS is recommended")
+    return info["identity"]
 
 
 def _npm_command(node: str) -> list[str]:
@@ -162,41 +178,43 @@ def _npm_command(node: str) -> list[str]:
     raise RuntimeError("Cannot locate npm-cli.js beside npm; use a standard Node.js/npm installation")
 
 
-async def _bounded_node_dependency_install(self: Any, error_cls: type[BaseException]) -> None:
-    project_dir = self.script_path.parent.parent
+async def prepare_node_dependencies(
+    project_dir: Path, node_executable: str, *, node_identity: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Prepare a managed or staged tree using the same completion contract."""
     try:
-        identity = getattr(self, "_node_identity", None)
-        if identity is None:
-            identity = await probe_node_runtime(self.node_executable)
-            self._node_identity = identity
+        identity = node_identity if node_identity is not None else await probe_node_runtime(node_executable)
         if dependencies_current(project_dir, identity):
-            return
+            return identity
         async with _NODE_DEPENDENCY_INSTALL_LOCK:
             if dependencies_current(project_dir, identity):
-                return
+                return identity
             # Never use npm ci's destructive cleanup on a live managed runtime.
             assert_dependency_directory_idle(project_dir)
             fingerprint = dependency_fingerprint(project_dir)
             timeout = _npm_install_timeout_seconds()
+            npm_command = _npm_command(node_executable)
+            (project_dir / "node_modules" / RECEIPT_NAME).unlink(missing_ok=True)
             await _run_node_command(
-                *_npm_command(self.node_executable), "ci", "--omit=dev",
+                *npm_command, "ci", "--omit=dev",
                 "--no-audit", "--no-fund", "--ignore-scripts=false",
                 cwd=project_dir, timeout=timeout,
             )
             # Explicit verification also handles installations influenced by npm config.
             await _run_node_command(
-                self.node_executable, "scripts/patch-baileys-ephemeral.mjs",
+                node_executable, "scripts/patch-baileys-ephemeral.mjs",
                 cwd=project_dir, timeout=30,
             )
             await _run_node_command(
-                self.node_executable, "--input-type=module", "--eval",
+                node_executable, "--input-type=module", "--eval",
                 "await Promise.all(['@whiskeysockets/baileys','sharp','qrcode',"
                 "'qrcode-terminal','pino','https-proxy-agent'].map(x => import(x)))",
                 cwd=project_dir, timeout=30,
             )
             record_dependency_install(project_dir, identity, fingerprint)
+            return identity
     except (RuntimeError, OSError, ValueError) as exc:
-        raise error_cls(f"Gateway dependency preparation failed: {exc}") from exc
+        raise RuntimeError(f"Gateway dependency preparation failed: {exc}") from exc
 
 
 async def _request_graceful_shutdown(client_cls: type[Any], process: Any) -> bool:

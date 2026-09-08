@@ -19,7 +19,7 @@ AstrBot Python Adapter ← HTTP/SSE → Local Node.js Gateway ← WhatsApp Web �
 ## 环境要求
 
 - AstrBot `>=4.24.2,<5`
-- Node.js `>=20`
+- Node.js 22/24 LTS（最低 `20.9.0`；Node 20 已 EOL）
 - npm
 - Python 依赖 `aiohttp>=3.9.0`
 - 可访问 WhatsApp Web 的网络环境
@@ -33,7 +33,7 @@ cd AstrBot/data/plugins
 git clone https://github.com/casama233/astrbot_plugin_whatsapp_adapter.git
 cd astrbot_plugin_whatsapp_adapter
 pip install -r requirements.txt
-npm install --omit=dev
+npm ci --omit=dev
 ```
 
 推荐首次平台配置：
@@ -156,7 +156,7 @@ NO_PROXY=localhost,127.0.0.1
 
 ## 排障
 
-- 没有 QR：检查 Node.js 20+、npm、Gateway 端口、网络和 Page runtime 状态。
+- 没有 QR：检查 Node.js 22/24 LTS（最低 20.9.0；Node 20 已 EOL）、npm、Gateway 端口、网络和 Page runtime 状态。
 - 扫码后没消息：检查平台实例启用状态和访问控制。
 - 群聊不触发：确认 `group_policy` 与 AstrBot wake/command 条件；Reply 本身不再算唤醒。
 - 流式变成新消息：WhatsApp edit 受协议 / 时效限制，降级属于保护路径。

@@ -68,7 +68,6 @@ let countdown = 5;
 let countdownTimer = null;
 let loggedOutSince = 0;
 let currentConnectionStatus = "unknown";
-let runtimeLoaded = false;
 let refreshPromise = null;
 let updateInfo = null;
 let updatePollTimer = null;
@@ -345,13 +344,24 @@ function renderSession(data) {
 function renderRuntime(runtime) {
   if (!runtime || !els.runtimeStatus) return;
   lastRuntimeData = runtime;
-  runtimeLoaded = true;
-  els.runtimeStatus.textContent = runtime.ready ? t("runtime.ready", "✓ Ready") : t("runtime.unavailable", "✗ Unavailable");
-  els.runtimeStatus.style.color = runtime.ready ? "var(--green, #25D366)" : "var(--red, #ff5c6c)";
+  const labels = {
+    external: t("runtime.external", "External Gateway; check connection separately"),
+    node_missing: t("runtime.node_missing", "Node.js not found"),
+    node_unavailable: t("runtime.node_unavailable", "Node.js could not be checked"),
+    node_unsupported: t("runtime.node_unsupported", "Node.js >=20.9.0 required"),
+    npm_unavailable: t("runtime.npm_unavailable", "Dependency setup requires npm"),
+    dependencies_current: t("runtime.dependencies_current", "Dependencies verified"),
+    dependencies_pending: t("runtime.dependencies_pending", "Dependencies will be installed on startup"),
+    dependencies_blocked: t("runtime.dependencies_blocked", "Stop all WhatsApp Gateways before reinstalling"),
+  };
+  els.runtimeStatus.textContent = labels[runtime.status] || t("runtime.check_failed", "Runtime check failed");
+  els.runtimeStatus.style.color = runtime.ready ? "var(--green, #25D366)" : runtime.canPrepare ? "var(--yellow, #e6b450)" : "var(--red, #ff5c6c)";
   els.runtimeStatus.title = [
     runtime.node?.version ? `Node ${runtime.node.version}` : null,
     runtime.npm?.path ? `npm ${runtime.npm.path}` : null,
-    runtime.dependenciesInstalled ? t("runtime.baileys_installed", "Baileys installed") : t("runtime.baileys_pending", "Baileys not installed"),
+    labels[runtime.status],
+    runtime.mode === "managed" && runtime.node?.supported && !runtime.node?.recommended
+      ? t("runtime.node_recommended", "Node.js 22/24 LTS recommended; Node 20 is EOL") : null,
   ].filter(Boolean).join(" · ");
   if (runtime.message) console.debug("WhatsApp runtime:", runtime.message);
 }
@@ -614,16 +624,14 @@ function renderQr(data) {
 async function refreshOnce() {
   let status = {};
   let qr = {};
-  if (!runtimeLoaded) {
-    try {
-      renderRuntime(await bridge.apiGet("runtime"));
-    } catch (error) {
-      if (els.runtimeStatus) {
-        els.runtimeStatus.textContent = t("runtime.check_failed", "Runtime check failed");
-        els.runtimeStatus.style.color = "var(--red, #ff5c6c)";
-      }
-      log("error", tf("log.runtime_failed", "Runtime check failed: {error}", { error }));
+  try {
+    renderRuntime(await bridge.apiGet("runtime"));
+  } catch (error) {
+    if (els.runtimeStatus) {
+      els.runtimeStatus.textContent = t("runtime.check_failed", "Runtime check failed");
+      els.runtimeStatus.style.color = "var(--red, #ff5c6c)";
     }
+    log("error", tf("log.runtime_failed", "Runtime check failed: {error}", { error }));
   }
   try {
     status = await bridge.apiGet("status");

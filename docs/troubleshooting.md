@@ -17,12 +17,12 @@ node --version
 npm --version
 ```
 
-Node.js 必须 `>=20`。
+Node.js 最低为 `20.9.0`；推荐 22/24 LTS，Node 20 已 EOL。
 
 手工安装仓库时可执行：
 
 ```bash
-npm install --omit=dev
+npm ci --omit=dev
 ```
 
 如果是 CI / 开发环境，使用：
