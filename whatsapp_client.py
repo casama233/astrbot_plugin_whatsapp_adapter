@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import secrets
 import subprocess
 from pathlib import Path
 from typing import Any, AsyncIterator
@@ -17,9 +18,11 @@ class WhatsAppGatewayError(RuntimeError):
 
 
 try:
+    from . import gateway_security, gateway_stability
     from .gateway_dependencies import dependencies_current, project_start_lock, register_gateway_child
     from .gateway_stability import prepare_node_dependencies, probe_node_runtime
 except ImportError:  # Standalone regression tests and developer tooling.
+    import gateway_security, gateway_stability
     from gateway_dependencies import dependencies_current, project_start_lock, register_gateway_child
     from gateway_stability import prepare_node_dependencies, probe_node_runtime
 
@@ -186,14 +189,18 @@ class WhatsAppGatewayClient:
         return await self._request("POST", "/send/location", json_data=payload)
 
     async def send_presence(self, to: str, state: str) -> dict[str, Any]:
-        return await self._request("POST", "/presence", json_data={"to": to, "state": state})
+        return await asyncio.wait_for(
+            self._request("POST", "/presence", json_data={"to": to, "state": state}),
+            timeout=gateway_stability._aux_request_timeout_seconds(),
+        )
 
     async def react(self, to: str, message_id: str, emoji: str, participant: str | None = None) -> dict[str, Any]:
         payload: dict[str, Any] = {"to": to, "messageId": message_id, "emoji": emoji}
         if participant:
             payload["participant"] = participant
-        return await self._request(
-            "POST", "/send/reaction", json_data=payload
+        return await asyncio.wait_for(
+            self._request("POST", "/send/reaction", json_data=payload),
+            timeout=gateway_stability._aux_request_timeout_seconds(),
         )
 
     async def send_buttons(
@@ -309,6 +316,7 @@ class WhatsAppGatewayClient:
 
     async def events(self) -> AsyncIterator[dict[str, Any]]:
         await self.start()
+        gateway_security._apply_client_auth(self)
         if self._session is None:
             raise RuntimeError("WhatsApp gateway client session not started")
         timeout = aiohttp.ClientTimeout(total=None, sock_connect=self.timeout, sock_read=300.0)
@@ -340,6 +348,7 @@ class WhatsAppGatewayClient:
         json_data: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         await self.start()
+        gateway_security._apply_client_auth(self)
         if self._session is None:
             raise RuntimeError("WhatsApp gateway client session not started")
         async with self._session.request(
@@ -380,6 +389,7 @@ class GatewayProcess:
         self.log_level = log_level
         self.data_dir = data_dir or auth_dir.parent
         self.process: asyncio.subprocess.Process | None = None
+        self._gateway_auth_token = secrets.token_urlsafe(32)
 
     async def start(self) -> None:
         async with project_start_lock(self.script_path.parent.parent):
@@ -387,6 +397,7 @@ class GatewayProcess:
 
     async def _start_unlocked(self) -> None:
         if self.process and self.process.returncode is None:
+            gateway_security.register_gateway_token(self)
             return
         await self._ensure_node_runtime()
         await self._ensure_node_dependencies()
@@ -394,7 +405,8 @@ class GatewayProcess:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         env = os.environ.copy()
         # 全域暫存目錄（給 astrbot TempDirCleaner 自動清理）
-        temp_dir = str(Path(self.data_dir).parent.parent / "temp")
+        astrbot_data_dir = Path(self.data_dir).parent.parent.resolve()
+        temp_dir = str(astrbot_data_dir / "temp")
         env.update(
             {
                 "WA_GATEWAY_HOST": self.host,
@@ -403,8 +415,11 @@ class GatewayProcess:
                 "WA_DATA_DIR": str(self.data_dir),
                 "WA_TEMP_DIR": temp_dir,
                 "WA_LOG_LEVEL": self.log_level,
+                "WA_GATEWAY_TOKEN": self._gateway_auth_token,
             }
         )
+        # Preserve explicit roots, including empty (temp-only).
+        env.setdefault("WA_MEDIA_ALLOWED_ROOTS", str(astrbot_data_dir))
         creation_flags = 0
         extra_kwargs: dict[str, Any] = {}
         if os.name == "nt":
@@ -422,6 +437,7 @@ class GatewayProcess:
         )
 
         register_gateway_child(self.script_path.parent.parent, self.process)
+        gateway_security.register_gateway_token(self)
 
     async def _ensure_node_runtime(self) -> None:
         try:
@@ -443,58 +459,68 @@ class GatewayProcess:
             raise WhatsAppGatewayError(str(exc)) from exc
 
     async def stop(self) -> None:
-        if not self.process or self.process.returncode is not None:
-            self.process = None
-            return
-        pgid = None
-        current_pgid = None
-        if os.name != "nt" and hasattr(os, "getpgid"):
-            try:
-                pgid = os.getpgid(self.process.pid)
-            except (ProcessLookupError, OSError):
-                pgid = None
-            try:
-                current_pgid = os.getpgid(os.getpid())
-            except (ProcessLookupError, OSError):
-                current_pgid = None
-        if os.name == "nt":
-            if not await self._taskkill_process_tree(force=False):
+        try:
+            child = self.process
+            requested = await gateway_stability._request_graceful_shutdown(WhatsAppGatewayClient, self)
+            if requested and child is not None and child.returncode is None:
+                try:
+                    await asyncio.wait_for(child.wait(), timeout=gateway_stability._graceful_shutdown_timeout_seconds())
+                except asyncio.TimeoutError:
+                    pass
+            if not self.process or self.process.returncode is not None:
+                self.process = None
+                return
+            pgid = None
+            current_pgid = None
+            if os.name != "nt" and hasattr(os, "getpgid"):
+                try:
+                    pgid = os.getpgid(self.process.pid)
+                except (ProcessLookupError, OSError):
+                    pgid = None
+                try:
+                    current_pgid = os.getpgid(os.getpid())
+                except (ProcessLookupError, OSError):
+                    current_pgid = None
+            if os.name == "nt":
+                if not await self._taskkill_process_tree(force=False):
+                    try:
+                        self.process.terminate()
+                    except ProcessLookupError:
+                        self.process = None
+                        return
+            elif pgid is not None and current_pgid is not None and pgid != current_pgid and hasattr(os, "killpg"):
+                try:
+                    os.killpg(pgid, 15)
+                except (ProcessLookupError, OSError):
+                    pass
+            else:
                 try:
                     self.process.terminate()
                 except ProcessLookupError:
                     self.process = None
                     return
-        elif pgid is not None and current_pgid is not None and pgid != current_pgid and hasattr(os, "killpg"):
             try:
-                os.killpg(pgid, 15)
-            except (ProcessLookupError, OSError):
-                pass
-        else:
-            try:
-                self.process.terminate()
-            except ProcessLookupError:
-                self.process = None
-                return
-        try:
-            await asyncio.wait_for(self.process.wait(), timeout=10)
-        except asyncio.TimeoutError:
-            if os.name == "nt":
-                await self._taskkill_process_tree(force=True)
-            elif pgid is not None and current_pgid is not None and pgid != current_pgid and hasattr(os, "killpg"):
+                await asyncio.wait_for(self.process.wait(), timeout=10)
+            except asyncio.TimeoutError:
+                if os.name == "nt":
+                    await self._taskkill_process_tree(force=True)
+                elif pgid is not None and current_pgid is not None and pgid != current_pgid and hasattr(os, "killpg"):
+                    try:
+                        os.killpg(pgid, 9)
+                    except (ProcessLookupError, OSError):
+                        pass
+                else:
+                    try:
+                        self.process.kill()
+                    except ProcessLookupError:
+                        pass
                 try:
-                    os.killpg(pgid, 9)
-                except (ProcessLookupError, OSError):
+                    await self.process.wait()
+                except Exception:
                     pass
-            else:
-                try:
-                    self.process.kill()
-                except ProcessLookupError:
-                    pass
-            try:
-                await self.process.wait()
-            except Exception:
-                pass
-        self.process = None
+            self.process = None
+        finally:
+            gateway_security.release_gateway_token(self)
 
     async def _taskkill_process_tree(self, force: bool) -> bool:
         if os.name != "nt" or not self.process or self.process.returncode is not None:

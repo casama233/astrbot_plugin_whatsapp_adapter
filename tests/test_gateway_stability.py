@@ -47,25 +47,12 @@ class GatewayStabilityTests(unittest.IsolatedAsyncioTestCase):
         process.kill()
 
     async def test_auxiliary_presence_and_reaction_are_time_bounded(self) -> None:
-        class Error(RuntimeError):
-            pass
-
-        class Client:
-            async def send_presence(self, *_args, **_kwargs):
-                await asyncio.Future()
-
-            async def react(self, *_args, **_kwargs):
-                await asyncio.Future()
-
-        class Process:
-            async def _ensure_node_dependencies(self):
-                return None
-
-            async def stop(self):
-                return None
-
-        stability.install_gateway_runtime_stability(Client, Process, Error)
-        client = Client()
+        from whatsapp_client import WhatsAppGatewayClient
+        from unittest.mock import AsyncMock
+        async def stalled(*_args, **_kwargs):
+            await asyncio.Future()
+        client = WhatsAppGatewayClient("http://127.0.0.1:18789")
+        client._request = AsyncMock(side_effect=stalled)
         with patch("gateway_stability._aux_request_timeout_seconds", return_value=0.01):
             with self.assertRaises(asyncio.TimeoutError):
                 await client.send_presence("x", "composing")
@@ -73,58 +60,28 @@ class GatewayStabilityTests(unittest.IsolatedAsyncioTestCase):
                 await client.react("x", "m", "✅")
 
     async def test_process_stop_requests_authenticated_graceful_shutdown_first(self) -> None:
-        calls: list[tuple[str, str]] = []
-
-        class Error(RuntimeError):
-            pass
-
+        from whatsapp_client import GatewayProcess
+        calls = []
         class Client:
-            def __init__(self, base_url: str, timeout: float = 1.0) -> None:
-                self.base_url = base_url
-                self.timeout = timeout
-
-            async def _request(self, method: str, path: str, json_data=None):
-                calls.append((method, path))
+            def __init__(self, *_args, **_kwargs): pass
+            async def _request(self, method, path, json_data=None):
+                calls.append((method, path, self._gateway_auth_token))
                 return {"ok": True}
-
-            async def close(self) -> None:
-                return None
-
+            async def close(self): pass
         class Child:
             returncode = None
-
-            async def wait(self) -> int:
+            async def wait(self):
                 self.returncode = 0
                 return 0
-
-        class Process:
-            def __init__(self) -> None:
-                self.host = "127.0.0.1"
-                self.port = 18789
-                self.process = Child()
-                self._gateway_auth_token = "token"
-                self.original_stop_called = False
-
-            async def _ensure_node_dependencies(self):
-                return None
-
-            async def stop(self):
-                self.original_stop_called = True
-                self.process = None
-
-        stability.install_gateway_runtime_stability(Client, Process, Error)
-        process = Process()
-        await process.stop()
-        self.assertIn(("POST", "/shutdown"), calls)
-        self.assertTrue(process.original_stop_called)
-
-    def test_adapter_installs_runtime_stability_after_transport_security(self) -> None:
-        source = (Path(__file__).resolve().parents[1] / "whatsapp_adapter.py").read_text(
-            encoding="utf-8"
-        )
-        security_index = source.index("_install_gateway_transport_security(")
-        stability_index = source.index("_install_gateway_runtime_stability(")
-        self.assertGreater(stability_index, security_index)
+            def terminate(self):
+                raise AssertionError("graceful exit must not send terminate")
+        process = GatewayProcess("node", Path("gateway/whatsapp-gateway.mjs"),
+                                 "127.0.0.1", 18789, Path("auth"), "info")
+        process.process = Child()
+        with patch("whatsapp_client.WhatsAppGatewayClient", Client):
+            await process.stop()
+        self.assertEqual(calls, [("POST", "/shutdown", process._gateway_auth_token)])
+        self.assertIsNone(process.process)
 
 
 if __name__ == "__main__":

@@ -5,8 +5,6 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { patchGatewayGroupNames } from "./group-name-compat.mjs";
-import { patchGatewayPrivateMediaBursts } from "./private-media-burst-compat.mjs";
 
 
 async function currentGatewaySource() {
@@ -14,18 +12,15 @@ async function currentGatewaySource() {
 }
 
 
-async function patchedGatewaySource() {
+async function gatewaySource() {
   const source = await currentGatewaySource();
-  const grouped = patchGatewayGroupNames(source);
-  return patchGatewayPrivateMediaBursts(grouped.content);
+  return { content: source };
 }
 
 
-test("private media burst patch preserves captioned direct-chat albums", async () => {
-  const result = await patchedGatewaySource();
+test("private media burst runtime preserves captioned direct-chat albums", async () => {
+  const result = await gatewaySource();
 
-  assert.equal(result.changed, true);
-  assert.match(result.content, /const astrbotPrivateMediaBurstCompatibility = true;/);
   assert.match(result.content, /hasCaption && chatJid\.endsWith\("@g\.us"\)/);
   assert.match(result.content, /caption: textFromMessage\(item\.message\) \|\| ""/);
   assert.match(result.content, /\.\.\.albumMediaMetadata\(albumItem, albumItems\.length\)/);
@@ -35,8 +30,8 @@ test("private media burst patch preserves captioned direct-chat albums", async (
 });
 
 
-test("private media burst patch keeps source ordering and replay protection", async () => {
-  const result = await patchedGatewaySource();
+test("private media burst runtime keeps source ordering and replay protection", async () => {
+  const result = await gatewaySource();
 
   assert.match(result.content, /async function flushAlbumBuffer\(/);
   assert.match(result.content, /Math\.abs\(timestampMs - buffer\.lastTimestampMs\) > debounceMs/);
@@ -49,7 +44,7 @@ test("private media burst patch keeps source ordering and replay protection", as
 
 
 test("patched gateway remains syntactically valid", async () => {
-  const result = await patchedGatewaySource();
+  const result = await gatewaySource();
   const directory = await mkdtemp(path.join(os.tmpdir(), "wa-gateway-check-"));
   const target = path.join(directory, "gateway-check.mjs");
   try {
@@ -58,16 +53,4 @@ test("patched gateway remains syntactically valid", async () => {
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
-});
-
-
-test("private media burst patch is idempotent", async () => {
-  const source = await currentGatewaySource();
-  const grouped = patchGatewayGroupNames(source);
-  const first = patchGatewayPrivateMediaBursts(grouped.content);
-  const second = patchGatewayPrivateMediaBursts(first.content);
-
-  assert.equal(first.changed, true);
-  assert.equal(second.changed, false);
-  assert.equal(second.content, first.content);
 });
