@@ -18,10 +18,10 @@ class WhatsAppGatewayError(RuntimeError):
 
 try:
     from .gateway_dependencies import dependencies_current, project_start_lock, register_gateway_child
-    from .gateway_stability import _bounded_node_dependency_install, probe_node_runtime
+    from .gateway_stability import prepare_node_dependencies, probe_node_runtime
 except ImportError:  # Standalone regression tests and developer tooling.
     from gateway_dependencies import dependencies_current, project_start_lock, register_gateway_child
-    from gateway_stability import _bounded_node_dependency_install, probe_node_runtime
+    from gateway_stability import prepare_node_dependencies, probe_node_runtime
 
 
 class WhatsAppGatewayClient:
@@ -434,7 +434,13 @@ class GatewayProcess:
         return dependencies_current(project_dir)
 
     async def _ensure_node_dependencies(self) -> None:
-        await _bounded_node_dependency_install(self, WhatsAppGatewayError)
+        try:
+            self._node_identity = await prepare_node_dependencies(
+                self.script_path.parent.parent, self.node_executable,
+                node_identity=getattr(self, "_node_identity", None),
+            )
+        except RuntimeError as exc:
+            raise WhatsAppGatewayError(str(exc)) from exc
 
     async def stop(self) -> None:
         if not self.process or self.process.returncode is not None:

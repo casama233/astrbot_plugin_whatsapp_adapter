@@ -2,7 +2,7 @@
 
 ## Login Page has no QR code
 
-Check that Node.js 20+ and npm are available, production Node dependencies can be installed/read, the configured base Gateway port is not unexpectedly occupied, and AstrBot can reach WhatsApp Web directly or through your proxy. The Login Page runtime card reports missing dependencies.
+Check that Node.js 22/24 LTS (minimum 20.9.0; Node 20 is EOL) and npm are available, production Node dependencies can be installed/read, the configured base Gateway port is not unexpectedly occupied, and AstrBot can reach WhatsApp Web directly or through your proxy. The Login Page runtime card reports missing dependencies.
 
 If the session is explicitly invalid/logged out/QR-expired, use the Page retry/reset flow to create a fresh login session.
 

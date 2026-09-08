@@ -4,7 +4,6 @@ import asyncio
 import json
 import re
 import shutil
-import sys
 import time
 import uuid
 from pathlib import Path
@@ -17,6 +16,7 @@ from astrbot.api.star import Context, Star, register
 from astrbot.api.web import json_response, request
 
 from .gateway_security import bind_gateway_client
+from .gateway_runtime import inspect_gateway_requirements, prepare_staged_plugin
 
 try:
     from astrbot.core.utils.astrbot_path import (
@@ -95,8 +95,6 @@ class WhatsAppAdapterPlugin(Star):
         self._sync_runtime_policy()
         self.page_client = WhatsAppGatewayClient(self._base_url)
         self.page_gateway_process: GatewayProcess | None = None
-        self._runtime_cache: dict[str, Any] | None = None
-        self._runtime_checked_at = 0.0
         self._runtime_lock = asyncio.Lock()
         self._page_gateway_lock = asyncio.Lock()
         self._update_lock = asyncio.Lock()
@@ -785,74 +783,12 @@ class WhatsAppAdapterPlugin(Star):
         return release
 
     async def _prepare_staged_plugin(self, staged_dir: Path) -> None:
-        package_json = staged_dir / "package.json"
-        package_lock = staged_dir / "package-lock.json"
-        if not package_json.is_file() or not package_lock.is_file():
-            raise PluginUpdateError("新版本的 Node package.json 与 lockfile 不完整")
-        npm = shutil.which("npm")
-        if not npm:
-            raise PluginUpdateError("找不到 npm，无法预装新版本 Gateway 依赖")
-        await self._run_update_command(
-            "npm 生产依赖安装",
-            npm,
-            "ci",
-            "--omit=dev",
-            "--no-audit",
-            "--no-fund",
-            cwd=staged_dir,
-            timeout=900,
-        )
-
-        await self._run_update_command(
-            "Python 语法验证",
-            sys.executable,
-            "-m",
-            "compileall",
-            "-q",
-            "-x",
-            r"(^|/)(node_modules|\.git)(/|$)",
-            ".",
-            cwd=staged_dir,
-            timeout=120,
-        )
-        gateway_script = staged_dir / "gateway" / "whatsapp-gateway.mjs"
-        if not gateway_script.is_file():
-            raise PluginUpdateError("Release 缺少 Gateway 入口")
-        node = shutil.which(str(self.config.get("node_executable") or "node"))
-        if not node:
-            raise PluginUpdateError("找不到 Node.js，无法验证新版本 Gateway")
-        await self._run_update_command(
-            "Gateway 语法验证",
-            node,
-            "--check",
-            str(gateway_script),
-            cwd=staged_dir,
-            timeout=60,
-        )
-
-    @staticmethod
-    async def _run_update_command(
-        label: str,
-        *command: str,
-        cwd: Path,
-        timeout: float,
-    ) -> None:
-        process = await asyncio.create_subprocess_exec(
-            *command,
-            cwd=str(cwd),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
         try:
-            stdout, _ = await asyncio.wait_for(process.communicate(), timeout=timeout)
-        except asyncio.TimeoutError as exc:
-            process.kill()
-            await process.wait()
-            raise PluginUpdateError(f"{label}超时") from exc
-        output = stdout.decode(errors="replace").strip()
-        if process.returncode != 0:
-            detail = output[-2000:] if output else f"exit code {process.returncode}"
-            raise PluginUpdateError(f"{label}失败：{detail}")
+            await prepare_staged_plugin(
+                staged_dir, str(self.config.get("node_executable") or "node").strip(),
+            )
+        except RuntimeError as exc:
+            raise PluginUpdateError(str(exc)) from exc
 
     async def _quiesce_update_runtime(self) -> None:
         from .whatsapp_adapter import get_active_whatsapp_adapters
@@ -1181,90 +1117,13 @@ class WhatsAppAdapterPlugin(Star):
         }
 
     async def _runtime_requirements(self) -> dict[str, Any]:
-        """Return a cached, side-effect-free Gateway runtime preflight."""
-        now = time.monotonic()
-        if self._runtime_cache is not None and now - self._runtime_checked_at < 300:
-            return self._runtime_cache
-
+        # Recheck the receipt/tree and configured runtime on each refresh. A cached
+        # "ready" result must not hide a completed install or an ABI/input change.
         async with self._runtime_lock:
-            now = time.monotonic()
-            if self._runtime_cache is not None and now - self._runtime_checked_at < 300:
-                return self._runtime_cache
-
-            configured_node = str(self.config.get("node_executable") or "node").strip()
-            node_path = shutil.which(configured_node)
-            node_version: str | None = None
-            node_major: int | None = None
-            node_error: str | None = None
-            if node_path:
-                try:
-                    process = await asyncio.create_subprocess_exec(
-                        node_path,
-                        "--version",
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE,
-                    )
-                    stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=3)
-                    output = (stdout or stderr).decode(errors="replace").strip()
-                    if process.returncode == 0:
-                        node_version = output
-                        match = re.match(r"v?(\d+)", output)
-                        if match:
-                            node_major = int(match.group(1))
-                    else:
-                        node_error = output or f"exit code {process.returncode}"
-                except asyncio.TimeoutError:
-                    process.kill()
-                    await process.wait()
-                    node_error = "version check timed out"
-                except OSError as exc:
-                    node_error = str(exc)
-
-            npm_path = shutil.which("npm")
-            dependencies_installed = (
-                PLUGIN_DIR / "node_modules" / "@whiskeysockets" / "baileys"
-            ).is_dir()
-            node_supported = node_major is not None and node_major >= 20
-            ready = bool(
-                node_path
-                and node_supported
-                and (dependencies_installed or npm_path)
+            return await inspect_gateway_requirements(
+                PLUGIN_DIR, str(self.config.get("node_executable") or "node").strip(),
+                managed=bool(self.config.get("auto_start_gateway", True)),
             )
-
-            if not node_path:
-                message = f"找不到 Node.js：{configured_node}"
-            elif node_error:
-                message = f"Node.js 无法执行：{node_error}"
-            elif node_major is None:
-                message = f"无法识别 Node.js 版本：{node_version or '无输出'}"
-            elif not node_supported:
-                message = f"需要 Node.js 20+，当前为 {node_version}"
-            elif not dependencies_installed and not npm_path:
-                message = "尚未安装 Baileys 依赖，且找不到 npm"
-            elif not dependencies_installed:
-                message = "运行环境可用；首次启动会自动执行 npm install --omit=dev"
-            else:
-                message = "Node.js 与 Baileys 依赖均已就绪"
-
-            result = {
-                "ok": True,
-                "ready": ready,
-                "minimumNodeMajor": 20,
-                "node": {
-                    "configured": configured_node,
-                    "path": node_path,
-                    "version": node_version,
-                    "major": node_major,
-                    "supported": node_supported,
-                    "error": node_error,
-                },
-                "npm": {"path": npm_path, "available": bool(npm_path)},
-                "dependenciesInstalled": dependencies_installed,
-                "message": message,
-            }
-            self._runtime_cache = result
-            self._runtime_checked_at = time.monotonic()
-            return result
 
     async def _ensure_page_gateway(self) -> None:
         # Status, QR, and action routes may overlap while the Gateway is slow to
