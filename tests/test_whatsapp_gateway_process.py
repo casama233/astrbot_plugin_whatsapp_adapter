@@ -81,7 +81,7 @@ class DependencyReceiptTests(unittest.TestCase):
     def test_crlf_checkout_does_not_force_reinstall(self):
         for relative in ("package.json", "package-lock.json", "scripts/patch-baileys-ephemeral.mjs"):
             p = self.root / relative
-            p.write_bytes(p.read_bytes().replace(b"\n", b"\r\n"))
+            p.write_bytes(p.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
         self.assertTrue(self.current())
 
     def test_missing_required_package_is_stale(self):
