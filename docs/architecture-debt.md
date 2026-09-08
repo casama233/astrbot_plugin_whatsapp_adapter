@@ -4,12 +4,14 @@
 
 ## Shrink-only implementation budget
 
-以 2026-08-31 canonical `main` 為基線：
+以 2026-08-31 canonical `main` 為基線，以 **LF 正規化後的 UTF-8 bytes** 計算：
 
 - `_whatsapp_adapter_impl.py`：最多 **125,349 bytes**；
 - `_whatsapp_helpers_impl.py`：最多 **60,189 bytes**。
 
-`tests/test_architecture_shrink_budget.py` 在既有 Python 3.11／3.12、Linux／Windows 測試矩陣中執行。超過基線應視為架構回歸，不應透過提高上限解決。
+`tests/test_architecture_shrink_budget.py` 使用 `unittest.TestCase`，由既有 `python -m unittest discover -v tests` 收集。舊版頂層 `test_*` 函式不會被此命令執行；不能以該版本的 CI 綠燈證明 budget 已生效。
+
+檢查只正規化 CRLF，不折扣中文字元或其他內容。回歸測試覆蓋：預算邊界通過、超出 1 byte 失敗、LF／CRLF 等價、UTF-8 byte 計算，以及受控檔案遺失不能通過。超過基線應視為架構回歸，不應透過提高上限解決。
 
 當抽離工作讓某檔案縮小後，應把對應上限同步降低到新的實際大小，使已消化的技術債不再長回去。
 
