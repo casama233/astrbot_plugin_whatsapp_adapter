@@ -7,153 +7,242 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 sys.modules.setdefault("aiohttp", types.ModuleType("aiohttp"))
+from whatsapp_client import GatewayProcess, WhatsAppGatewayError
+import gateway_dependencies as dependencies
+import gateway_stability as stability
 
-from whatsapp_client import GatewayProcess
+NODE = {"major": 22, "abi": "127", "platform": "linux", "arch": "x64"}
 
 
-class _Installer:
-    returncode = 0
+def write_project(root: Path, versions=None, installed=True):
+    versions = versions or {"@whiskeysockets/baileys": "7.0.0-rc14", "ws": "8.21.0"}
+    direct = {"@whiskeysockets/baileys": versions["@whiskeysockets/baileys"]}
+    (root / "package.json").write_text(json.dumps({"dependencies": direct}), encoding="utf-8")
+    packages = {"": {"dependencies": direct}}
+    for name, version in versions.items():
+        packages[f"node_modules/{name}"] = {"version": version}
+        if installed:
+            target = root / "node_modules" / name / "package.json"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(json.dumps({"version": version}), encoding="utf-8")
+    (root / "package-lock.json").write_text(json.dumps({"packages": packages}), encoding="utf-8")
+    (root / "scripts").mkdir(exist_ok=True)
+    (root / "scripts/patch-baileys-ephemeral.mjs").write_text("// fixture\n", encoding="utf-8")
+    return packages
 
-    def __init__(self, project_dir: Path, versions: dict[str, str]) -> None:
-        self.project_dir = project_dir
-        self.versions = versions
 
-    async def communicate(self) -> tuple[bytes, bytes]:
-        await asyncio.sleep(0.01)
-        for name, version in self.versions.items():
-            dependency_dir = self.project_dir / "node_modules" / Path(*name.split("/"))
-            dependency_dir.mkdir(parents=True, exist_ok=True)
-            (dependency_dir / "package.json").write_text(
-                json.dumps({"name": name, "version": version}),
-                encoding="utf-8",
-            )
-        return b"", b""
+def receipt(root):
+    dependencies.record_dependency_install(root, NODE, dependencies.dependency_fingerprint(root))
+
+
+def process(root):
+    result = GatewayProcess("node", root / "gateway/whatsapp-gateway.mjs", "127.0.0.1", 18789, root / "auth", "info")
+    result._node_identity = NODE
+    return result
+
+
+class DependencyReceiptTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.packages = write_project(self.root)
+        receipt(self.root)
+
+    def current(self):
+        return dependencies.dependencies_current(self.root, NODE)
+
+    def test_matching_locked_dependencies_skip_install(self):
+        self.assertTrue(self.current())
+
+    def test_indirect_dependency_change_is_not_missed(self):
+        target = self.root / "node_modules/ws/package.json"
+        target.write_text('{"version":"8.20.0"}', encoding="utf-8")
+        self.assertFalse(self.current())
+
+    def test_nested_indirect_dependency_is_checked(self):
+        self.packages['node_modules/a/node_modules/b'] = {"version": "1.0.0"}
+        (self.root / "package-lock.json").write_text(json.dumps({"packages": self.packages}), encoding="utf-8")
+        self.assertFalse(dependencies.installed_tree_matches(self.root))
+
+    def test_lockfile_only_change_invalidates_receipt(self):
+        target = self.root / "package-lock.json"
+        target.write_text(target.read_text() + "\n", encoding="utf-8")
+        self.assertFalse(self.current())
+
+    def test_patch_only_change_invalidates_receipt(self):
+        (self.root / "scripts/patch-baileys-ephemeral.mjs").write_text("// revised\n", encoding="utf-8")
+        self.assertFalse(self.current())
+
+    def test_crlf_checkout_does_not_force_reinstall(self):
+        for relative in ("package.json", "package-lock.json", "scripts/patch-baileys-ephemeral.mjs"):
+            p = self.root / relative
+            p.write_bytes(p.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
+        self.assertTrue(self.current())
+
+    def test_missing_required_package_is_stale(self):
+        (self.root / "node_modules/ws/package.json").unlink()
+        self.assertFalse(self.current())
+
+    def test_absent_optional_package_is_allowed_but_stale_installed_one_is_not(self):
+        self.packages['node_modules/native-other-platform'] = {"version": "1.0.0", "optional": True}
+        (self.root / "package-lock.json").write_text(json.dumps({"packages": self.packages}), encoding="utf-8")
+        receipt(self.root)
+        self.assertTrue(self.current())
+        target = self.root / "node_modules/native-other-platform/package.json"
+        target.parent.mkdir()
+        target.write_text('{"version":"0.9.0"}', encoding="utf-8")
+        self.assertFalse(self.current())
+
+    def test_old_install_without_receipt_is_not_claimed_verified(self):
+        (self.root / "node_modules" / dependencies.RECEIPT_NAME).unlink()
+        self.assertFalse(self.current())
+
+    def test_corrupt_receipt_does_not_pass(self):
+        (self.root / "node_modules" / dependencies.RECEIPT_NAME).write_text('[]', encoding="utf-8")
+        self.assertFalse(self.current())
+
+    def test_node_abi_or_arch_change_requires_repair(self):
+        for field in ("major", "abi", "arch"):
+            self.assertFalse(dependencies.dependencies_current(self.root, {**NODE, field: 'other'}))
+
+    def test_source_change_during_install_cannot_receive_receipt(self):
+        before = dependencies.dependency_fingerprint(self.root)
+        (self.root / "package.json").write_text("{}", encoding="utf-8")
+        with self.assertRaisesRegex(RuntimeError, "changed"):
+            dependencies.record_dependency_install(self.root, NODE, before)
+
+    def test_lock_missing_direct_dependency_is_not_current(self):
+        del self.packages['node_modules/@whiskeysockets/baileys']
+        (self.root / "package-lock.json").write_text(json.dumps({"packages": self.packages}), encoding="utf-8")
+        self.assertFalse(dependencies.installed_tree_matches(self.root))
 
 
 class GatewayProcessTests(unittest.IsolatedAsyncioTestCase):
-    @staticmethod
-    def _write_project(
-        project_dir: Path,
-        desired_versions: dict[str, str],
-        installed_versions: dict[str, str] | None = None,
-    ) -> None:
-        direct_dependencies = {
-            name: version
-            for name, version in desired_versions.items()
-            if name not in {"protobufjs", "sharp"}
-        }
-        (project_dir / "package.json").write_text(
-            json.dumps({"dependencies": direct_dependencies}),
-            encoding="utf-8",
-        )
-        packages: dict[str, object] = {
-            "": {"dependencies": direct_dependencies},
-        }
-        for name, version in desired_versions.items():
-            packages[f"node_modules/{name}"] = {"version": version}
-        (project_dir / "package-lock.json").write_text(
-            json.dumps({"lockfileVersion": 3, "packages": packages}),
-            encoding="utf-8",
-        )
-        for name, version in (installed_versions or {}).items():
-            dependency_dir = project_dir / "node_modules" / Path(*name.split("/"))
-            dependency_dir.mkdir(parents=True, exist_ok=True)
-            (dependency_dir / "package.json").write_text(
-                json.dumps({"name": name, "version": version}),
-                encoding="utf-8",
-            )
+    async def asyncSetUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        write_project(self.root, installed=False)
+        self.command_patch = patch('gateway_stability._npm_command', return_value=['node', 'npm-cli.js'])
+        self.command_patch.start()
+        self.addCleanup(self.command_patch.stop)
 
-    @staticmethod
-    def _process(project_dir: Path) -> GatewayProcess:
-        gateway_dir = project_dir / "gateway"
-        gateway_dir.mkdir(exist_ok=True)
-        return GatewayProcess(
-            node_executable="node",
-            script_path=gateway_dir / "whatsapp-gateway.mjs",
-            host="127.0.0.1",
-            port=18789,
-            auth_dir=project_dir / "auth",
-            log_level="info",
-        )
+    async def successful_command(self, *command, **kwargs):
+        if 'ci' in command:
+            await asyncio.sleep(0.01)
+            write_project(self.root)
+        return b''
 
-    async def test_concurrent_dependency_checks_install_once(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            project_dir = Path(temp_dir)
-            versions = {
-                "@whiskeysockets/baileys": "7.0.0-rc14",
-                "protobufjs": "7.6.5",
-                "sharp": "0.35.3",
-            }
-            self._write_project(project_dir, versions)
-            calls = 0
+    async def test_concurrent_dependency_checks_install_once(self):
+        with patch('gateway_stability._run_node_command', side_effect=self.successful_command) as run:
+            await asyncio.gather(*(process(self.root)._ensure_node_dependencies() for _ in range(2)))
+        self.assertEqual(sum('ci' in c.args for c in run.call_args_list), 1)
+        self.assertEqual(run.call_count, 3)  # npm ci, explicit patch, import smoke.
+        self.assertIn('--ignore-scripts=false', run.call_args_list[0].args)
+        self.assertTrue(GatewayProcess._node_dependencies_current(self.root))
 
-            async def create_installer(*_args, **_kwargs):
-                nonlocal calls
-                calls += 1
-                return _Installer(project_dir, versions)
+    async def test_matching_receipt_skips_all_install_commands(self):
+        write_project(self.root)
+        receipt(self.root)
+        with patch('gateway_stability._run_node_command') as run:
+            await process(self.root)._ensure_node_dependencies()
+        run.assert_not_called()
 
-            processes = [self._process(project_dir) for _ in range(2)]
-            with patch(
-                "whatsapp_client.asyncio.create_subprocess_exec",
-                side_effect=create_installer,
-            ):
-                await asyncio.gather(
-                    *(process._ensure_node_dependencies() for process in processes)
-                )
+    async def test_failed_patch_or_smoke_never_writes_success_receipt(self):
+        for failed_stage in (1, 2):
+            with self.subTest(stage=failed_stage):
+                (self.root / 'node_modules' / dependencies.RECEIPT_NAME).unlink(missing_ok=True)
+                count = 0
+                async def command(*args, **kwargs):
+                    nonlocal count
+                    stage, count = count, count + 1
+                    if stage == failed_stage:
+                        raise RuntimeError('stage failure')
+                    return await self.successful_command(*args, **kwargs)
+                with patch('gateway_stability._run_node_command', side_effect=command):
+                    with self.assertRaisesRegex(WhatsAppGatewayError, 'stage failure'):
+                        await process(self.root)._ensure_node_dependencies()
+                self.assertFalse(GatewayProcess._node_dependencies_current(self.root))
 
-            self.assertEqual(calls, 1)
-            self.assertTrue(GatewayProcess._node_dependencies_current(project_dir))
+    async def test_live_gateway_prevents_destructive_install(self):
+        child = SimpleNamespace(returncode=None)
+        dependencies.register_gateway_child(self.root, child)
+        with patch('gateway_stability._run_node_command') as run:
+            with self.assertRaisesRegex(WhatsAppGatewayError, 'another managed Gateway'):
+                await process(self.root)._ensure_node_dependencies()
+        run.assert_not_called()
+        child.returncode = 0
+        with patch('gateway_stability._run_node_command', side_effect=self.successful_command):
+            await process(self.root)._ensure_node_dependencies()
+        self.assertTrue(GatewayProcess._node_dependencies_current(self.root))
 
-    async def test_stale_baileys_or_security_dependency_triggers_install(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            project_dir = Path(temp_dir)
-            desired = {
-                "@whiskeysockets/baileys": "7.0.0-rc14",
-                "protobufjs": "7.6.5",
-                "sharp": "0.35.3",
-            }
-            installed = {
-                "@whiskeysockets/baileys": "7.0.0-rc13",
-                "protobufjs": "7.6.1",
-                "sharp": "0.34.5",
-            }
-            self._write_project(project_dir, desired, installed)
-            calls = 0
+    async def test_valid_dependencies_may_be_shared_by_live_gateway(self):
+        write_project(self.root)
+        receipt(self.root)
+        dependencies.register_gateway_child(self.root, SimpleNamespace(returncode=None))
+        with patch('gateway_stability._run_node_command') as run:
+            await process(self.root)._ensure_node_dependencies()
+        run.assert_not_called()
 
-            async def create_installer(*_args, **_kwargs):
-                nonlocal calls
-                calls += 1
-                return _Installer(project_dir, desired)
+    async def test_directory_ownership_survives_plugin_module_reimport(self):
+        import importlib.util
+        dependencies.register_gateway_child(self.root, SimpleNamespace(returncode=None))
+        spec = importlib.util.spec_from_file_location('reloaded_dependencies', Path(dependencies.__file__))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with self.assertRaisesRegex(RuntimeError, 'another managed Gateway'):
+            module.assert_dependency_directory_idle(self.root)
+        self.assertIs(module.project_start_lock(self.root), dependencies.project_start_lock(self.root))
 
-            with patch(
-                "whatsapp_client.asyncio.create_subprocess_exec",
-                side_effect=create_installer,
-            ):
-                await self._process(project_dir)._ensure_node_dependencies()
+    async def test_first_upgrade_detects_unregistered_legacy_gateway(self):
+        legacy = process(self.root)
+        legacy.process = SimpleNamespace(returncode=None)
+        with patch.object(dependencies._STATE, 'legacy_adopted', False):
+            with self.assertRaisesRegex(RuntimeError, 'another managed Gateway'):
+                dependencies.assert_dependency_directory_idle(self.root)
+        legacy.process.returncode = 0
 
-            self.assertEqual(calls, 1)
-            self.assertTrue(GatewayProcess._node_dependencies_current(project_dir))
-
-    async def test_matching_locked_dependencies_skip_install(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            project_dir = Path(temp_dir)
-            versions = {
-                "@whiskeysockets/baileys": "7.0.0-rc14",
-                "protobufjs": "7.6.5",
-                "sharp": "0.35.3",
-            }
-            self._write_project(project_dir, versions, versions)
-
-            with patch(
-                "whatsapp_client.asyncio.create_subprocess_exec"
-            ) as create_installer:
-                await self._process(project_dir)._ensure_node_dependencies()
-
-            create_installer.assert_not_called()
+    async def test_dependency_install_implementation_is_not_monkeypatched(self):
+        method = GatewayProcess._ensure_node_dependencies
+        stability.install_gateway_runtime_stability(type('Client', (), {}), GatewayProcess, WhatsAppGatewayError)
+        self.assertIs(GatewayProcess._ensure_node_dependencies, method)
 
 
-if __name__ == "__main__":
+class NodeCommandLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cancelled_installer_is_terminated_before_cancellation_escapes(self):
+        started = asyncio.Event()
+        async def communicate():
+            started.set()
+            await asyncio.Future()
+        child = SimpleNamespace(communicate=communicate, returncode=None)
+        with (patch('gateway_stability.asyncio.create_subprocess_exec', AsyncMock(return_value=child)),
+              patch('gateway_stability._terminate_process_tree', AsyncMock()) as terminate):
+            task = asyncio.create_task(stability._run_node_command('node', timeout=20))
+            await started.wait()
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            terminate.assert_awaited_once_with(child)
+
+    async def test_unsupported_node_patch_version_is_rejected(self):
+        for version in ('18.20.0', '20.8.9', 'garbled'):
+            output = json.dumps({'version': version, 'abi': 'x', 'platform': 'linux', 'arch': 'x64'}).encode()
+            with patch('gateway_stability._run_node_command', AsyncMock(return_value=output)):
+                with self.assertRaisesRegex(RuntimeError, '20.9.0'):
+                    await stability.probe_node_runtime('node')
+
+    async def test_node_identity_accepts_legacy_floor_and_current_lts(self):
+        for version in ('20.9.0', '22.23.2', '24.20.0'):
+            output = json.dumps({'version': version, 'abi': 'x', 'platform': 'linux', 'arch': 'x64'}).encode()
+            with patch('gateway_stability._run_node_command', AsyncMock(return_value=output)):
+                identity = await stability.probe_node_runtime('node')
+                self.assertEqual(identity['major'], int(version.split('.')[0]))
+
+
+if __name__ == '__main__':
     unittest.main()

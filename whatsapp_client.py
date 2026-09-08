@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import re
 import subprocess
 from pathlib import Path
 from typing import Any, AsyncIterator
@@ -17,7 +16,12 @@ class WhatsAppGatewayError(RuntimeError):
         self.status_code = status_code
 
 
-_NODE_DEPENDENCY_INSTALL_LOCK = asyncio.Lock()
+try:
+    from .gateway_dependencies import dependencies_current, project_start_lock, register_gateway_child
+    from .gateway_stability import _bounded_node_dependency_install, probe_node_runtime
+except ImportError:  # Standalone regression tests and developer tooling.
+    from gateway_dependencies import dependencies_current, project_start_lock, register_gateway_child
+    from gateway_stability import _bounded_node_dependency_install, probe_node_runtime
 
 
 class WhatsAppGatewayClient:
@@ -378,6 +382,10 @@ class GatewayProcess:
         self.process: asyncio.subprocess.Process | None = None
 
     async def start(self) -> None:
+        async with project_start_lock(self.script_path.parent.parent):
+            await self._start_unlocked()
+
+    async def _start_unlocked(self) -> None:
         if self.process and self.process.returncode is None:
             return
         await self._ensure_node_runtime()
@@ -413,125 +421,20 @@ class GatewayProcess:
             **extra_kwargs,
         )
 
+        register_gateway_child(self.script_path.parent.parent, self.process)
+
     async def _ensure_node_runtime(self) -> None:
         try:
-            process = await asyncio.create_subprocess_exec(
-                self.node_executable,
-                "--version",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-        except FileNotFoundError as exc:
-            raise WhatsAppGatewayError(
-                f"Node.js executable not found: {self.node_executable}; install Node.js 20+ "
-                "or update node_executable"
-            ) from exc
-        try:
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=5)
-        except asyncio.TimeoutError as exc:
-            process.kill()
-            await process.wait()
-            raise WhatsAppGatewayError(
-                f"Node.js version check timed out: {self.node_executable}"
-            ) from exc
-        output = (stdout or stderr).decode(errors="replace").strip()
-        if process.returncode != 0:
-            raise WhatsAppGatewayError(
-                f"Node.js version check failed with code {process.returncode}: {output}"
-            )
-        match = re.match(r"v?(\d+)", output)
-        if not match:
-            raise WhatsAppGatewayError(f"Unrecognized Node.js version: {output or 'no output'}")
-        if int(match.group(1)) < 20:
-            raise WhatsAppGatewayError(
-                f"Node.js 20+ is required; current version is {output}"
-            )
+            self._node_identity = await probe_node_runtime(self.node_executable)
+        except RuntimeError as exc:
+            raise WhatsAppGatewayError(str(exc)) from exc
 
     @staticmethod
     def _node_dependencies_current(project_dir: Path) -> bool:
-        try:
-            lock_data = json.loads(
-                (project_dir / "package-lock.json").read_text(encoding="utf-8")
-            )
-            packages = lock_data["packages"]
-            direct_dependencies = packages[""]["dependencies"]
-        except (OSError, KeyError, TypeError, json.JSONDecodeError):
-            return False
-        if not isinstance(packages, dict) or not isinstance(
-            direct_dependencies, dict
-        ):
-            return False
-
-        dependency_names = set(direct_dependencies)
-        # These Baileys runtime dependencies have security-sensitive native/schema
-        # processing paths and must not remain stale across plugin upgrades.
-        dependency_names.update(("protobufjs", "sharp"))
-        checked = 0
-        for name in dependency_names:
-            desired = packages.get(f"node_modules/{name}")
-            if not isinstance(desired, dict):
-                continue
-            desired_version = desired.get("version")
-            if not desired_version:
-                return False
-            try:
-                installed = json.loads(
-                    (
-                        project_dir
-                        / "node_modules"
-                        / Path(*name.split("/"))
-                        / "package.json"
-                    ).read_text(encoding="utf-8")
-                )
-            except (OSError, TypeError, json.JSONDecodeError):
-                return False
-            if (
-                not isinstance(installed, dict)
-                or installed.get("version") != desired_version
-            ):
-                return False
-            checked += 1
-        return checked > 0
+        return dependencies_current(project_dir)
 
     async def _ensure_node_dependencies(self) -> None:
-        project_dir = self.script_path.parent.parent
-        if self._node_dependencies_current(project_dir):
-            return
-        async with _NODE_DEPENDENCY_INSTALL_LOCK:
-            # Another page/platform startup may have completed installation
-            # while this caller waited for the lock.
-            if self._node_dependencies_current(project_dir):
-                return
-            if not (project_dir / "package.json").exists():
-                raise WhatsAppGatewayError(
-                    f"Gateway package.json not found: {project_dir / 'package.json'}"
-                )
-            try:
-                installer = await asyncio.create_subprocess_exec(
-                    "npm",
-                    "install",
-                    "--omit=dev",
-                    cwd=str(project_dir),
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-            except FileNotFoundError as exc:
-                raise WhatsAppGatewayError(
-                    "npm not found; please install Node.js/npm or run npm install manually"
-                ) from exc
-            stdout, stderr = await installer.communicate()
-            if installer.returncode != 0:
-                out = stdout.decode(errors="replace").strip()
-                err = stderr.decode(errors="replace").strip()
-                detail = "\n".join(part for part in [out, err] if part)
-                raise WhatsAppGatewayError(
-                    f"npm install --omit=dev failed with code {installer.returncode}: {detail}"
-                )
-            if not self._node_dependencies_current(project_dir):
-                raise WhatsAppGatewayError(
-                    "npm install --omit=dev completed but installed dependency versions "
-                    "do not match package-lock.json"
-                )
+        await _bounded_node_dependency_install(self, WhatsAppGatewayError)
 
     async def stop(self) -> None:
         if not self.process or self.process.returncode is not None:
