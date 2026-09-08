@@ -14,8 +14,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Keep the historical plugin baseline covered while AstrBot deployments
-          # move to the current Python 3.12 / Node 22 toolchain.
+          # Legacy deployments remain regression-tested, not recommended.
           - os: ubuntu-latest
             python: "3.11"
             node: "20"
@@ -28,6 +27,12 @@ jobs:
           - os: windows-latest
             python: "3.12"
             node: "22"
+          - os: ubuntu-latest
+            python: "3.12"
+            node: "24"
+          - os: windows-latest
+            python: "3.12"
+            node: "24"
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -50,3 +55,33 @@ jobs:
           python -c "import glob, subprocess;
           files=glob.glob('gateway/*.test.mjs')+glob.glob('scripts/*.test.mjs');
           subprocess.check_call(['node','--test',*files])"
+      # A tracked-source snapshot makes the exact tested revision reproducible
+      # through the connector, without collecting auth, env, or node_modules.
+      - name: Preserve tested source revision
+        if: matrix.os == 'ubuntu-latest' && matrix.node == '22'
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os, pathlib, subprocess, zipfile
+          output = pathlib.Path(os.environ['RUNNER_TEMP']) / 'tested-source.zip'
+          subprocess.check_call(['git', 'diff', '--exit-code', 'HEAD', '--'])
+          tracked = subprocess.check_output(['git', 'ls-files', '-z']).decode().split('\0')
+          with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as archive:
+              for name in tracked:
+                  if not name:
+                      continue
+                  if pathlib.Path(name).is_symlink() or not pathlib.Path(name).is_file():
+                      raise RuntimeError(f'Unsupported tracked source entry: {name}')
+                  archive.write(name, name)
+              archive.writestr('CI_REVISION.json', json.dumps({
+                  'commit': subprocess.check_output(['git', 'rev-parse', 'HEAD']).decode().strip(),
+                  'node': subprocess.check_output(['node', '--version']).decode().strip(),
+              }))
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: matrix.os == 'ubuntu-latest' && matrix.node == '22'
+        with:
+          name: tested-source-${{ github.run_id }}
+          path: ${{ runner.temp }}/tested-source.zip
+          retention-days: 7
+          if-no-files-found: error
