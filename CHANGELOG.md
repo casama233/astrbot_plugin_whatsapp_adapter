@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.2.46] - 2026-09-09
+
+- Unify bounded Node dependency preparation across startup, diagnostics and staged updates; verify the complete dependency fingerprint and installation receipt with a Node 20.9 compatibility floor.
+- Replace generated Gateway source patches and Python exec loaders with canonical runtime entry points, authenticated process lifecycle handling and explicit adapter/event methods.
+- Preserve local media access rules while excluding authentication roots, including custom paths and symlink aliases.
+- Persist versioned legacy configuration migration, show effective setting sources and account operation scope, and provide sanitized diagnostics with release build identity.
+- Verify real AstrBot 4.24.2 and 4.28.0 initialization/reload compatibility, including the older Quart Web JSON boundary and stable group UMO semantics.
+- Bound the shared reaction arbitration journal and record only successful sends; keep ordinary reactions out of LLM delivery.
+- Update sharp to 0.35.4 and require the exact generated release commit to pass the shared Windows/Linux and Node 20/22/24 matrix before publication.
+
 ## [0.2.45] - 2026-08-27
 
 - Harden Gateway startup, graceful shutdown, socket-generation credential durability, concurrent runtime generation, and failure recovery.
