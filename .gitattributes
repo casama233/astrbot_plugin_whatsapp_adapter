@@ -22,3 +22,4 @@ scripts/verify-release-runtime.py export-ignore
 *.js text eol=lf
 *.json text eol=lf
 *.yaml text eol=lf
+scripts/write-build-info.py export-ignore

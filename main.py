@@ -13,10 +13,11 @@ from astrbot import logger
 from astrbot.api import AstrBotConfig
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, register
-from astrbot.api.web import json_response, request
+from .whatsapp_web import json_response, request
 
 from .gateway_security import bind_gateway_client
 from .gateway_runtime import inspect_gateway_requirements, prepare_staged_plugin
+from .whatsapp_diagnostics import diagnostic_snapshot
 
 try:
     from astrbot.core.utils.astrbot_path import (
@@ -47,10 +48,10 @@ from .whatsapp_client import (
     WhatsAppGatewayError,
 )
 from .whatsapp_config_policy import (
-    adopt_legacy_gateway_defaults,
     set_runtime_plugin_defaults,
     set_runtime_wake_prefixes,
 )
+from .whatsapp_config_migration import migrate_plugin_configuration
 from .whatsapp_ai_tools import (
     WhatsAppToolRejected,
     create_event,
@@ -91,6 +92,8 @@ _PAIR_CODE_ERROR_MESSAGES = {
 class WhatsAppAdapterPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | None = None):
         super().__init__(context)
+        self._config_store = config
+        self._config_migration_state: dict[str, Any] = {}
         self.config = {**BASE_GATEWAY_CONFIG, **(dict(config or {}))}
         self._sync_runtime_policy()
         self.page_client = WhatsAppGatewayClient(self._base_url)
@@ -115,6 +118,10 @@ class WhatsAppAdapterPlugin(Star):
             self.page_runtime,
             ["GET"],
             "WhatsApp Gateway runtime requirements",
+        )
+        context.register_web_api(
+            f"/{PLUGIN_NAME}/diagnostics", self.page_diagnostics, ["GET"],
+            "Sanitized WhatsApp runtime diagnostics",
         )
         context.register_web_api(
             f"/{PLUGIN_NAME}/status",
@@ -276,6 +283,55 @@ class WhatsAppAdapterPlugin(Star):
             return f"拒绝建立 WhatsApp 活动：{exc}"
         return "已在当前 WhatsApp 会话建立原生活动。"
 
+    def _management_scope(self) -> dict[str, Any]:
+        from .whatsapp_adapter import get_active_whatsapp_adapters
+        accounts = []
+        target = None
+        for adapter in get_active_whatsapp_adapters():
+            endpoint = str(getattr(getattr(adapter, "client", None), "base_url", ""))
+            instance_id = str(adapter.config.get("id") or "whatsapp")
+            accounts.append({"instanceId": instance_id, "endpoint": endpoint,
+                             "managed": bool(adapter.config.get("auto_start_gateway", True))})
+            if endpoint.rstrip("/") == self._base_url:
+                target = instance_id
+        return {"endpoint": self._base_url, "basePort": int(self.config['gateway_port']),
+                "targetInstanceId": target, "accounts": sorted(accounts, key=lambda a: a['instanceId'])}
+
+    async def page_diagnostics(self):
+        from .whatsapp_adapter import get_active_whatsapp_adapters
+        from .whatsapp_config_policy import extract_plugin_defaults
+        try:
+            from astrbot.core.config.default import VERSION as astrbot_version
+        except ImportError:
+            astrbot_version = None
+        runtime = await self._runtime_requirements()
+        self._bind_page_client_to_managed_gateway()
+        try:
+            status = await asyncio.wait_for(self.page_client.status(), timeout=3)
+        except Exception as exc:
+            status = {"error": str(exc)}
+        defaults = extract_plugin_defaults(self.config)
+        configurations = [{"instanceId": "plugin", "config": defaults,
+                           "sources": {key: "plugin_default" for key in defaults}}]
+        from .gateway_security import _token_for_client
+        secrets = [_token_for_client(self.page_client), status.get("qr"), status.get("qrDataUrl"),
+                   status.get("pairCode"), status.get("pairingCode")]
+        adopted = self._config_migration_state.get("adopted_plugin_values", {})
+        for key, value in defaults.items():
+            if key in adopted and adopted[key] == value:
+                configurations[0]["sources"][key] = "migrated_plugin"
+        for adapter in get_active_whatsapp_adapters():
+            configurations.append({"instanceId": str(adapter.config.get("id") or "whatsapp"),
+                                   "config": adapter.config, "sources": getattr(adapter, "_config_sources", {})})
+            for key, value in adopted.items():
+                if configurations[-1]["sources"].get(key) == "plugin_default" and adapter.config.get(key) == value:
+                    configurations[-1]["sources"] = {**configurations[-1]["sources"], key: "migrated_plugin"}
+            secrets.append(_token_for_client(adapter.client))
+        snapshot = await asyncio.to_thread(diagnostic_snapshot, PLUGIN_DIR, PLUGIN_VERSION,
+            astrbot_version, runtime, status, self._management_scope(), configurations,
+            self._config_migration_state, secrets)
+        return json_response(snapshot)
+
     async def page_runtime(self):
         try:
             return json_response(await self._runtime_requirements())
@@ -298,6 +354,7 @@ class WhatsAppAdapterPlugin(Star):
             status["gatewayHealthy"] = bool(status.get("ok", True))
             status["configuredAuthDir"] = str(self._auth_dir())
             status["runtimeRequirements"] = runtime
+            status["scope"] = self._management_scope()
             logger.debug("WhatsApp 管理页状态请求: %s", self._safe_status(status))
             return json_response(status)
         except Exception as exc:
@@ -1120,10 +1177,12 @@ class WhatsAppAdapterPlugin(Star):
         # Recheck the receipt/tree and configured runtime on each refresh. A cached
         # "ready" result must not hide a completed install or an ABI/input change.
         async with self._runtime_lock:
-            return await inspect_gateway_requirements(
+            result = await inspect_gateway_requirements(
                 PLUGIN_DIR, str(self.config.get("node_executable") or "node").strip(),
                 managed=bool(self.config.get("auto_start_gateway", True)),
             )
+            result["scope"] = self._management_scope()
+            return result
 
     async def _ensure_page_gateway(self) -> None:
         # Status, QR, and action routes may overlap while the Gateway is slow to
@@ -1252,16 +1311,28 @@ class WhatsAppAdapterPlugin(Star):
         return list(configs or [])
 
     def _adopt_legacy_platform_gateway_defaults(self) -> None:
-        effective, migrated = adopt_legacy_gateway_defaults(
-            self.config,
-            self._platform_configs(),
+        from .whatsapp_adapter import sanitize_whatsapp_platform_config
+        manager = getattr(self.context, "platform_manager", None)
+        root_store = getattr(manager, "astrbot_config", None)
+
+        def save_plugin(values):
+            save = getattr(self._config_store, "save_config", None)
+            if not callable(save):
+                raise RuntimeError("WhatsApp plugin configuration store cannot persist migration")
+            save(values)
+
+        def save_platforms(values):
+            save = getattr(root_store, "save_config", None)
+            if not callable(save):
+                raise RuntimeError("AstrBot platform configuration store cannot persist migration")
+            save({"platform": values})
+            manager.platforms_config = root_store["platform"]
+
+        self.config, self._config_migration_state = migrate_plugin_configuration(
+            self.config, self._platform_configs(), self._data_dir() / "config-migration.json",
+            save_plugin=save_plugin, save_platforms=save_platforms,
+            sanitize_platform=sanitize_whatsapp_platform_config,
         )
-        self.config = effective
-        if migrated:
-            logger.warning(
-                "已从旧 WhatsApp 平台实例迁移 Gateway 配置到本次运行的插件全局配置: keys=%s。请在插件配置页确认后保存。",
-                sorted(migrated),
-            )
 
     def _sync_runtime_policy(self) -> None:
         set_runtime_plugin_defaults(self.config)

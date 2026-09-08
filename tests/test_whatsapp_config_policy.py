@@ -219,11 +219,11 @@ class WhatsAppConfigPolicyTests(unittest.TestCase):
         )
         self.assertIn("get_runtime_plugin_defaults()", adapter)
         self.assertIn("extract_legacy_behavior_overrides(platform_config)", adapter)
-        self.assertIn("_legacy_gateway_", adapter)
+        self.assertIn("platform_migration(config)", adapter)
         self.assertIn("_message_matches_known_command", adapter)
         self.assertRegex(adapter, r"await self\._restart_health_monitor\(\)[\s\S]*self\._refresh_registered_commands\(\)")
         self.assertIn("apply_group_name", wrapper)
-        self.assertIn("adopt_legacy_gateway_defaults", main)
+        self.assertIn("migrate_plugin_configuration", main)
         self.assertIn("await self._reload_active_adapters()", main)
         self.assertIn("set_runtime_plugin_defaults", main)
         self.assertIn('f"/{PLUGIN_NAME}/update/check"', main)
@@ -244,7 +244,9 @@ class WhatsAppConfigPolicyTests(unittest.TestCase):
         self.assertIn('astrbot_version: ">=4.24.2,<5"', metadata)
         self.assertNotIn("support_platforms:", metadata)
         self.assertIn("category: 三方集成", metadata)
-        self.assertIn("from astrbot.api.web import json_response, request", main)
+        self.assertIn("from .whatsapp_web import json_response, request", main)
+        web = (ROOT / "whatsapp_web.py").read_text("utf-8")
+        self.assertIn("from astrbot.api.web import json_response, request", web)
 
 
 if __name__ == "__main__":

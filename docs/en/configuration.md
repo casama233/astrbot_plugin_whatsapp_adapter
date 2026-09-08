@@ -85,3 +85,11 @@ Only `http://` and `https://` proxy URLs are supported. Proxy credentials/path/q
 ## Fixed/internal behavior
 
 Text/media protocol limits and AstrBot command matching are not intended as user-configurable plugin settings. Wake prefixes and `CommandFilter` behavior are owned by AstrBot Core. Historical fields may still be recognized for migration, but should not be used in new configurations.
+
+## One-time migration and effective sources
+
+Version 1 converts old `_legacy_*` fields into each platform's `_whatsapp_migration` record. `behavior` and `command_prefix` retain explicit account choices. Gateway values are adopted once from the first enabled legacy account only while the corresponding plugin field remains at its historical default. The plugin and platform configurations are saved before `data/plugin_data/astrbot_plugin_whatsapp_adapter/config-migration.json` records completion. Failed writes leave migration retryable.
+
+Later plugin edits are not overridden by the old Gateway fields. To return an old account to shared defaults, back up configuration and remove the relevant key from `_whatsapp_migration.behavior`, keeping `version`. Clear its `command_prefix` to end legacy-prefix compatibility. Adding `_legacy_*` fields no longer changes a migrated account.
+
+The Page shows each effective setting's source: internal default, plugin setting, migrated plugin setting, retained legacy setting or account setting. The sanitized report includes plugin/build origin, known source commit and actual AstrBot/Gateway Node/Baileys versions. Missing provenance is reported as unknown; changed release source is reported as modified_release.

@@ -6,7 +6,7 @@ This page documents the adapter's message semantics, especially UMO identity, wa
 
 The adapter normalizes text, images, audio, video, documents, stickers, locations, contacts, button/list responses, polls, native events, quoted messages, and mention metadata into AstrBot events.
 
-Reaction-only inbound messages are currently recognized and then ignored instead of being dispatched as ordinary AstrBot events. Historical `inbound_reaction_events` configuration is deprecated.
+Reaction-only events do not enter ordinary AstrBot/LLM delivery. After self-message filtering, they enter a shared, in-process arbitration journal keyed by chat, target message, sender and emoji: 30-second TTL and at most 4,096 entries. Accounts can observe arbitration in shared groups; separate processes do not share memory. Outbound observations are recorded only after Gateway acceptance. Journal failure does not change successful delivery into failure. `inbound_reaction_events` is deprecated.
 
 ## Formatting
 
