@@ -1,0 +1,37 @@
+name: Dependency audit
+
+on:
+  pull_request:
+    paths:
+      - package.json
+      - package-lock.json
+      - .github/workflows/dependency-audit.yml
+  schedule:
+    - cron: "23 2 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: "24"
+      # Consult the registry for the committed production dependency graph.
+      # Do not install packages, run lifecycle scripts, or apply audit fixes.
+      - name: Audit locked production dependencies
+        run: npm audit --omit=dev --package-lock-only --audit-level=high --json > dependency-audit.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: dependency-audit-${{ github.run_id }}
+          path: dependency-audit.json
+          retention-days: 14
+          if-no-files-found: error
