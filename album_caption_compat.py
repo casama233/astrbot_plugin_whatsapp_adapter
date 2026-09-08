@@ -56,49 +56,20 @@ def album_caption_message_text(adapter: Any, data: dict[str, Any]) -> str:
     return "\n".join(captions).strip()
 
 
-def install_album_caption_compat(adapter_cls: type) -> None:
-    """Keep captions paired with each image in a merged private image burst.
+def album_caption_chain(adapter: Any, data: dict[str, Any]) -> list[Any] | None:
+    """Interleave captions with their own image; None selects the normal chain."""
+    if not _is_captioned_image_album(data):
+        return None
+    from astrbot.api.message_components import Image, Plain
 
-    The Gateway delays short private image bursts and emits them as one AstrBot
-    event.  For captioned bursts it annotates every media item with its own
-    caption and mention metadata.  The legacy adapter implementation places one
-    top-level text block before all media, which would lose the association
-    between later captions and their images.  Interleave caption/image pairs for
-    these album events while leaving every other message path untouched.
-    """
-
-    original = adapter_cls._message_chain
-    if getattr(original, "_whatsapp_album_caption_compat", False):
-        return
-
-    def _message_chain_with_album_captions(self, data, text):
-        if not _is_captioned_image_album(data):
-            return original(self, data, text)
-
-        from astrbot.api.message_components import Image, Plain
-
-        chain: list[Any] = []
-        for media in _album_media(data):
-            caption = _format_caption(self, str(media.get("caption") or ""))
-            if caption:
-                chain.extend(
-                    self._ordered_text_components(
-                        _caption_data(data, media),
-                        caption,
-                    )
-                )
-
-            path = str(media.get("path") or media.get("url") or "")
-            if path:
-                chain.append(Image(file=path, path=path))
-            else:
-                chain.append(Plain(text="<media:image unavailable>"))
-
-        return chain or original(self, data, text)
-
-    _message_chain_with_album_captions._whatsapp_album_caption_compat = True
-    _message_chain_with_album_captions._whatsapp_album_caption_original = original
-    adapter_cls._message_chain = _message_chain_with_album_captions
+    chain: list[Any] = []
+    for media in _album_media(data):
+        caption = _format_caption(adapter, str(media.get("caption") or ""))
+        if caption:
+            chain.extend(adapter._ordered_text_components(_caption_data(data, media), caption))
+        path = str(media.get("path") or media.get("url") or "")
+        chain.append(Image(file=path, path=path) if path else Plain(text="<media:image unavailable>"))
+    return chain or None
 
 
 def apply_album_caption_message(adapter: Any, message: Any, data: dict[str, Any]):

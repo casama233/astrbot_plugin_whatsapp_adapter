@@ -209,7 +209,7 @@ class GatewayProcessTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_dependency_install_implementation_is_not_monkeypatched(self):
         method = GatewayProcess._ensure_node_dependencies
-        stability.install_gateway_runtime_stability(type('Client', (), {}), GatewayProcess, WhatsAppGatewayError)
+        self.assertEqual(method.__qualname__, "GatewayProcess._ensure_node_dependencies")
         self.assertIs(GatewayProcess._ensure_node_dependencies, method)
 
 

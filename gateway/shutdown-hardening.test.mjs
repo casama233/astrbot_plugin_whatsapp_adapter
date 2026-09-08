@@ -7,31 +7,21 @@ import test from "node:test";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 
-import { patchGatewayGroupNames } from "./group-name-compat.mjs";
-import { patchGatewayMemberTags } from "./member-tag-compat.mjs";
-import { patchGatewayPrivateMediaBursts } from "./private-media-burst-compat.mjs";
-import { patchGatewaySecurity } from "./security-hardening.mjs";
-import { patchGatewayShutdown } from "./shutdown-hardening.mjs";
-import { patchGatewayStability } from "./stability-hardening.mjs";
 
 const execFileAsync = promisify(execFile);
 const gatewayDir = path.dirname(fileURLToPath(import.meta.url));
 
-async function stabilityPatchedSource() {
+async function gatewaySource() {
   const source = await readFile(path.join(gatewayDir, "whatsapp-gateway-impl.mjs"), "utf8");
-  const group = patchGatewayGroupNames(source);
-  const member = patchGatewayMemberTags(group.content);
-  const media = patchGatewayPrivateMediaBursts(member.content);
-  return patchGatewayStability(media.content).content;
+  return source;
 }
 
-async function patchedSource() {
-  const shutdown = patchGatewayShutdown(await stabilityPatchedSource());
-  return patchGatewaySecurity(shutdown.content).content;
+async function gatewaySourceText() {
+  return gatewaySource();
 }
 
-test("shutdown patch exposes authenticated graceful stop and final credential flush", async () => {
-  const source = await patchedSource();
+test("shutdown runtime exposes authenticated graceful stop and final credential flush", async () => {
+  const source = await gatewaySourceText();
   assert.match(source, /url\.pathname === "\/shutdown"/);
   assert.match(source, /activeCredsSaveQueue/);
   assert.match(source, /activeSaveCreds = saveCreds/);
@@ -42,7 +32,7 @@ test("shutdown patch exposes authenticated graceful stop and final credential fl
 });
 
 test("socket generations require credential persistence to settle successfully before auth reload", async () => {
-  const source = await patchedSource();
+  const source = await gatewaySourceText();
   const barrierIndex = source.indexOf(
     "const previousCredsSettled = await settleWithin([activeCredsSaveQueue], 5000);",
   );
@@ -74,32 +64,14 @@ test("socket generations require credential persistence to settle successfully b
   );
 });
 
-test("shutdown patch is idempotent and portable across CRLF input", async () => {
-  const stable = await stabilityPatchedSource();
-  const first = patchGatewayShutdown(stable.replace(/\r?\n/g, "\r\n"));
-  assert.equal(first.changed, true);
-  const second = patchGatewayShutdown(first.content);
-  assert.equal(second.changed, false);
-  assert.equal(second.content, first.content);
-});
 
 test("complete hardened Gateway remains syntactically valid", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "wa-gateway-shutdown-"));
   const target = path.join(dir, "generated.mjs");
   try {
-    await writeFile(target, await patchedSource(), "utf8");
+    await writeFile(target, await gatewaySourceText(), "utf8");
     await execFileAsync(process.execPath, ["--check", target]);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
-});
-
-test("Gateway wrapper applies shutdown hardening before security", async () => {
-  const wrapper = await readFile(path.join(gatewayDir, "whatsapp-gateway.mjs"), "utf8");
-  const stabilityIndex = wrapper.indexOf("patchGatewayStability(privateMediaPatched.content)");
-  const shutdownIndex = wrapper.indexOf("patchGatewayShutdown(stabilityPatched.content)");
-  const securityIndex = wrapper.indexOf("patchGatewaySecurity(shutdownPatched.content)");
-  assert.ok(stabilityIndex >= 0);
-  assert.ok(shutdownIndex > stabilityIndex);
-  assert.ok(securityIndex > shutdownIndex);
 });

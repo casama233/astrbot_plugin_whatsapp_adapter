@@ -69,6 +69,6 @@ test("gateway applies nickname rendering to text, edits, and media captions", as
   );
   assert.match(
     source,
-    /resolveMediaPayload\(\s*body\.type,\s*body\.pathOrUrl,\s*renderedCaption,/,
+    /resolveMediaPayload\(\s*body\.type,\s*preparedMedia\.pathOrUrl,\s*renderedCaption,/,
   );
 });

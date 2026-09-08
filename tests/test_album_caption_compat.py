@@ -80,9 +80,8 @@ class AlbumCaptionCompatibilityTests(unittest.TestCase):
 
     def test_captioned_album_interleaves_each_caption_with_its_image(self) -> None:
         with patch.dict(sys.modules, _component_modules(), clear=False):
-            compat.install_album_caption_compat(self.adapter_cls)
             adapter = self.adapter_cls()
-            chain = adapter._message_chain(_album_data(), "first caption")
+            chain = compat.album_caption_chain(adapter, _album_data())
 
         self.assertEqual(
             [type(item).__name__ for item in chain],
@@ -112,11 +111,9 @@ class AlbumCaptionCompatibilityTests(unittest.TestCase):
         for media in data["media"]:
             media["caption"] = ""
         with patch.dict(sys.modules, _component_modules(), clear=False):
-            compat.install_album_caption_compat(self.adapter_cls)
-            chain = self.adapter_cls()._message_chain(data, "")
+            chain = compat.album_caption_chain(self.adapter_cls(), data)
 
-        self.assertEqual(len(chain), 1)
-        self.assertEqual(chain[0].text, "legacy")
+        self.assertIsNone(chain)
 
 
 if __name__ == "__main__":
