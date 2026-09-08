@@ -50,6 +50,8 @@ jobs:
         run: python -m unittest discover -v tests
       - name: Install Node dependencies
         run: npm ci
+      - name: Verify managed dependency installation
+        run: python scripts/verify-dependencies.py
       - name: Node tests
         run: >-
           python -c "import glob, subprocess;
