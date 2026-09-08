@@ -337,3 +337,7 @@ checking -> downloading -> validating -> installing_dependencies -> installing -
 - 可重复的最小步骤
 
 不要上传 `whatsapp-auth/`。
+
+## 分享诊断
+
+管理页展开「生效设置与诊断」，点击「重新获取并复制诊断」。报告会隐藏完整电话、JID、QR、配对码与认证 token。分享前可检查文本。基准账号操作范围显示在页顶，各实例实际端口在高级连接信息中；生效值来源可帮助定位旧设置覆盖默认值的问题。

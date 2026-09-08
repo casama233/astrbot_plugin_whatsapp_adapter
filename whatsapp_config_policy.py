@@ -111,14 +111,6 @@ def extract_plugin_defaults(config: Mapping[str, Any]) -> dict[str, Any]:
         if runtime_key:
             result[runtime_key] = value
 
-    # One-release migration fallback for old hidden plugin values.
-    for runtime_key in PLUGIN_DEFAULT_ALIASES.values():
-        if runtime_key in config and runtime_key not in FIXED_RUNTIME_KEYS:
-            result.setdefault(runtime_key, config[runtime_key])
-    if "media_caption_mode" in config:
-        result["media_caption_mode"] = normalize_media_caption_mode(
-            config["media_caption_mode"]
-        )
     return result
 
 
@@ -160,6 +152,10 @@ def adopt_legacy_gateway_defaults(
 
 
 def extract_legacy_behavior_overrides(config: Mapping[str, Any]) -> dict[str, Any]:
+    migration = config.get("_whatsapp_migration")
+    if isinstance(migration, Mapping) and migration.get("version") == 1:
+        return {key: value for key, value in dict(migration.get("behavior") or {}).items()
+                if key in LEGACY_BEHAVIOR_DEFAULTS}
     result: dict[str, Any] = {}
     for key, default in LEGACY_BEHAVIOR_DEFAULTS.items():
         hidden_key = f"_legacy_{key}"
@@ -171,6 +167,9 @@ def extract_legacy_behavior_overrides(config: Mapping[str, Any]) -> dict[str, An
 
 
 def extract_legacy_command_prefix(config: Mapping[str, Any]) -> str:
+    migration = config.get("_whatsapp_migration")
+    if isinstance(migration, Mapping) and migration.get("version") == 1:
+        return str(migration.get("command_prefix") or "").strip()
     hidden = str(config.get("_legacy_command_prefix") or "").strip()
     if hidden:
         return hidden
@@ -215,3 +214,11 @@ def merge_runtime_config(
         **dict(plugin_defaults),
         **dict(platform_config),
     }
+
+
+def runtime_config_sources(runtime_defaults, plugin_defaults, retained, platform_config):
+    sources = {key: "internal_default" for key in runtime_defaults}
+    sources.update({key: "plugin_default" for key in plugin_defaults})
+    sources.update({key: "retained_legacy" for key in retained})
+    sources.update({key: "platform_instance" for key in platform_config})
+    return sources

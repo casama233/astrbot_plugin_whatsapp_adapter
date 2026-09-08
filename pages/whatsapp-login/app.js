@@ -14,6 +14,13 @@ function tf(key, fallback, values = {}) {
 }
 
 const els = {
+  operationScope: document.getElementById("operationScope"),
+  accountEndpoints: document.getElementById("accountEndpoints"),
+  diagnosticsPanel: document.getElementById("diagnosticsPanel"),
+  copyDiagnostics: document.getElementById("copyDiagnostics"),
+  diagnosticsStatus: document.getElementById("diagnosticsStatus"),
+  diagnosticsText: document.getElementById("diagnosticsText"),
+  effectiveSettings: document.getElementById("effectiveSettings"),
   metricStatusText: document.getElementById("metricStatusText"),
   metricStatusSub: document.getElementById("metricStatusSub"),
   healthDot: document.getElementById("healthDot"),
@@ -81,6 +88,8 @@ let activeLocale = "en-US";
 let lastStatusData = null;
 let lastQrData = null;
 let lastRuntimeData = null;
+let lastDiagnostics = null;
+let diagnosticsPending = false;
 let installBaseNodes = [];
 let logoutBaseNodes = [];
 
@@ -319,6 +328,7 @@ function renderDashboard(data) {
 
 function renderSession(data) {
   if (!data) return;
+  if (data.scope) renderScope(data.scope);
   lastStatusData = data;
   const status = data.status || (data.ready ? "connected" : "unknown");
   const isReady = data.ready || status === "connected";
@@ -341,9 +351,71 @@ function renderSession(data) {
   els.policyGroups.textContent = Array.isArray(cfg.groups) ? formatCount(cfg.groups, "policy.groups_count", "{count} groups") : "-";
 }
 
+function renderScope(scope) {
+  if (!scope || !els.operationScope) return;
+  const target = scope.targetInstanceId || t("scope.default_session", "the default login session");
+  els.operationScope.textContent = tf("scope.summary", "This page controls {target} at {endpoint}. Pairing, restart, logout and session reset apply to this Gateway.", { target, endpoint: scope.endpoint });
+  if (els.accountEndpoints) els.accountEndpoints.textContent = (scope.accounts || []).map((account) => `${account.instanceId}: ${account.endpoint}`).join(" · ") || t("scope.no_accounts", "No active platform instances");
+}
+
+function renderDiagnostics(data) {
+  lastDiagnostics = data;
+  els.diagnosticsText.value = JSON.stringify(data, null, 2);
+  els.effectiveSettings.replaceChildren();
+  const sourceLabels = {
+    internal_default: t("diagnostics.internal_default", "Internal default"),
+    plugin_default: t("diagnostics.plugin_default", "Plugin setting"),
+    migrated_plugin: t("diagnostics.migrated_plugin", "Migrated plugin setting"),
+    retained_legacy: t("diagnostics.retained_legacy", "Retained legacy setting"),
+    platform_instance: t("diagnostics.platform_instance", "Account setting"),
+  };
+  for (const config of data.configurations || []) {
+    const title = document.createElement("h3");
+    title.textContent = config.instanceId;
+    const table = document.createElement("table");
+    const head = document.createElement("tr");
+    for (const label of [t("diagnostics.setting", "Setting"), t("diagnostics.value", "Effective value"), t("diagnostics.source", "Source")]) {
+      const cell = document.createElement("th"); cell.textContent = label; head.appendChild(cell);
+    }
+    const header = document.createElement("thead"); header.appendChild(head); table.appendChild(header);
+    const body = document.createElement("tbody");
+    for (const row of config.values || []) {
+      const tr = document.createElement("tr");
+      for (const value of [row.key, typeof row.value === "object" ? JSON.stringify(row.value) : String(row.value), sourceLabels[row.source] || row.source]) {
+        const cell = document.createElement("td"); cell.textContent = value; tr.appendChild(cell);
+      }
+      body.appendChild(tr);
+    }
+    table.appendChild(body); els.effectiveSettings.append(title, table);
+  }
+}
+
+async function fetchDiagnostics(copy = false) {
+  if (diagnosticsPending) return;
+  diagnosticsPending = true;
+  els.copyDiagnostics.disabled = true;
+  try {
+    renderDiagnostics(await bridge.apiGet("diagnostics"));
+    if (copy) {
+      try {
+        await navigator.clipboard.writeText(els.diagnosticsText.value);
+        els.diagnosticsStatus.textContent = t("diagnostics.copied", "Sanitized diagnostics copied.");
+      } catch (_) {
+        els.diagnosticsText.focus(); els.diagnosticsText.select();
+        els.diagnosticsStatus.textContent = t("diagnostics.copy_failed", "Select and copy the report below.");
+      }
+    }
+  } catch (_) {
+    els.diagnosticsStatus.textContent = t("diagnostics.failed", "Could not load diagnostics. Refresh and try again.");
+  } finally {
+    diagnosticsPending = false; els.copyDiagnostics.disabled = false;
+  }
+}
+
 function renderRuntime(runtime) {
   if (!runtime || !els.runtimeStatus) return;
   lastRuntimeData = runtime;
+  if (runtime.scope) renderScope(runtime.scope);
   const labels = {
     external: t("runtime.external", "External Gateway; check connection separately"),
     node_missing: t("runtime.node_missing", "Node.js not found"),
@@ -827,6 +899,11 @@ els.installUpdateBtn?.addEventListener("click", async () => {
   pollUpdateStatus();
 });
 
+els.copyDiagnostics?.addEventListener("click", () => fetchDiagnostics(true));
+els.diagnosticsPanel?.addEventListener("toggle", () => {
+  if (els.diagnosticsPanel.open) fetchDiagnostics();
+});
+
 els.clearLogBtn.addEventListener("click", () => {
   clearChildren(els.eventLog);
   const empty = document.createElement("div");
@@ -849,6 +926,7 @@ function rerenderLocalizedState({ localeChanged = false } = {}) {
     renderSession(lastStatusData);
   }
   if (lastQrData) renderQr(lastQrData);
+  if (lastDiagnostics) renderDiagnostics(lastDiagnostics);
   if (updateInfo) renderUpdate(updateInfo);
 }
 

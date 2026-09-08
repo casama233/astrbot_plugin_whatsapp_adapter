@@ -2488,8 +2488,14 @@ function sendJson(res, status, value) {
   res.end(JSON.stringify(value));
 }
 
+let installedBaileysVersion = null;
+try {
+  installedBaileysVersion = JSON.parse(await readFile(new URL("../node_modules/@whiskeysockets/baileys/package.json", import.meta.url), "utf8")).version;
+} catch { /* Report unknown when package metadata is unavailable. */ }
+
 function statusPayload() {
   return {
+    runtime: { node: process.version, baileys: installedBaileysVersion },
     ok: true,
     ready,
     status: connectionStatus,

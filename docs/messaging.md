@@ -6,7 +6,7 @@
 
 支持文本、图片、音频、视频、文档、贴纸、位置、联系人、按钮/列表回应、投票、原生活动、引用消息和 mention 元数据。
 
-纯 emoji reaction 当前会被识别后忽略，不继续作为普通 AstrBot 消息事件派发；旧 `inbound_reaction_events` 已属于 deprecated 兼容字段。
+纯 emoji reaction 不进入普通 AstrBot / LLM 消息流程。符合自身消息过滤的 reaction 会先进入同进程共享的短期仲裁记录：按聊天、目标消息、发送者、emoji 区分，30 秒后过期，最多 4,096 条。不同账号可观察同一群中的仲裁；不同进程不共享内存。出站 reaction 只在 Gateway 接受发送后记录，记录失败不改变发送成功结果。旧 `inbound_reaction_events` 已废弃。
 
 ## WhatsApp → AstrBot 格式
 
