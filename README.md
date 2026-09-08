@@ -12,7 +12,7 @@
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/casama233/astrbot_plugin_whatsapp_adapter?label=version&color=ff69b4)](https://github.com/casama233/astrbot_plugin_whatsapp_adapter/releases)
 [![AstrBot](https://img.shields.io/badge/AstrBot-4.24.2%2B-orange.svg)](https://github.com/AstrBotDevs/AstrBot)
-[![Node.js](https://img.shields.io/badge/Node.js-20%2B-brightgreen.svg)](https://nodejs.org/)
+[![Node.js](https://img.shields.io/badge/Node.js-22%20%7C%2024%20LTS-brightgreen.svg)](https://nodejs.org/)
 [![Python CI](https://img.shields.io/badge/Python_CI-3.11-blue.svg)](https://github.com/casama233/astrbot_plugin_whatsapp_adapter/actions/workflows/tests.yml)
 [![Tests](https://github.com/casama233/astrbot_plugin_whatsapp_adapter/actions/workflows/tests.yml/badge.svg)](https://github.com/casama233/astrbot_plugin_whatsapp_adapter/actions/workflows/tests.yml)
 [![GitHub Stars](https://img.shields.io/github/stars/casama233/astrbot_plugin_whatsapp_adapter?style=flat&logo=github)](https://github.com/casama233/astrbot_plugin_whatsapp_adapter/stargazers)
@@ -50,7 +50,7 @@
 
 ### 1. 安装插件
 
-优先使用 AstrBot 插件市场 / Cloud 安装。宿主环境需要提供 **Node.js 20+** 与 npm。
+优先使用 AstrBot 插件市场 / Cloud 安装。宿主环境需要提供 **Node.js 22/24 LTS（最低 20.9.0；Node 20 已 EOL）** 与 npm。
 
 <details>
 <summary><strong>手工安装</strong></summary>
@@ -60,7 +60,7 @@ cd AstrBot/data/plugins
 git clone https://github.com/casama233/astrbot_plugin_whatsapp_adapter.git
 cd astrbot_plugin_whatsapp_adapter
 pip install -r requirements.txt
-npm install --omit=dev
+npm ci --omit=dev
 ```
 
 完成后重启 AstrBot 或在 WebUI 重载插件。
@@ -175,7 +175,7 @@ WhatsApp 的 PN、LID、Hosted、设备 JID 与 `@g.us` 属于运输层身份，
 
 ## 🛠️ 开发与验证
 
-CI 覆盖 Ubuntu 与 Windows；Python 测试环境为 3.11，Node.js 为 20。
+CI 覆盖 Ubuntu 与 Windows、Python 3.11/3.12、Node.js 20/22/24。Node 20 只保留旧部署回归测试。
 
 ```bash
 python scripts/release_contract.py validate-repo

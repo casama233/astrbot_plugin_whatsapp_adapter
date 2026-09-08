@@ -16,14 +16,14 @@ It supports QR-code and phone-number pairing, private/group access control, medi
 
 ## Install
 
-Requirements: AstrBot `>=4.24.2,<5`, Node.js 20+ and npm, plus network access to WhatsApp Web.
+Requirements: AstrBot `>=4.24.2,<5`, Node.js 22/24 LTS (minimum 20.9.0; Node 20 is EOL) and npm, plus network access to WhatsApp Web.
 
 ```bash
 cd AstrBot/data/plugins
 git clone https://github.com/casama233/astrbot_plugin_whatsapp_adapter.git
 cd astrbot_plugin_whatsapp_adapter
 pip install -r requirements.txt
-npm install --omit=dev
+npm ci --omit=dev
 ```
 
 AstrBot Cloud/market installation can manage Python dependencies, but Node.js and npm must still exist on the host. The Gateway verifies production Node dependencies before startup.

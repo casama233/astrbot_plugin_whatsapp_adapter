@@ -10,7 +10,7 @@
 ## 安裝需求
 
 - AstrBot `>=4.24.2,<5`
-- Node.js `>=20`
+- Node.js 22/24 LTS（最低 `20.9.0`；Node 20 已 EOL）
 - npm
 - Python 依賴 `aiohttp>=3.9.0`
 - 可連線至 WhatsApp Web 的網路環境
