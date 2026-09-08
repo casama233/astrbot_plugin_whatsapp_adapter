@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # Lower these ceilings after an extraction; never raise them to fit new code.
 SHRINK_ONLY_MAX_BYTES = {
     "_whatsapp_adapter_impl.py": 126,
-    "whatsapp_adapter.py": 130_597,
+    "whatsapp_adapter.py": 130_501,
     "_whatsapp_event_impl.py": 118,
     "whatsapp_event.py": 32_004,
     "_whatsapp_helpers_impl.py": 60_189,

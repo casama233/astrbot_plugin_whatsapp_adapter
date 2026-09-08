@@ -11,7 +11,7 @@ Python 的正式類別位於 `whatsapp_adapter.py`、`whatsapp_event.py`、`what
 | 檔案 | 上限 |
 | --- | ---: |
 | `_whatsapp_adapter_impl.py` | 126 |
-| `whatsapp_adapter.py` | 130,597 |
+| `whatsapp_adapter.py` | 130,501 |
 | `_whatsapp_event_impl.py` | 118 |
 | `whatsapp_event.py` | 32,004 |
 | `_whatsapp_helpers_impl.py` | 60,189 |
