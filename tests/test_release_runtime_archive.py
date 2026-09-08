@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
+import json
 import tempfile
 import unittest
 import zipfile
@@ -50,6 +52,30 @@ class ReleaseRuntimeArchiveTests(unittest.TestCase):
                     )
             with self.assertRaisesRegex(RuntimeError, "stability-runtime\\.mjs"):
                 VERIFY_RUNTIME.validate_release_runtime(archive_path)
+
+    def test_release_manifest_rejects_modified_or_uncovered_runtime(self) -> None:
+        files = {name: (ROOT / name).read_bytes() for name in VERIFY_RUNTIME.REQUIRED_RUNTIME_FILES}
+        manifest = {name: hashlib.sha256(data.replace(b'\r\n', b'\n')).hexdigest()
+                    for name, data in files.items() if not name.endswith('.txt')}
+        version = json.loads(files['package.json'])['version']
+        info = {'version': version, 'sourceCommit': 'a' * 40, 'files': manifest}
+        for alteration in ('none', 'changed', 'uncovered', 'missing_manifest'):
+            with self.subTest(alteration=alteration), tempfile.TemporaryDirectory() as temp:
+                archive_path = Path(temp) / 'release.zip'
+                with zipfile.ZipFile(archive_path, 'w') as archive:
+                    for name, data in files.items():
+                        if alteration == 'changed' and name == 'main.py':
+                            data += b'\n# changed after validation\n'
+                        archive.writestr(f'{VERIFY_RUNTIME.PLUGIN_ROOT}{name}', data)
+                    if alteration == 'uncovered':
+                        archive.writestr(f'{VERIFY_RUNTIME.PLUGIN_ROOT}unexpected.py', 'uncovered')
+                    if alteration != 'missing_manifest':
+                        archive.writestr(f'{VERIFY_RUNTIME.PLUGIN_ROOT}.build-info.json', json.dumps(info))
+                if alteration == 'none':
+                    VERIFY_RUNTIME.validate_release_runtime(archive_path, require_build_info=True)
+                else:
+                    with self.assertRaisesRegex(RuntimeError, 'build identity invalid'):
+                        VERIFY_RUNTIME.validate_release_runtime(archive_path, require_build_info=True)
 
     def test_release_workflow_runs_verifier_and_does_not_ship_it(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(

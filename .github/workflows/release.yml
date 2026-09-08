@@ -29,9 +29,12 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
+  prepare:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
+    outputs:
+      candidate_sha: ${{ steps.candidate.outputs.sha }}
+      publish: ${{ steps.candidate.outputs.publish }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -39,11 +42,11 @@ jobs:
 
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
-          node-version: "20"
+          node-version: "24"
 
       - name: Resolve release mode and marker
         env:
@@ -128,18 +131,6 @@ jobs:
           python scripts/release_contract.py apply-marker "$RELEASE_MARKER"
           python scripts/release_contract.py validate-repo --expected-version "$RELEASE_VERSION"
 
-      - name: Compile Python
-        run: python -m compileall -q .
-
-      - name: Python tests
-        run: python -m unittest discover -v tests
-
-      - name: Install Node dependencies
-        run: npm ci
-
-      - name: Node tests
-        run: node --test gateway/*.test.mjs scripts/*.test.mjs
-
       - name: Commit release candidate
         if: env.RESUME_RELEASE != 'true'
         shell: bash
@@ -148,7 +139,8 @@ jobs:
           subject=$(cat "$RELEASE_SUBJECT_FILE")
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add CHANGELOG.md main.py metadata.yaml package.json package-lock.json
+          python scripts/write-build-info.py --version "$RELEASE_VERSION" --source-commit "$GITHUB_SHA"
+          git add .build-info.json CHANGELOG.md main.py metadata.yaml package.json package-lock.json
           git add -A -- "$RELEASE_MARKER"
           git commit -m "Release v${RELEASE_VERSION}: ${subject}"
           if ! git diff --quiet || ! git diff --cached --quiet; then
@@ -156,6 +148,74 @@ jobs:
             git status --short
             exit 1
           fi
+
+      - name: Preserve immutable release candidate
+        id: candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          candidate_dir="$RUNNER_TEMP/release-candidate"
+          mkdir -p "$candidate_dir"
+          git bundle create "$candidate_dir/candidate.bundle" HEAD
+          cp "$RELEASE_NOTES_FILE" "$candidate_dir/notes.md"
+          python - <<'PYCODE'
+          import json, os, pathlib, subprocess
+          state = {
+              'candidateSha': subprocess.check_output(['git', 'rev-parse', 'HEAD']).decode().strip(),
+              'version': os.environ['RELEASE_VERSION'],
+              'publish': os.environ['PUBLISH_RELEASE'],
+              'resume': os.environ.get('RESUME_RELEASE', 'false'),
+          }
+          directory = pathlib.Path(os.environ['RUNNER_TEMP']) / 'release-candidate'
+          (directory / 'state.json').write_text(json.dumps(state), encoding='utf-8')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f"sha={state['candidateSha']}\npublish={state['publish']}\n")
+          PYCODE
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-candidate-${{ github.run_id }}
+          path: ${{ runner.temp }}/release-candidate/
+          retention-days: 7
+          if-no-files-found: error
+
+  validate:
+    needs: prepare
+    uses: ./.github/workflows/validate-runtime.yml
+    with:
+      candidate_artifact: release-candidate-${{ github.run_id }}
+      candidate_sha: ${{ needs.prepare.outputs.candidate_sha }}
+
+  publish:
+    needs: [prepare, validate]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: release-candidate-${{ github.run_id }}
+          path: ${{ runner.temp }}/release-candidate
+      - name: Restore validated release candidate
+        env:
+          CANDIDATE_SHA: ${{ needs.prepare.outputs.candidate_sha }}
+        shell: python
+        run: |
+          import json, os, pathlib, subprocess
+          directory = pathlib.Path(os.environ['RUNNER_TEMP']) / 'release-candidate'
+          state = json.loads((directory / 'state.json').read_text(encoding='utf-8'))
+          subprocess.check_call(['git', 'fetch', str(directory / 'candidate.bundle'), 'HEAD'])
+          actual = subprocess.check_output(['git', 'rev-parse', 'FETCH_HEAD']).decode().strip()
+          if actual != os.environ['CANDIDATE_SHA'] or actual != state['candidateSha']:
+              raise RuntimeError('candidate changed after matrix validation')
+          subprocess.check_call(['git', 'checkout', '--detach', actual])
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as output:
+              for key, value in {'RELEASE_VERSION': state['version'], 'PUBLISH_RELEASE': state['publish'],
+                                 'RESUME_RELEASE': state['resume'], 'RELEASE_NOTES_FILE': str(directory / 'notes.md')}.items():
+                  output.write(f'{key}={value}\n')
 
       - name: Build AstrBot plugin ZIP
         shell: bash
@@ -184,11 +244,20 @@ jobs:
           set -euo pipefail
           python scripts/release_contract.py validate-archive "$RELEASE_ASSET" \
             --expected-version "$RELEASE_VERSION"
-          python scripts/verify-release-runtime.py "$RELEASE_ASSET"
+          python scripts/verify-release-runtime.py "$RELEASE_ASSET" --require-build-info
           (
             cd "$RUNNER_TEMP"
             sha256sum -c "$RELEASE_CHECKSUM_NAME"
           )
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-assets-${{ github.run_id }}
+          path: |
+            ${{ env.RELEASE_ASSET }}
+            ${{ env.RELEASE_CHECKSUM }}
+          retention-days: 7
+          if-no-files-found: error
 
       - name: Preflight summary
         if: env.PUBLISH_RELEASE != 'true'

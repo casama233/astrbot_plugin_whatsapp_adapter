@@ -1,0 +1,116 @@
+name: Validate runtime
+
+on:
+  workflow_call:
+    inputs:
+      candidate_artifact:
+        type: string
+        default: ""
+      candidate_sha:
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Legacy deployments remain regression-tested, not recommended.
+          - os: ubuntu-latest
+            python: "3.11"
+            node: "20"
+          - os: windows-latest
+            python: "3.11"
+            node: "20"
+          - os: ubuntu-latest
+            python: "3.12"
+            node: "22"
+          - os: windows-latest
+            python: "3.12"
+            node: "22"
+          - os: ubuntu-latest
+            python: "3.12"
+            node: "24"
+          - os: windows-latest
+            python: "3.12"
+            node: "24"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        if: inputs.candidate_artifact != ''
+        with:
+          name: ${{ inputs.candidate_artifact }}
+          path: ${{ runner.temp }}/release-candidate
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Check out exact release candidate
+        if: inputs.candidate_artifact != ''
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+        shell: python
+        run: |
+          import os, pathlib, re, subprocess
+          candidate = os.environ['CANDIDATE_SHA']
+          if not re.fullmatch(r'[0-9a-f]{40}', candidate):
+              raise RuntimeError('invalid candidate commit')
+          bundle = pathlib.Path(os.environ['RUNNER_TEMP']) / 'release-candidate/candidate.bundle'
+          subprocess.check_call(['git', 'fetch', str(bundle), 'HEAD'])
+          actual = subprocess.check_output(['git', 'rev-parse', 'FETCH_HEAD']).decode().strip()
+          if actual != candidate:
+              raise RuntimeError('downloaded candidate does not match prepared commit')
+          subprocess.check_call(['git', 'checkout', '--detach', candidate])
+          subprocess.check_call(['git', 'diff', '--exit-code', 'HEAD', '--'])
+      - name: Validate AstrBot release contract
+        run: python scripts/release_contract.py validate-repo
+      - name: Compile Python
+        run: python -m compileall -q .
+      - name: Python tests
+        run: python -m unittest discover -v tests
+      - name: Install Node dependencies
+        run: npm ci
+      - name: Verify managed dependency installation
+        run: python scripts/verify-dependencies.py
+      - name: Node tests
+        run: >-
+          python -c "import glob, subprocess;
+          files=glob.glob('gateway/*.test.mjs')+glob.glob('scripts/*.test.mjs');
+          subprocess.check_call(['node','--test',*files])"
+      # A tracked-source snapshot makes the exact tested revision reproducible
+      # through the connector, without collecting auth, env, or node_modules.
+      - name: Preserve tested source revision
+        if: matrix.os == 'ubuntu-latest' && matrix.node == '22'
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os, pathlib, subprocess, zipfile
+          output = pathlib.Path(os.environ['RUNNER_TEMP']) / 'tested-source.zip'
+          subprocess.check_call(['git', 'diff', '--exit-code', 'HEAD', '--'])
+          tracked = subprocess.check_output(['git', 'ls-files', '-z']).decode().split('\0')
+          with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as archive:
+              for name in tracked:
+                  if not name:
+                      continue
+                  if pathlib.Path(name).is_symlink() or not pathlib.Path(name).is_file():
+                      raise RuntimeError(f'Unsupported tracked source entry: {name}')
+                  archive.write(name, name)
+              archive.writestr('CI_REVISION.json', json.dumps({
+                  'commit': subprocess.check_output(['git', 'rev-parse', 'HEAD']).decode().strip(),
+                  'node': subprocess.check_output(['node', '--version']).decode().strip(),
+              }))
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: matrix.os == 'ubuntu-latest' && matrix.node == '22'
+        with:
+          name: tested-source-${{ github.run_id }}
+          path: ${{ runner.temp }}/tested-source.zip
+          retention-days: 7
+          if-no-files-found: error
