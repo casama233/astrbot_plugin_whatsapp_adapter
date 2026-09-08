@@ -22,6 +22,7 @@ REQUIRED_RUNTIME_FILES = frozenset(
         "plugin_updater.py",
         "gateway_security.py",
         "gateway_stability.py",
+        "gateway_dependencies.py",
         "whatsapp_adapter.py",
         "_whatsapp_adapter_impl.py",
         "album_caption_compat.py",

@@ -9,6 +9,11 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+try:
+    from .gateway_dependencies import project_start_lock, register_gateway_child
+except ImportError:  # Standalone regression tests.
+    from gateway_dependencies import project_start_lock, register_gateway_child
+
 _GATEWAY_TOKENS: dict[tuple[str, int], str] = {}
 _CLASS_PATCH_MARKER = "_astrbot_gateway_security_installed"
 
@@ -107,6 +112,10 @@ def install_gateway_transport_security(
             self._gateway_auth_token = secrets.token_urlsafe(32)
 
         async def secure_process_start(self: Any) -> None:
+            async with project_start_lock(self.script_path.parent.parent):
+                await secure_process_start_unlocked(self)
+
+        async def secure_process_start_unlocked(self: Any) -> None:
             token = str(getattr(self, "_gateway_auth_token", "") or "").strip()
             if not token:
                 token = secrets.token_urlsafe(32)
@@ -155,6 +164,7 @@ def install_gateway_transport_security(
                 **extra_kwargs,
             )
             self.process = child
+            register_gateway_child(self.script_path.parent.parent, child)
             # Publish only after spawn succeeds. A failed replacement must not
             # invalidate clients of the process already bound to this port.
             _GATEWAY_TOKENS[key] = token
