@@ -49,13 +49,17 @@ Before changing `main`, the workflow:
 3. rejects equal/downgrade/non-stable versions;
 4. updates every version source and prepends the changelog section;
 5. removes the marker from the release commit;
-6. compiles Python and runs the complete Python and Node test suites;
-7. creates a local release commit;
-8. builds the exact ZIP that will be published;
-9. validates the ZIP against AstrBot's 16 MiB limit and this plugin's self-updater requirements;
+6. writes `.build-info.json` and creates a local release commit, preserved in a Git bundle;
+7. validates that exact commit through the shared `validate-runtime.yml` workflow: Windows and Ubuntu, Node 20/22/24, Python tests, Node tests and real managed dependency installation;
+8. restores the same validated commit by SHA and builds its ZIP;
+9. validates the ZIP against AstrBot's 16 MiB limit, the self-updater requirements and the complete runtime build manifest;
 10. generates a SHA-256 sidecar.
 
 Only after all of those checks succeed does it push the release commit to `main` and create/update the GitHub Release.
+
+Ordinary pull requests and release candidates call the same validation workflow. The release candidate and final ZIP/checksum are retained as Actions artifacts for seven days, including preflight runs. Downloaded bundles must resolve to the prepared commit SHA before any test or publication step proceeds.
+
+The build identity records the marker/source commit and hashes of shipped runtime files. It deliberately does not claim to contain its own generated release commit SHA. The Page reports local source overlays as `modified_release` and reports missing provenance as `unknown`.
 
 ## Manual preflight
 
