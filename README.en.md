@@ -12,7 +12,7 @@ QR login · DMs & groups · Rich media · Streaming replies · Multi-account · 
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/casama233/astrbot_plugin_whatsapp_adapter?label=version&color=ff69b4)](https://github.com/casama233/astrbot_plugin_whatsapp_adapter/releases)
 [![AstrBot](https://img.shields.io/badge/AstrBot-4.24.2%2B-orange.svg)](https://github.com/AstrBotDevs/AstrBot)
-[![Node.js](https://img.shields.io/badge/Node.js-20%2B-brightgreen.svg)](https://nodejs.org/)
+[![Node.js](https://img.shields.io/badge/Node.js-22%20%7C%2024%20LTS-brightgreen.svg)](https://nodejs.org/)
 [![Python CI](https://img.shields.io/badge/Python_CI-3.11-blue.svg)](https://github.com/casama233/astrbot_plugin_whatsapp_adapter/actions/workflows/tests.yml)
 [![Tests](https://github.com/casama233/astrbot_plugin_whatsapp_adapter/actions/workflows/tests.yml/badge.svg)](https://github.com/casama233/astrbot_plugin_whatsapp_adapter/actions/workflows/tests.yml)
 [![GitHub Stars](https://img.shields.io/github/stars/casama233/astrbot_plugin_whatsapp_adapter?style=flat&logo=github)](https://github.com/casama233/astrbot_plugin_whatsapp_adapter/stargazers)
@@ -45,7 +45,7 @@ QR login · DMs & groups · Rich media · Streaming replies · Multi-account · 
 
 ## 🚀 Quick start
 
-Prefer AstrBot's plugin market / Cloud flow. The host still needs **Node.js 20+** and npm.
+Prefer AstrBot's plugin market / Cloud flow. The host still needs **Node.js 22/24 LTS (minimum 20.9.0; Node 20 is EOL)** and npm.
 
 <details>
 <summary><strong>Manual installation</strong></summary>
@@ -55,7 +55,7 @@ cd AstrBot/data/plugins
 git clone https://github.com/casama233/astrbot_plugin_whatsapp_adapter.git
 cd astrbot_plugin_whatsapp_adapter
 pip install -r requirements.txt
-npm install --omit=dev
+npm ci --omit=dev
 ```
 
 Restart AstrBot or reload the plugin afterwards.
@@ -161,7 +161,7 @@ The management Page installs stable GitHub Releases using an exact pinned candid
 
 ## 🛠️ Development & CI
 
-CI runs on Ubuntu and Windows, using Python 3.11 for project tests and Node.js 20.
+CI runs on Ubuntu and Windows with Python 3.11/3.12 and Node.js 20/22/24. Node 20 is retained for legacy regression coverage.
 
 ```bash
 python scripts/release_contract.py validate-repo

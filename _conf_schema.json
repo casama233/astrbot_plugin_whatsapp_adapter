@@ -25,7 +25,7 @@
     "type": "string",
     "default": "node",
     "group": "connection",
-    "hint": "推荐 Node.js 20+，例如 node 或 /usr/bin/node。"
+    "hint": "推荐 Node.js 22/24 LTS；最低 20.9.0。Node 20 已停止维护。填写 node 或可执行文件绝对路径。"
   },
   "auth_dir": {
     "description": "WhatsApp 基准登录态目录",
