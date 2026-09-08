@@ -25,20 +25,36 @@ class ReleaseWorkflowPolicyTests(unittest.TestCase):
         )
         self.assertNotIn("tests/test_whatsapp_config_policy.py .release", workflow)
         self.assertNotIn("npm version", workflow)
+        self.assertIn('needs: [prepare, validate]', workflow)
+        self.assertIn('candidate_sha: ${{ needs.prepare.outputs.candidate_sha }}', workflow)
+        self.assertIn('git bundle create', workflow)
+        self.assertIn('--require-build-info', workflow)
+        shared = (ROOT / '.github/workflows/validate-runtime.yml').read_text('utf-8')
+        ordinary = (ROOT / '.github/workflows/tests.yml').read_text('utf-8')
+        for caller in (workflow, ordinary):
+            self.assertIn('uses: ./.github/workflows/validate-runtime.yml', caller)
+        self.assertIn("if actual != candidate:", shared)
+        self.assertIn('python scripts/verify-dependencies.py', shared)
+        self.assertEqual(shared.count('- os: ubuntu-latest'), 3)
+        self.assertEqual(shared.count('- os: windows-latest'), 3)
 
     def test_github_actions_use_immutable_commit_shas(self) -> None:
         for relative_path in (
             ".github/workflows/tests.yml",
             ".github/workflows/release.yml",
+            ".github/workflows/validate-runtime.yml",
         ):
             workflow = (ROOT / relative_path).read_text("utf-8")
             action_refs = re.findall(
-                r"^\s*-\s+uses:\s+([^#\s]+)",
+                r"^\s*(?:-\s+)?uses:\s+([^#\s]+)",
                 workflow,
                 flags=re.MULTILINE,
             )
             self.assertTrue(action_refs, relative_path)
             for action_ref in action_refs:
+                if action_ref.startswith('./.github/workflows/'):
+                    self.assertTrue((ROOT / action_ref).is_file(), action_ref)
+                    continue
                 self.assertRegex(
                     action_ref,
                     r"^[^@\s]+@[0-9a-f]{40}$",

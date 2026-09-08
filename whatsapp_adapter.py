@@ -373,7 +373,7 @@ CONFIG_METADATA: dict[str, Any] = {
         "description": "Node.js 路径",
         "type": "string",
         "group": "connection",
-        "hint": "执行 Gateway 的 Node.js 命令或绝对路径。一般保持 node 即可，需 Node.js 20+。",
+        "hint": "Gateway 的 Node.js 命令或绝对路径。需 20.9+，建议 22/24。",
     },
     "auth_dir": {
         "description": "认证目录（留空自动）",
@@ -560,7 +560,7 @@ WHATSAPP_I18N_RESOURCES: dict[str, dict] = {
         },
         "node_executable": {
             "description": "Node.js 路径",
-            "hint": "执行 Gateway 的 Node.js 命令或绝对路径。一般保持 node 即可，需 Node.js 20+。",
+            "hint": "Gateway 的 Node.js 命令或绝对路径。需 20.9+，建议 22/24。",
         },
         "auth_dir": {
             "description": "认证目录（留空自动）",
@@ -686,7 +686,7 @@ WHATSAPP_I18N_RESOURCES: dict[str, dict] = {
         },
         "node_executable": {
             "description": "Node.js executable",
-            "hint": "Node.js command or absolute path to run the Gateway. Keep as 'node'. Node.js 20+ required.",
+            "hint": "Gateway Node.js command/path. Requires 20.9+; Node 22/24 recommended.",
         },
         "auth_dir": {
             "description": "Auth directory (auto if empty)",
@@ -812,7 +812,7 @@ WHATSAPP_I18N_RESOURCES: dict[str, dict] = {
         },
         "node_executable": {
             "description": "Node.js 路徑",
-            "hint": "執行 Gateway 的 Node.js 命令或絕對路徑。一般保持 node 即可，需 Node.js 20+。",
+            "hint": "Gateway 的 Node.js 命令或絕對路徑。需 20.9+，建議 22/24。",
         },
         "auth_dir": {
             "description": "認證目錄（留空自動）",
