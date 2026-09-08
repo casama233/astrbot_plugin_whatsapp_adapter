@@ -4,9 +4,21 @@ import asyncio
 import json
 import os
 import signal
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
+
+try:
+    from .gateway_dependencies import (
+        assert_dependency_directory_idle, dependencies_current,
+        dependency_fingerprint, record_dependency_install,
+    )
+except ImportError:  # Standalone tests.
+    from gateway_dependencies import (
+        assert_dependency_directory_idle, dependencies_current,
+        dependency_fingerprint, record_dependency_install,
+    )
 
 _PROCESS_PATCH_MARKER = "_astrbot_gateway_stability_process_installed"
 _CLIENT_PATCH_MARKER = "_astrbot_gateway_stability_client_installed"
@@ -64,7 +76,7 @@ async def _terminate_process_tree(process: Any) -> None:
                 pgid = os.getpgid(pid)
             except (ProcessLookupError, OSError):
                 pgid = None
-        if pgid is not None and hasattr(os, "killpg"):
+        if pgid is not None and pgid != os.getpgrp() and hasattr(os, "killpg"):
             try:
                 os.killpg(pgid, signal.SIGTERM)
             except (ProcessLookupError, OSError):
@@ -91,66 +103,100 @@ async def _terminate_process_tree(process: Any) -> None:
             pass
 
 
+async def _run_node_command(*command: str, cwd: Path | None = None, timeout: float = 5.0) -> bytes:
+    extra: dict[str, Any] = {}
+    if os.name == "nt":
+        extra["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    else:
+        extra["start_new_session"] = True
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *command, cwd=str(cwd) if cwd else None,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            **extra,
+        )
+    except OSError as exc:
+        raise RuntimeError(f"Cannot start {command[0]}: {exc}") from exc
+    try:
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
+    except BaseException as exc:
+        await _terminate_process_tree(process)
+        if isinstance(exc, asyncio.TimeoutError):
+            raise RuntimeError(f"{command[0]} timed out after {timeout:g}s") from exc
+        raise
+    if process.returncode:
+        detail = (stdout + stderr).decode(errors="replace")[-6000:]
+        raise RuntimeError(f"{command[0]} exited with code {process.returncode}: {detail}")
+    return stdout
+
+
+async def probe_node_runtime(node: str) -> dict[str, Any]:
+    output = await _run_node_command(
+        node, "--eval",
+        "console.log(JSON.stringify({version:process.versions.node,"
+        "abi:process.versions.modules,platform:process.platform,arch:process.arch}))",
+    )
+    try:
+        info = json.loads(output.decode().strip())
+        version = tuple(int(part) for part in info["version"].split("."))
+        if len(version) != 3 or version < (20, 9, 0):
+            raise ValueError("unsupported Node version")
+        # Patch updates with an unchanged ABI need not reinstall native modules.
+        return {"major": version[0], "abi": str(info["abi"]),
+                "platform": str(info["platform"]), "arch": str(info["arch"])}
+    except (ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise RuntimeError("Node.js >=20.9.0 is required; Node 22/24 LTS is recommended") from exc
+
+
+def _npm_command(node: str) -> list[str]:
+    npm = shutil.which("npm")
+    if not npm:
+        raise RuntimeError("npm not found; install Node.js/npm before starting the Gateway")
+    path = Path(npm)
+    # Run npm with the configured Node, including npm.cmd installations on Windows.
+    candidates = [path.resolve(), path.parent / "node_modules/npm/bin/npm-cli.js",
+                  path.parent.parent / "lib/node_modules/npm/bin/npm-cli.js"]
+    for candidate in candidates:
+        if candidate.is_file() and candidate.name == "npm-cli.js":
+            return [node, str(candidate)]
+    raise RuntimeError("Cannot locate npm-cli.js beside npm; use a standard Node.js/npm installation")
+
+
 async def _bounded_node_dependency_install(self: Any, error_cls: type[BaseException]) -> None:
     project_dir = self.script_path.parent.parent
-    if self._node_dependencies_current(project_dir):
-        return
-
-    async with _NODE_DEPENDENCY_INSTALL_LOCK:
-        if self._node_dependencies_current(project_dir):
+    try:
+        identity = getattr(self, "_node_identity", None)
+        if identity is None:
+            identity = await probe_node_runtime(self.node_executable)
+            self._node_identity = identity
+        if dependencies_current(project_dir, identity):
             return
-        package_json = project_dir / "package.json"
-        if not package_json.exists():
-            raise error_cls(f"Gateway package.json not found: {package_json}")
-
-        extra_kwargs: dict[str, Any] = {}
-        if os.name == "nt":
-            creation_flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-            if creation_flags:
-                extra_kwargs["creationflags"] = creation_flags
-        else:
-            extra_kwargs["start_new_session"] = True
-
-        try:
-            installer = await asyncio.create_subprocess_exec(
-                "npm",
-                "install",
-                "--omit=dev",
-                cwd=str(project_dir),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                **extra_kwargs,
+        async with _NODE_DEPENDENCY_INSTALL_LOCK:
+            if dependencies_current(project_dir, identity):
+                return
+            # Never use npm ci's destructive cleanup on a live managed runtime.
+            assert_dependency_directory_idle(project_dir)
+            fingerprint = dependency_fingerprint(project_dir)
+            timeout = _npm_install_timeout_seconds()
+            await _run_node_command(
+                *_npm_command(self.node_executable), "ci", "--omit=dev",
+                "--no-audit", "--no-fund", "--ignore-scripts=false",
+                cwd=project_dir, timeout=timeout,
             )
-        except FileNotFoundError as exc:
-            raise error_cls(
-                "npm not found; please install Node.js/npm or run npm install manually"
-            ) from exc
-
-        timeout = _npm_install_timeout_seconds()
-        try:
-            stdout, stderr = await asyncio.wait_for(
-                installer.communicate(),
-                timeout=timeout,
+            # Explicit verification also handles installations influenced by npm config.
+            await _run_node_command(
+                self.node_executable, "scripts/patch-baileys-ephemeral.mjs",
+                cwd=project_dir, timeout=30,
             )
-        except asyncio.TimeoutError as exc:
-            await _terminate_process_tree(installer)
-            raise error_cls(
-                f"npm install --omit=dev timed out after {timeout:g}s; "
-                "check npm registry, DNS, proxy, and postinstall scripts"
-            ) from exc
-
-        if installer.returncode != 0:
-            out = stdout.decode(errors="replace").strip()
-            err = stderr.decode(errors="replace").strip()
-            detail = "\n".join(part for part in [out, err] if part)[-6000:]
-            raise error_cls(
-                f"npm install --omit=dev failed with code {installer.returncode}: {detail}"
+            await _run_node_command(
+                self.node_executable, "--input-type=module", "--eval",
+                "await Promise.all(['@whiskeysockets/baileys','sharp','qrcode',"
+                "'qrcode-terminal','pino','https-proxy-agent'].map(x => import(x)))",
+                cwd=project_dir, timeout=30,
             )
-        if not self._node_dependencies_current(project_dir):
-            raise error_cls(
-                "npm install --omit=dev completed but installed dependency versions "
-                "do not match package-lock.json"
-            )
+            record_dependency_install(project_dir, identity, fingerprint)
+    except (RuntimeError, OSError, ValueError) as exc:
+        raise error_cls(f"Gateway dependency preparation failed: {exc}") from exc
 
 
 async def _request_graceful_shutdown(client_cls: type[Any], process: Any) -> bool:
@@ -192,9 +238,6 @@ def install_gateway_runtime_stability(
     if not getattr(process_cls, _PROCESS_PATCH_MARKER, False):
         original_stop = process_cls.stop
 
-        async def stable_ensure_node_dependencies(self: Any) -> None:
-            await _bounded_node_dependency_install(self, error_cls)
-
         async def stable_process_stop(self: Any) -> None:
             child = getattr(self, "process", None)
             requested = await _request_graceful_shutdown(client_cls, self)
@@ -210,7 +253,6 @@ def install_gateway_runtime_stability(
                         pass
             await original_stop(self)
 
-        process_cls._ensure_node_dependencies = stable_ensure_node_dependencies
         process_cls.stop = stable_process_stop
         setattr(process_cls, _PROCESS_PATCH_MARKER, True)
 

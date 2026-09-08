@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
-import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -11,58 +9,38 @@ import gateway_stability as stability
 
 
 class GatewayStabilityTests(unittest.IsolatedAsyncioTestCase):
-    async def test_dependency_install_timeout_kills_installer_and_fails(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            gateway_dir = root / "gateway"
-            gateway_dir.mkdir()
-            (root / "package.json").write_text(json.dumps({"dependencies": {}}), encoding="utf-8")
+    async def test_node_command_timeout_kills_child_and_fails(self) -> None:
+        class Installer:
+            returncode = None
+            pid = 12345
 
-            class Error(RuntimeError):
-                pass
+            def __init__(self) -> None:
+                self.killed = False
 
-            class Process:
-                script_path = gateway_dir / "whatsapp-gateway.mjs"
+            async def communicate(self):
+                await asyncio.Future()
 
-                @staticmethod
-                def _node_dependencies_current(_project_dir: Path) -> bool:
-                    return False
+            def kill(self) -> None:
+                self.killed = True
+                self.returncode = -9
 
-            class Installer:
-                returncode = None
-                pid = 12345
+            async def wait(self) -> int:
+                return int(self.returncode or 0)
 
-                def __init__(self) -> None:
-                    self.killed = False
-
-                async def communicate(self):
-                    await asyncio.Future()
-
-                def kill(self) -> None:
-                    self.killed = True
-                    self.returncode = -9
-
-                async def wait(self) -> int:
-                    return int(self.returncode or 0)
-
-            installer = Installer()
-            with (
-                patch(
-                    "gateway_stability.asyncio.create_subprocess_exec",
-                    return_value=installer,
-                ),
-                patch(
-                    "gateway_stability._npm_install_timeout_seconds",
-                    return_value=0.01,
-                ),
-                patch(
-                    "gateway_stability._terminate_process_tree",
-                    side_effect=self._mark_killed,
-                ),
-            ):
-                with self.assertRaisesRegex(Error, "timed out"):
-                    await stability._bounded_node_dependency_install(Process(), Error)
-            self.assertTrue(installer.killed)
+        installer = Installer()
+        with (
+            patch(
+                "gateway_stability.asyncio.create_subprocess_exec",
+                return_value=installer,
+            ),
+            patch(
+                "gateway_stability._terminate_process_tree",
+                side_effect=self._mark_killed,
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "timed out"):
+                await stability._run_node_command("npm", timeout=0.01)
+        self.assertTrue(installer.killed)
 
     @staticmethod
     async def _mark_killed(process) -> None:
