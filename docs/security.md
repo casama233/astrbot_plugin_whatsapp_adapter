@@ -1,216 +1,79 @@
 # 安全与隐私
 
-本文件描述部署和使用本插件时需要明确的信任边界。它不是 Meta / WhatsApp 的安全保证，也不改变 AstrBot 自身的隐私与模型提供商配置。
+本文件描述实际信任边界，不是 Meta / WhatsApp 的安全保证，也不改变 AstrBot 与模型提供商的数据政策。
 
-## 1. Gateway HTTP 只应本地使用
+## 1. Gateway 只应部署在可信网络
 
-Node.js Gateway 默认绑定：
+默认监听 `127.0.0.1:18789`。内置 Gateway 使用随机的进程级 Bearer token；所有 HTTP / SSE 请求都需要认证。token 只在运行时传递，不写入插件配置。
 
-```text
-127.0.0.1:18789
-```
+不要直接暴露到公网。跨容器 / 主机时使用私有网络与防火墙，并在 external Gateway 和 AstrBot 两侧配置相同、非空的 `WA_GATEWAY_TOKEN`。Bearer 认证不能替代网络隔离，也不是面向公网的完整身份系统。SSE 订阅数量受限。
 
-请尽量保持 loopback。
+## 2. 登录目录、二维码与配对码都是凭证
 
-Gateway HTTP 是插件内部协议。由插件自动启动的 Gateway 会为当前进程生成随机 Bearer token，并要求所有 HTTP / SSE 请求携带相同 token；token 只在运行时传递，不写入插件配置。这个认证层用于降低端口被同机其它进程或错误网络暴露直接调用的风险，但它不应被理解成面向公网的完整身份系统，也不能替代网络隔离。
+默认登录目录是 `data/plugin_data/astrbot_plugin_whatsapp_adapter/whatsapp-auth/`，secondary 账号使用带实例后缀的独立目录。不要提交、公开上传、复制到其他账号或放在宽松权限的共享目录中。备份应按密钥处理；怀疑泄露时，在手机 WhatsApp 的“已连接的设备”中移除设备后重新登录。
 
-如果必须跨容器 / 主机访问：
+二维码和手机号配对码属于短期凭证，不要截图公开或纳入日志采集。Page / Gateway 避免主动记录手机号与配对码，但外部代理、浏览器扩展和日志采集器仍可能另行记录。
 
-- 使用私有网络。
-- 配置防火墙 / security group。
-- 不要直接映射到公网 `0.0.0.0:18789`。
-- 只允许 AstrBot 所在网络访问。
-- external Gateway 必须在 Gateway 与 AstrBot 侧配置相同的 `WA_GATEWAY_TOKEN`。
+## 3. 本地媒体：保留 AstrBot 插件相容性，明确保护登录目录
 
-## 2. WhatsApp 认证目录就是账号凭证
+**内置 Gateway 的默认允许范围不是仅 temp，而是 AstrBot 的 `data/` 加上 Gateway 临时目录。**这是为了保留 `data/temp/`、`data/temp_images/`、各插件 `plugin_data/` 中的图片、音频与普通文件输出；不会按 `.json` 等副档名统一禁发。
 
-默认：
+参考上游现有实现（2026-09-08 核对）：[Telegram](https://github.com/AstrBotDevs/AstrBot/blob/master/astrbot/core/platform/sources/telegram/tg_event.py) 使用消息元件的 `convert_to_file_path()` / `get_file()`；[Discord](https://github.com/AstrBotDevs/AstrBot/blob/master/astrbot/core/platform/sources/discord/discord_platform_event.py) 使用 `MediaResolver` / `get_file()`。不能要求所有正常插件只把媒体输出到一个 temp 目录。但本插件另有 HTTP Gateway 边界，仍需保留来源检查与认证。
 
-```text
-data/plugin_data/astrbot_plugin_whatsapp_adapter/whatsapp-auth/
-```
+`WA_MEDIA_ALLOWED_ROOTS` 的生效规则：
 
-其中包含 Linked Device / Baileys 登录状态。拿到可用认证目录的人可能能够以已链接设备身份访问账号消息。
+| 设置 | 内置 Gateway | 独立 external Gateway |
+| --- | --- | --- |
+| 未设置 | 自动加入 AstrBot `data/` | 不自动加入 AstrBot `data/` |
+| 设置非空值 | 保留部署者指定的根目录列表，不再覆盖 | 使用该列表 |
+| 显式设置为空字符串 | 只允许 Gateway 临时目录 | 只允许 Gateway 临时目录 |
 
-因此：
+列表使用操作系统路径分隔符：Linux/macOS 为 `:`，Windows 为 `;`。临时目录始终属于允许范围；显式非空列表替换内置的自动 `data/` 范围，不是再把 `data/` 隐式加回。
 
-- 不要提交到 Git。
-- 不要上传到公开 Issue。
-- 不要在多人共享目录中使用宽松权限。
-- 备份时按密钥 / token 处理。
-- 多实例不要复制其它账号的 auth 目录。
+本地来源必须是普通文件，并以 `realpath` 检查真实目标，防止路径前缀或符号链接绕过。下列范围优先拒绝，即使也在允许根目录中：
 
-如果怀疑凭证泄露，应在手机 WhatsApp 的“已连接的设备”中移除对应设备，并重新登录。
+- 当前 Gateway 实际的 `WA_AUTH_DIR`，未设置时使用默认登录目录；
+- 本插件 `WA_DATA_DIR` 下的 `whatsapp-auth` 和 `whatsapp-auth-*` 默认多账号登录目录；
+- 以上目录内的活动会话、历史 session 与密钥文件。
 
-## 3. 二维码与 pairing code
+`file://` URL 仍不被 Gateway 原始 `/send/media` 接口接受。普通本地文件发送完不会被删除；Gateway 自己下载的出站临时文件才在发送结束后清理。
 
-二维码和手机号 pairing code 都是短期登录凭证。
+**这不是 AstrBot 插件的文件系统沙箱，也不保证识别所有敏感文件。**其他插件配置、数据库、复制到别处的凭证及其他自定义账号目录仍需部署者隔离。高安全环境应显式指定窄范围的媒体输出根目录，不要将秘密与可发送文件混放。能执行本地 Python 的插件本来就具有宿主进程权限，不能靠这个 HTTP 检查隔离恶意插件。
 
-- 不要截图发到公开聊天。
-- 不要写入 Issue。
-- 不要加入自动化日志采集。
-- Page / Gateway 代码会避免主动记录手机号和 pairing code，但外部反向代理 / 浏览器插件仍可能产生自己的访问日志。
+## 4. 远端媒体与解密后的文件
 
-## 4. 入站媒体是解密后的本地文件
+HTTP / HTTPS 媒体先安全下载为临时文件，再交给 Baileys。保留以下限制：拒绝非公网 IP、固定连接到已验证的 DNS 地址、每次重定向重新验证、限制重定向次数、大小和下载时间（包括持续滴流时的绝对截止时间）。默认远端出站上限为 32 MiB；`WA_OUTBOUND_MEDIA_MAX_MB` 可调整，但不能超过实现硬上限。
 
-WhatsApp Web 在 Linked Device 上完成消息解密后，Gateway 可能把媒体保存到：
+不要改用 localhost / 私网 URL 绕过文件根目录配置。跨容器的本机路径须在 Gateway 所在容器可见。
 
-```text
-data/plugin_data/astrbot_plugin_whatsapp_adapter/media/
-```
+入站媒体已在 Linked Device 解密，可能保存在 AstrBot 临时或插件数据目录。它们不再仅受 WhatsApp 传输加密保护；请限制文件系统访问，设置清理与备份保留策略，不要把整个 `plugin_data` 同步到公共存储。
 
-这些文件已经不再受到“仅在 WhatsApp 传输层中”的端到端加密保护。
+## 5. 访问控制、LLM 与工具
 
-请根据自己的隐私要求：
+首次使用建议 `dm_policy=allowlist`、`group_policy=disabled`，只放行测试号码。`allow_from`、`groups`、`group_allow_from` 决定哪些消息交给 AstrBot，不能阻止 WhatsApp 账号本身接收消息，也不替代群权限或账号安全。`["*"]` 会明显扩大范围。
 
-- 限制文件系统访问。
-- 定期清理不再需要的媒体。
-- 不要把整个 plugin_data 当作普通日志目录同步到公共存储。
+Gateway 在第一份有效配置到达前拒绝入站消息。被拒绝的 SSE 事件只保留最少的原因、message ID 与时间戳，不广播正文、手机号或发送者 JID。
 
-### 出站媒体来源限制
+解密后的内容是否交给 LLM、embedding / RAG、外部工具或其他插件，取决于 AstrBot 配置。WhatsApp 端到端加密不会阻止自己的 Linked Device 将内容交给这些服务；部署前应确认其数据政策。
 
-`/send/media` 不再接受任意本机文件或 `file://` URL。默认情况下，本机媒体必须位于 AstrBot / Gateway 临时目录下；如果确有其它受信任媒体目录，可通过 `WA_MEDIA_ALLOWED_ROOTS` 按操作系统路径分隔符配置额外允许根目录。
+原生投票、联系人与活动 AI 工具只允许作用于当前 WhatsApp 会话，不接受任意 target JID，并由 Python 与 Gateway 分层检查。
 
-HTTP / HTTPS 媒体会先由 Gateway 安全下载到临时目录，再交给 Baileys 发送。下载过程会：
+## 6. 多实例与代理
 
-- 拒绝 loopback、私网、link-local、multicast、保留 / 文档地址等非公网 IP。
-- 对 DNS 解析结果做检查并把实际连接固定到已验证地址，降低 DNS rebinding 风险。
-- 手动处理重定向，并在每次重定向后重新验证目标。
-- 限制下载时间、重定向次数和大小；默认出站远程媒体上限为 32 MiB，可用 `WA_OUTBOUND_MEDIA_MAX_MB` 调整（实现仍设有硬上限）。
+两个 runtime 不应静默共用同一个 external Gateway endpoint，否则也会共用 WhatsApp session。不要移除 owner 冲突保护；不同账号使用独立端口与登录目录。
 
-因此，原本依赖内网 HTTP URL、localhost URL 或任意磁盘绝对路径作为出站媒体源的自定义集成需要改用受信任媒体目录或显式允许根目录。
+代理支持 `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY`。代理日志尽量只记录脱敏元数据，不记录用户名、密码、路径和 query；仍需保护环境变量与容器配置。
 
-## 5. AstrBot 与 LLM 提供商
+## 7. 更新器信任边界
 
-消息进入 AstrBot 后，是否会被发送到：
+内置更新器信任本仓库稳定 GitHub Release，验证候选身份、正式 artifact digest、HTTPS 来源、ZIP 路径穿越、重复路径、符号链接 / 特殊文件、大小、插件名称 / 版本与 AstrBot 相容范围，并进行暂存依赖安装、语法检查、目录切换与 reload 后健康检查。
 
-- 第三方 LLM API
-- embedding / RAG 服务
-- 外部工具
-- 其它 AstrBot 插件
+更新不应替换 `plugin_data` 的登录态。Python requirements 改变时，内置更新器拒绝修改 AstrBot 共用环境，须使用 AstrBot 插件管理器更新并重启。远端更新仍意味着信任仓库与供应链；不能消除所有断电窗口。保留插件目录与 `plugin_data` 的独立备份，详见 [发布流程](../RELEASING.md)。
 
-取决于你的 AstrBot 配置。
+## 8. 日志脱敏与非官方协议
 
-WhatsApp 端到端加密保护的是 WhatsApp 设备之间的传输，不会阻止你自己的 Linked Device / AstrBot 在解密后把内容交给其它服务。
+公开日志前删除手机号、个人 JID、QR、配对码、auth 内容、cookies / tokens、代理密码、LLM API key，以及未获授权的正文与媒体 URL。不要上传完整 `whatsapp-auth/` 来复现问题。
 
-部署前应确认所用 LLM 提供商的数据政策与业务合规要求。
+本项目是非官方 Baileys / WhatsApp Web 协议，不是 Meta Business Cloud API。协议、Linked Device、编辑 / 媒体能力和账号风控都可能改变；关键业务或高价值账号部署前应自行评估风险。
 
-## 6. 访问控制不是 WhatsApp 权限系统的替代品
-
-本插件提供：
-
-- `dm_policy`
-- `allow_from`
-- `group_policy`
-- `groups`
-- `group_allow_from`
-
-这些是 AstrBot 接入层控制，用来决定哪些消息继续处理。
-
-它们不能阻止 WhatsApp 账号本身收到消息，也不能替代 WhatsApp 群权限、手机端账号安全或网络隔离。
-
-Gateway 在收到第一份有效 runtime 配置前会 fail closed：未配置阶段的入站消息不会再绕过 allowlist 直接进入事件流。
-
-建议默认：
-
-```text
-dm_policy=allowlist
-group_policy=disabled
-```
-
-## 7. AI 原生工具的收件人边界
-
-`whatsapp_create_poll`、`whatsapp_share_contact`、`whatsapp_create_event` 只允许作用于当前 WhatsApp 会话。
-
-实现上：
-
-- 工具没有 target JID 参数。
-- Python 层核对当前 event target。
-- Gateway 层再次校验输入。
-
-这是为了降低模型通过工具把内容发到其它会话的风险。
-
-## 8. external Gateway 与多实例
-
-同一 AstrBot 进程中两个 runtime 不允许静默共用相同 external `host:port`。
-
-原因是共用一个 Gateway 就等于共用一个 WhatsApp session，可能造成：
-
-- 消息串号
-- 身份缓存污染
-- 引用错会话
-- 认证目录混用
-
-不要关闭这个 owner 冲突保护。
-
-external Gateway 不会由插件自动注入运行时随机 token，因此部署者必须确保 Gateway 进程和 AstrBot 进程使用相同的 `WA_GATEWAY_TOKEN`。
-
-## 9. HTTP / HTTPS 代理凭证
-
-支持 `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY`。
-
-Gateway 日志会尽量只输出脱敏的代理元数据，不记录：
-
-- 用户名
-- 密码
-- URL path
-- query
-
-仍应避免把带明文密码的环境变量输出到容器诊断页面或进程列表。
-
-## 10. 内置更新器信任边界
-
-插件 Page 的独立更新器只接受本仓库稳定 GitHub Release，并执行多层校验：
-
-- HTTPS / 可信仓库来源
-- ZIP 路径穿越
-- 重复路径
-- 符号链接 / 特殊文件
-- 插件名称
-- 版本格式
-- AstrBot 兼容范围
-- 临时目录依赖安装
-- Python 语法检查
-- 原子目录切换
-- reload 失败恢复
-
-更新过程不应该替换 `plugin_data` 的 WhatsApp auth。
-
-即便如此，任何“远程更新代码”的机制都意味着信任 GitHub 仓库和 Release 供应链。高安全环境可以禁用主动更新操作，改用自己的镜像 / 审核流程部署。
-
-## 11. 日志与 Issue 脱敏
-
-公开日志前删除：
-
-- 手机号码
-- 可识别个人的 JID
-- QR 内容
-- pairing code
-- auth 文件内容
-- cookies / tokens
-- proxy 密码
-- LLM API key
-- 私聊 / 群聊正文和媒体 URL（除非已获授权）
-
-Gateway 对被访问策略拒绝的 SSE 事件只保留最少的拒绝原因 / message ID / 时间戳，不再把正文、手机号或发送者 JID广播给事件流订阅者。
-
-不要上传完整 `whatsapp-auth/` 来“方便复现”。
-
-## 12. 非官方协议风险
-
-本项目基于 Baileys / WhatsApp Web，而不是官方 Business Cloud API。
-
-可能存在：
-
-- Web 协议变更造成暂时失效
-- Linked Device 行为变化
-- 编辑 / 媒体 / 互动消息能力随 WhatsApp 改动
-- 账号风控策略变化
-
-在关键业务、合规业务或高价值账号上使用前，应自行评估是否应该改用官方 API。
-
-## 相关文档
-
-- [配置参考](configuration.md)
-- [多实例 / 多账号](multi-instance.md)
-- [故障排查](troubleshooting.md)
+相关文档：[配置参考](configuration.md) · [多实例](multi-instance.md) · [故障排查](troubleshooting.md)
