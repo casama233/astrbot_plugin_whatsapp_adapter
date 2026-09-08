@@ -43,7 +43,9 @@ from .whatsapp_components import (
     WhatsAppPoll,
 )
 from .whatsapp_event import WhatsAppMessageEvent
+from .whatsapp_config_migration import MIGRATION_KEY, platform_migration
 from .whatsapp_config_policy import (
+    runtime_config_sources,
     DM_POLICIES,
     GROUP_POLICIES,
     LEGACY_GATEWAY_DEFAULTS,
@@ -2459,6 +2461,9 @@ class WhatsAppPlatformAdapter(Platform):
             for key, value in self._normalize_config(platform_config).items()
             if key in PERSISTED_PLATFORM_KEYS
         }
+        self._config_sources = runtime_config_sources(
+            RUNTIME_DEFAULT_CONFIG, plugin_config, legacy_behavior, instance_config,
+        )
         merged = merge_runtime_config(
             RUNTIME_DEFAULT_CONFIG,
             plugin_config,
@@ -2911,22 +2916,7 @@ def sanitize_whatsapp_platform_config(config: dict[str, Any]) -> dict[str, Any]:
             value = _coerce_pre_ack_public(value)
         sanitized[key] = value
 
-    # Preserve explicit legacy Gateway choices long enough for the plugin page
-    # to adopt them, even if an adapter is constructed before plugin.initialize.
-    for key, default in LEGACY_GATEWAY_DEFAULTS.items():
-        hidden_key = f"_legacy_gateway_{key}"
-        if hidden_key in config:
-            sanitized[hidden_key] = config[hidden_key]
-        elif key in config and config[key] != default:
-            sanitized[hidden_key] = config[key]
-
-    # Preserve only explicit old per-instance behaviour choices. Historical
-    # template defaults are ignored so plugin-wide default_* settings can work.
-    for key, value in extract_legacy_behavior_overrides(config).items():
-        sanitized[f"_legacy_{key}"] = value
-    legacy_prefix = extract_legacy_command_prefix(config)
-    if legacy_prefix:
-        sanitized["_legacy_command_prefix"] = legacy_prefix
+    sanitized[MIGRATION_KEY] = platform_migration(config)
 
     for key in ("type", "enable", "id"):
         if key in config:

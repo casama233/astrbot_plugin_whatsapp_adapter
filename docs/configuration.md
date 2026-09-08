@@ -11,7 +11,7 @@
 3. **平台实例配置**：真正需要按 WhatsApp 账号变化的访问控制和账号级行为。
 4. **内部固定值**：协议 / 兼容安全边界，不对 WebUI 暴露。
 
-旧平台实例如果仍带有历史 Gateway / 行为字段，兼容层可能在迁移期读取它们；不要依赖这些隐藏兼容字段建设新配置。
+旧字段由版本 1 迁移一次；运行期只读取已记录的保留值。新部署请使用现行字段。
 
 ## 插件级 Gateway 配置
 
@@ -183,7 +183,7 @@ whatsapp-auth-whatsapp2
 - `ack_reaction_group`
 - 若干早期中文别名字段
 
-特别注意：`inbound_reaction_events` 已不是一个现行开关。纯 reaction 入站消息当前会直接被适配器忽略。
+`inbound_reaction_events` 已不是现行开关。纯 reaction 不进入 LLM 消息流程；短期仲裁观察见 [消息行为](messaging.md)。
 
 ## 代理环境变量
 
@@ -262,3 +262,11 @@ NO_PROXY=localhost,127.0.0.1,.internal.example.com
 - [多实例 / 多账号](multi-instance.md)
 - [故障排查](troubleshooting.md)
 - [安全与隐私](security.md)
+
+## 一次性迁移与来源诊断
+
+初始化时，插件把旧 `_legacy_*` 字段转为平台配置中的 `_whatsapp_migration`（`version: 1`）。其中 `behavior` 与 `command_prefix` 保存明确的旧账号选择；Gateway 设置只在插件字段仍为历史默认值时，从第一个启用的旧实例采用一次。插件配置及平台配置保存成功后，才写入 `data/plugin_data/astrbot_plugin_whatsapp_adapter/config-migration.json`。失败不会标记完成。
+
+后续修改插件默认值不会被旧 Gateway 字段重新覆盖。若要让某个旧账号恢复跟随全局默认值，备份配置后，从该账号 `_whatsapp_migration.behavior` 删除对应键，保留 `version`；清空其 `command_prefix` 可结束旧命令前缀兼容。不要通过新增 `_legacy_*` 字段设置新行为。
+
+管理页「生效设置与诊断」显示每个值来自内置默认、插件设置、已迁移插件设置、保留旧设置或账号设置。报告同时显示插件版本、发行/开发/修改来源、可确认的源提交，以及实际 AstrBot、Gateway Node、Baileys 版本。无构建信息时明确显示 unknown；本地源码改动会显示 modified_release。
