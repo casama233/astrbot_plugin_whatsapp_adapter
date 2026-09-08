@@ -73,10 +73,15 @@ import {
   pairingCodeAvailability,
 } from "./pairing-code-compat.mjs";
 import { buildWhatsAppProxyConfig } from "./proxy-compat.mjs";
+import { isAuthorizedGatewayRequest, prepareSafeMediaSource } from "./security-runtime.mjs";
+import { settleWithin } from "./stability-runtime.mjs";
+import { envDurationMs, pipeWithWatchdog, withDeadline, writeBoundedSse } from "./stability-runtime.mjs";
 import {
   hasIdentityMentionLabels,
   replaceIdentityMentionLabels,
 } from "./outbound-mention-names.mjs";
+
+
 
 const host = process.env.WA_GATEWAY_HOST || "127.0.0.1";
 const port = Number.parseInt(process.env.WA_GATEWAY_PORT || "18789", 10);
@@ -84,7 +89,12 @@ const dataDir = process.env.WA_DATA_DIR || path.join(process.cwd(), "data", "plu
 const authDir = process.env.WA_AUTH_DIR || path.join(dataDir, "whatsapp-auth");
 const activeSessionFile = path.join(authDir, ".active-session.json");
 const logLevel = process.env.WA_LOG_LEVEL || "info";
+const gatewayAuthToken = String(process.env.WA_GATEWAY_TOKEN || "").trim();
+const maxSseClients = Math.max(1, Math.min(Number.parseInt(process.env.WA_MAX_SSE_CLIENTS || "8", 10) || 8, 64));
 const tempDir = process.env.WA_TEMP_DIR || path.join(dataDir, "..", "..", "temp");
+const inboundMediaIdleTimeoutMs = envDurationMs("WA_INBOUND_MEDIA_IDLE_TIMEOUT_MS", 30000, 5000, 300000);
+const inboundMediaTotalTimeoutMs = envDurationMs("WA_INBOUND_MEDIA_TOTAL_TIMEOUT_MS", 900000, 30000, 3600000);
+const maxSseBufferedBytes = Math.max(65536, Math.min(Number.parseInt(process.env.WA_MAX_SSE_BUFFER_BYTES || "1048576", 10) || 1048576, 8388608));
 
 const log = pino({ level: logLevel });
 const sseClients = new Set();
@@ -128,6 +138,10 @@ const mentionDisplayNames = new Map();
 const maxKnownContacts = 10000;
 const runtimeIdentities = new RuntimeIdentityRegistry();
 let runtimeIdentityPersistQueue = Promise.resolve();
+let activeCredsSaveQueue = Promise.resolve();
+let activeSaveCreds = null;
+let activeCredsSaveFailure = null;
+let shuttingDown = false;
 
 function cacheChatMessage(cache, item, maxSize = 500) {
   return cacheChatMessageByIdentity(cache, item, maxSize, runtimeIdentities);
@@ -149,6 +163,103 @@ function findChatMessage(cache, chatJid, messageId) {
 
 // 統一聯絡人儲存：JID → contact 物件（含 id/lid/jid 欄位）
 const knownContacts = new Map();
+
+const groupMemberTagCache = new Map();
+const maxGroupMemberTagCacheSize = 50000;
+
+function memberTagIdentityKeys(...values) {
+  const keys = new Set();
+  for (const value of values) {
+    const raw = String(value || "").trim();
+    if (!raw || raw.endsWith("@g.us")) continue;
+    const normalized = normalizeIdentityJid(raw);
+    if (!normalized) continue;
+    keys.add(normalized);
+
+    const canonical = runtimeIdentities.canonical(normalized);
+    if (canonical) keys.add(normalizeIdentityJid(canonical));
+
+    if (isLidJid(normalized)) {
+      const pnJid = resolveLidToPn(normalized);
+      if (pnJid) keys.add(normalizeIdentityJid(pnJid));
+    }
+  }
+  keys.delete("");
+  return [...keys];
+}
+
+function memberTagCacheKey(groupJid, participantJid) {
+  return String(groupJid || "").trim() + "\u0000" + String(participantJid || "").trim();
+}
+
+function rememberGroupMemberTag(groupJid, label, timestamp = 0, ...identities) {
+  const group = String(groupJid || "").trim();
+  if (!group.endsWith("@g.us")) return "";
+
+  const normalizedLabel = String(label || "").trim();
+  const parsedTimestamp = Number(timestamp || 0);
+  const updatedAt = Number.isFinite(parsedTimestamp) ? parsedTimestamp : 0;
+  for (const identity of memberTagIdentityKeys(...identities)) {
+    const key = memberTagCacheKey(group, identity);
+    const previous = groupMemberTagCache.get(key);
+    if (
+      previous
+      && previous.updatedAt
+      && updatedAt
+      && updatedAt < previous.updatedAt
+    ) {
+      continue;
+    }
+    groupMemberTagCache.delete(key);
+    groupMemberTagCache.set(key, {
+      label: normalizedLabel,
+      updatedAt: updatedAt || previous?.updatedAt || 0,
+    });
+  }
+
+  while (groupMemberTagCache.size > maxGroupMemberTagCacheSize) {
+    groupMemberTagCache.delete(groupMemberTagCache.keys().next().value);
+  }
+  return normalizedLabel;
+}
+
+function forgetGroupMemberTag(groupJid, ...identities) {
+  const group = String(groupJid || "").trim();
+  if (!group) return;
+  for (const identity of memberTagIdentityKeys(...identities)) {
+    groupMemberTagCache.delete(memberTagCacheKey(group, identity));
+  }
+}
+
+function groupMemberTagFor(groupJid, ...identities) {
+  const group = String(groupJid || "").trim();
+  if (!group) return "";
+  for (const identity of memberTagIdentityKeys(...identities)) {
+    const record = groupMemberTagCache.get(memberTagCacheKey(group, identity));
+    if (record) return String(record.label || "");
+  }
+  return "";
+}
+
+function memberTagSnapshotFromMessagePayload(payload) {
+  const memberLabel = contextInfoFromMessagePayload(payload)?.memberLabel;
+  if (
+    !memberLabel
+    || typeof memberLabel !== "object"
+    || !Object.prototype.hasOwnProperty.call(memberLabel, "label")
+  ) {
+    return null;
+  }
+  const parsedTimestamp = Number(memberLabel.labelTimestamp || 0);
+  return {
+    label: String(memberLabel.label || "").trim(),
+    timestamp: Number.isFinite(parsedTimestamp) ? parsedTimestamp : 0,
+  };
+}
+
+const groupMetadataCache = new Map();
+const groupMetadataCacheTtlMs = 5 * 60 * 1000;
+const maxGroupMetadataCacheSize = 1000;
 
 // 聊天室 ephemeral 快取：JID → expiration 秒數（如 86400 = 24hr）
 const chatEphemeral = new Map();
@@ -620,16 +731,23 @@ function startPresenceTimer() {
 }
 
 function sendSse(client, data) {
-  try {
-    client.write(`data: ${JSON.stringify(data)}\n\n`);
-  } catch {
+  const payload = `data: ${JSON.stringify(data)}\n\n`;
+  if (!writeBoundedSse(client, payload, maxSseBufferedBytes)) {
     sseClients.delete(client);
   }
 }
 
 function broadcast(data) {
+  const safeData = data?.type === "rejected"
+    ? {
+        type: "rejected",
+        reason: String(data.reason || "policy"),
+        messageId: data.messageId || null,
+        timestamp: Number(data.timestamp || Date.now() / 1000),
+      }
+    : data;
   for (const client of sseClients) {
-    sendSse(client, data);
+    sendSse(client, safeData);
   }
 }
 
@@ -787,39 +905,66 @@ function rememberContact(contact) {
   updateContact({ ...contact, id: contact?.id || identity?.jid });
 }
 
+function cacheGroupMetadata(metadata, complete = Array.isArray(metadata?.participants)) {
+  const jid = String(metadata?.id || "");
+  if (!jid) return metadata || null;
+  const previous = groupMetadataCache.get(jid) || {};
+  const incoming = { ...(metadata || {}) };
+  if (!complete) delete incoming.participants;
+  const merged = { ...(previous.metadata || {}), ...incoming, id: jid };
+  groupMetadataCache.set(jid, {
+    metadata: merged,
+    cachedAt: complete ? Date.now() : (previous.cachedAt || 0),
+    complete: Boolean(complete || previous.complete),
+  });
+  while (groupMetadataCache.size > maxGroupMetadataCacheSize) {
+    groupMetadataCache.delete(groupMetadataCache.keys().next().value);
+  }
+  return merged;
+}
+
 async function rememberGroupParticipants(
   chatJid,
   expectedGeneration = socketGeneration,
   metadataSocket = socket,
 ) {
-  if (
-    expectedGeneration !== socketGeneration
-    || metadataSocket !== socket
-    || !metadataSocket?.groupMetadata
-    || !String(chatJid || "").endsWith("@g.us")
-  ) return null;
+  if (!metadataSocket?.groupMetadata || !String(chatJid || "").endsWith("@g.us")) return null;
   try {
-    const metadata = await metadataSocket.groupMetadata(chatJid);
+    const fetched = await metadataSocket.groupMetadata(chatJid);
     if (expectedGeneration !== socketGeneration || metadataSocket !== socket) return null;
+    const metadata = cacheGroupMetadata(fetched, true);
+    rememberGroupOwnerIdentity(metadata);
     for (const participant of metadata?.participants || []) {
-      const jid = participant?.id || participant?.jid;
-      rememberMentionIdentity(
-        jid,
-        participant?.name,
-        participant?.notify,
-        participant?.verifiedName,
-        participant?.pushName,
-        participant?.displayName,
-      );
-      if (jid && isLidJid(jid)) {
-        const resolved = resolveLidToPn(jid);
-        if (resolved) rememberLidPnMapping(jid, resolved);
-      }
+      rememberGroupParticipantIdentity(participant, chatJid);
     }
     return metadata;
   } catch (error) {
     log.debug({ error, chatJid }, "failed to refresh group mention directory");
-    return null;
+    const cached = groupMetadataCache.get(String(chatJid || ""));
+    return cached?.complete ? cached.metadata : null;
+  }
+}
+
+async function groupMetadataForMessage(
+  chatJid,
+  expectedGeneration = socketGeneration,
+  metadataSocket = socket,
+) {
+  const cached = groupMetadataCache.get(String(chatJid || ""));
+  if (cached?.complete && Date.now() - cached.cachedAt < groupMetadataCacheTtlMs) {
+    return cached.metadata;
+  }
+
+  let timer;
+  try {
+    return await Promise.race([
+      rememberGroupParticipants(chatJid, expectedGeneration, metadataSocket),
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve(cached?.complete ? cached.metadata : null), 2500);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -1241,38 +1386,25 @@ async function saveInboundMedia(message, kind, id, mediaSocket = socket) {
     // socket re-upload callback. Capture and bind the originating socket so a
     // reconnect cannot redirect an old message's retry through a new account.
     // 串流寫入磁碟，避免大型媒體佔用記憶體
-    const stream = await downloadMediaMessage(
-      message,
-      "stream",
-      {},
-      inboundMediaDownloadContext(mediaSocket, log),
+    const stream = await withDeadline(
+      downloadMediaMessage(
+        message,
+        "stream",
+        {},
+        inboundMediaDownloadContext(mediaSocket, log),
+      ),
+      inboundMediaTotalTimeoutMs,
+      "inbound media stream acquisition",
     );
     if (!stream || typeof stream.pipe !== "function") {
       throw new Error("downloadMediaMessage did not return a readable stream");
     }
     const writeStream = createWriteStream(filePath);
-    let writtenBytes = 0;
-    await new Promise((resolve, reject) => {
-      writeStream.on("error", (err) => {
-        stream.destroy();
-        reject(err);
-      });
-      stream.on("error", (err) => {
-        writeStream.destroy();
-        reject(err);
-      });
-      stream.on("data", (chunk) => {
-        writtenBytes += chunk.length;
-        if (writtenBytes > maxBytes) {
-          writeStream.destroy();
-          stream.destroy();
-          reject(new Error(`${kind} exceeds inbound limit ${Math.floor(maxBytes / 1024 / 1024)}MB`));
-        }
-      });
-      stream.pipe(writeStream).on("finish", () => {
-        writeStream.close();
-        resolve();
-      });
+    const writtenBytes = await pipeWithWatchdog(stream, writeStream, {
+      maxBytes,
+      idleTimeoutMs: inboundMediaIdleTimeoutMs,
+      totalTimeoutMs: inboundMediaTotalTimeoutMs,
+      overflowMessage: `${kind} exceeds inbound limit ${Math.floor(maxBytes / 1024 / 1024)}MB`,
     });
     return { path: filePath, size: writtenBytes, fileName: originalName, mimetype: mediaMimeType(message, kind) };
   } catch (error) {
@@ -1346,11 +1478,49 @@ function extensionForKind(kind) {
 function isAlbumCandidate(item) {
   if (!item?.message) return false;
   if (mediaKind(item.message) !== "image") return false;
-  if (textFromMessage(item.message)) return false;
   if (extrasFromMessage(item.message)) return false;
   const contextInfo = contextInfoFromMessage(item.message);
   if (contextInfo?.stanzaId || contextInfo?.quotedMessage) return false;
+
+  // Captioned media is safe to coalesce for direct chats when it is part of a
+  // short image burst. Keep groups conservative: consecutive captioned images
+  // from one group member are more likely to be separate conversational turns.
+  const hasCaption = Boolean(textFromMessage(item.message));
+  const chatJid = String(item.key?.remoteJid || "");
+  if (hasCaption && chatJid.endsWith("@g.us")) return false;
   return true;
+}
+
+function albumMediaMetadata(item, albumCount) {
+  if (albumCount <= 1) return {};
+  return {
+    caption: textFromMessage(item.message) || "",
+    mentionedJids: mentionedJidsForAstrBot(item.message),
+    mentionedNames: mentionedNamesForAstrBot(item.message),
+    mentionAll: mentionAllFromMessage(item.message),
+  };
+}
+
+function albumMentionedJids(items) {
+  const result = [];
+  for (const item of items || []) {
+    for (const jid of mentionedJidsForAstrBot(item.message)) {
+      if (jid && !result.includes(jid)) result.push(jid);
+    }
+  }
+  return result;
+}
+
+function albumMentionedNames(items) {
+  const result = {};
+  for (const item of items || []) {
+    Object.assign(result, mentionedNamesForAstrBot(item.message));
+  }
+  return result;
+}
+
+function albumMentionAll(items) {
+  return (items || []).some((item) => mentionAllFromMessage(item.message));
 }
 
 function getEphemeralExpiration(jid) {
@@ -1375,6 +1545,7 @@ function clearAccountRuntimeCaches() {
   mentionDisplayNames.clear();
   chatEphemeral.clear();
   if (typeof groupMetadataCache !== "undefined") groupMetadataCache.clear();
+  groupMemberTagCache.clear();
 }
 
 function albumBufferKeys(item, expectedGeneration = socketGeneration) {
@@ -1391,29 +1562,62 @@ function albumBufferKey(item, expectedGeneration = socketGeneration) {
   return keys.find((key) => albumBuffers.has(key)) || keys[0];
 }
 
-function scheduleAlbumItem(item, expectedGeneration = socketGeneration, eventSocket = socket) {
+function inboundMessageTimestampMs(item) {
+  const raw = item?.messageTimestamp;
+  const value = Number(raw && typeof raw === "object" && typeof raw.toString === "function" ? raw.toString() : raw || 0);
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  return value > 1_000_000_000_000 ? value : value * 1000;
+}
+
+async function flushAlbumBuffer(
+  bufferKey,
+  expectedGeneration = socketGeneration,
+  eventSocket = socket,
+) {
+  const pending = albumBuffers.get(bufferKey);
+  albumBuffers.delete(bufferKey);
+  if (!pending?.items?.length) return false;
+  if (pending.timer) clearTimeout(pending.timer);
+  if (expectedGeneration !== socketGeneration || eventSocket !== socket) return false;
+  const items = pending.items;
+  await handleIncomingMessage(
+    items[0],
+    { albumItems: items },
+    expectedGeneration,
+    eventSocket,
+  );
+  return true;
+}
+
+async function scheduleAlbumItem(item, expectedGeneration = socketGeneration, eventSocket = socket) {
   const bufferKey = albumBufferKey(item, expectedGeneration);
   const debounceMs = Number(runtimeConfig.mediaAlbumDebounceMs || 0);
+  const timestampMs = inboundMessageTimestampMs(item);
   let buffer = albumBuffers.get(bufferKey);
+
+  // Debounce is intended to coalesce pictures the user actually sent as one
+  // short burst, not old messages that merely arrived together after reconnect.
+  if (
+    buffer
+    && timestampMs
+    && buffer.lastTimestampMs
+    && Math.abs(timestampMs - buffer.lastTimestampMs) > debounceMs
+  ) {
+    await flushAlbumBuffer(bufferKey, expectedGeneration, eventSocket);
+    if (expectedGeneration !== socketGeneration || eventSocket !== socket) return;
+    buffer = null;
+  }
+
   if (!buffer) {
-    buffer = { items: [], timer: null };
+    buffer = { items: [], timer: null, lastTimestampMs: 0 };
     albumBuffers.set(bufferKey, buffer);
   }
   buffer.items.push(item);
+  if (timestampMs) buffer.lastTimestampMs = timestampMs;
   if (buffer.timer) clearTimeout(buffer.timer);
   buffer.timer = setTimeout(() => {
-    const pending = albumBuffers.get(bufferKey);
-    albumBuffers.delete(bufferKey);
-    if (!pending?.items?.length) return;
-    if (expectedGeneration !== socketGeneration || eventSocket !== socket) return;
-    const items = pending.items;
-    handleIncomingMessage(
-      items[0],
-      { albumItems: items },
-      expectedGeneration,
-      eventSocket,
-    ).catch((error) =>
-      log.warn({ error, count: items.length }, "album message handling failed"),
+    flushAlbumBuffer(bufferKey, expectedGeneration, eventSocket).catch((error) =>
+      log.warn({ error, count: buffer.items.length }, "album message handling failed"),
     );
   }, debounceMs);
 }
@@ -1444,8 +1648,20 @@ async function routeIncomingMessage(
     return;
   }
   const debounceMs = Number(runtimeConfig.mediaAlbumDebounceMs || 0);
-  if (debounceMs > 0 && isAlbumCandidate(item)) {
-    scheduleAlbumItem(item, expectedGeneration, eventSocket);
+  const albumCandidate = debounceMs > 0 && isAlbumCandidate(item);
+  const bufferKey = albumBufferKey(item, expectedGeneration);
+
+  // An image burst is deliberately delayed for a short debounce window.  If
+  // the same sender follows it with text, a reply, non-image media, or another
+  // semantic message, flush the pending pictures first so the delayed album
+  // cannot overtake the newer message in AstrBot's event queue.
+  if (debounceMs > 0 && albumBuffers.has(bufferKey) && !albumCandidate) {
+    await flushAlbumBuffer(bufferKey, expectedGeneration, eventSocket);
+    if (expectedGeneration !== socketGeneration || eventSocket !== socket) return;
+  }
+
+  if (albumCandidate) {
+    await scheduleAlbumItem(item, expectedGeneration, eventSocket);
     return;
   }
   await handleIncomingMessage(item, {}, expectedGeneration, eventSocket);
@@ -1468,6 +1684,11 @@ async function handleIncomingMessage(
   if (!chatJid || chatJid.endsWith("@status") || chatJid.endsWith("@broadcast")) return;
   const fromMe = Boolean(primary.key.fromMe);
   const isGroup = chatJid.endsWith("@g.us");
+  const groupMetadataPromise = groupMetadataForMessage(
+    chatJid,
+    expectedGeneration,
+    eventSocket,
+  );
   const senderJid = primary.key.participant || primary.key.participantAlt || (fromMe ? selfJid : null) || chatJid;
   const senderIdentity = senderIdentityFromKey(primary.key, {
     isGroup,
@@ -1493,15 +1714,15 @@ async function handleIncomingMessage(
   const canonicalSessionJid = isGroup
     ? chatJid
     : (directSessionIdentity?.lidJid || directSessionIdentity?.pnJid || chatJid);
-  rememberGroupParticipants(chatJid, expectedGeneration, eventSocket).catch(() => {});
   if (primary.message?.protocolMessage) {
     log.debug({ chatJid, messageId: primary.key.id, protocolType: primary.message.protocolMessage.type }, "ignored protocol message");
     return;
   }
   if (!configured) {
-    log.warn({ chatJid, senderJid, messageId: primary.key.id }, "Gateway not yet configured; passing message through without allowlist check");
+    log.warn({ messageId: primary.key.id }, "Gateway not yet configured; dropping inbound message until policy is loaded");
+    return;
   }
-  let allowedResult = configured ? allowedMessageResult(chatJid, senderJid, primary) : { allowed: true, reason: "not_yet_configured", senderPhone: "" };
+  let allowedResult = allowedMessageResult(chatJid, senderJid, primary);
   if (configured && !allowedResult.allowed && !allowedResult.senderPhone && isLidJid(senderJid)) {
     const retry = await refreshAndRetryAllowedMessage(chatJid, senderJid, primary);
     if (isStaleSocketEvent()) return;
@@ -1634,6 +1855,7 @@ async function handleIncomingMessage(
       media.push({
         type: kind,
         ...(await saveInboundMedia(albumItem, kind, albumItem.key.id, eventSocket)),
+        ...albumMediaMetadata(albumItem, albumItems.length),
       });
       if (isStaleSocketEvent()) return;
     } catch (error) {
@@ -1645,7 +1867,11 @@ async function handleIncomingMessage(
         },
         "failed to save inbound media",
       );
-      media.push({ type: kind, error: String(error?.message || error) });
+      media.push({
+        type: kind,
+        error: String(error?.message || error),
+        ...albumMediaMetadata(albumItem, albumItems.length),
+      });
     }
   }
   const kind = media[0]?.type || mediaKind(primary.message);
@@ -1731,11 +1957,83 @@ async function handleIncomingMessage(
     log.debug({ chatJid, messageId: primary.key.id }, "ignored empty system/protocol message (no content)");
     return;
   }
+  const groupMetadata = isGroup ? await groupMetadataPromise : null;
+  if (isStaleSocketEvent()) return;
+  const groupName = String(groupMetadata?.subject || "").trim();
+  const groupParticipants = Array.isArray(groupMetadata?.participants) ? groupMetadata.participants : [];
+  const ownerIdentity = rememberGroupOwnerIdentity(groupMetadata);
+  const groupOwnerJid = normalizeIdentityJid(
+    ownerIdentity?.jid
+    || ownerIdentity?.lidJid
+    || ownerIdentity?.pnJid
+    || "",
+  );
+  const groupOwnerPnJid = normalizeIdentityJid(
+    ownerIdentity?.pnJid
+    || resolveLidToPn(ownerIdentity?.lidJid || ownerIdentity?.jid)
+    || "",
+  );
+  const groupOwner = normalizeJid(groupOwnerPnJid || groupOwnerJid);
+  const groupAdminIdentities = groupParticipants
+    .filter((participant) => participant?.admin === "admin" || participant?.admin === "superadmin")
+    .map((participant) => {
+      const identity = rememberGroupParticipantIdentity(participant, chatJid);
+      return {
+        jid: normalizeIdentityJid(identity?.jid || identity?.lidJid || identity?.pnJid || ""),
+        pnJid: normalizeIdentityJid(
+          identity?.pnJid || resolveLidToPn(identity?.lidJid || identity?.jid) || "",
+        ),
+        lidJid: normalizeIdentityJid(identity?.lidJid || ""),
+      };
+    })
+    .filter((identity) => identity.jid || identity.pnJid || identity.lidJid);
+  const groupAdminJids = groupAdminIdentities.map((identity) => identity.jid).filter(Boolean);
+  const groupAdminPnJids = groupAdminIdentities.map((identity) => identity.pnJid).filter(Boolean);
+  const groupAdmins = groupAdminIdentities
+    .map((identity) => normalizeJid(identity.pnJid || identity.jid || identity.lidJid))
+    .filter(Boolean);
+  const senderGroupParticipant = groupParticipants.find((participant) =>
+    sameGroupParticipant(participant, senderJid),
+  );
+  const senderUserId = normalizeJid(senderPn || resolveLidToPn(senderJid) || senderJid);
+  const senderRole = senderGroupParticipant?.admin === "superadmin" || (groupOwner && senderUserId === groupOwner)
+    ? "owner"
+    : senderGroupParticipant?.admin === "admin"
+      ? "admin"
+      : "member";
+  const senderMemberTagSnapshot = isGroup
+    ? memberTagSnapshotFromMessagePayload(primary.message)
+    : null;
+  if (senderMemberTagSnapshot) {
+    rememberGroupMemberTag(
+      chatJid,
+      senderMemberTagSnapshot.label,
+      senderMemberTagSnapshot.timestamp || Number(primary.messageTimestamp || 0),
+      senderJid,
+      senderPn,
+      primary.key.participantAlt,
+    );
+  }
+  const senderMemberTag = isGroup
+    ? groupMemberTagFor(chatJid, senderJid, senderPn, primary.key.participantAlt)
+    : "";
   broadcast({
     type: "message",
     messageId: primary.key.id,
     albumMessageIds: albumItems.length > 1 ? albumItems.map((albumItem) => albumItem.key.id) : undefined,
     chatJid,
+    groupName,
+    group_name: groupName,
+    groupSubject: groupName,
+    groupOwner,
+    groupOwnerJid,
+    groupOwnerPnJid,
+    groupAdmins,
+    groupAdminJids,
+    groupAdminPnJids,
+    groupAdminIdentities,
+    senderRole,
+    senderMemberTag,
     senderJid,
     senderPn,
     senderLid: senderIdentity.lidJid,
@@ -1747,9 +2045,9 @@ async function handleIncomingMessage(
     selfJid,
     selfLid,
     text,
-    mentionedJids: mentionedJidsForAstrBot(primary.message),
-    mentionedNames: mentionedNamesForAstrBot(primary.message),
-    mentionAll: mentionAllFromMessage(primary.message),
+    mentionedJids: albumItems.length > 1 ? albumMentionedJids(albumItems) : mentionedJidsForAstrBot(primary.message),
+    mentionedNames: albumItems.length > 1 ? albumMentionedNames(albumItems) : mentionedNamesForAstrBot(primary.message),
+    mentionAll: albumItems.length > 1 ? albumMentionAll(albumItems) : mentionAllFromMessage(primary.message),
     media,
     quoted,
     extras,
@@ -1851,6 +2149,7 @@ async function resetSocketSession(reason = "manual_reset") {
 }
 
 function requestSocketStart(opts = {}) {
+  if (shuttingDown) return Promise.resolve({ ok: false, status: "stopping" });
   return enqueueSocketTransition("start", () => startSocket(opts));
 }
 
@@ -1873,6 +2172,22 @@ function requestLogoutAndReset(reason) {
 }
 
 async function startSocket(opts = {}) {
+  if (shuttingDown) return { ok: false, status: "stopping" };
+  // A reconnect must never load the auth directory while the previous socket
+  // generation is still persisting credentials into it. Treat credential
+  // durability as a barrier between generations rather than best-effort I/O.
+  const previousCredsSettled = await settleWithin([activeCredsSaveQueue], 5000);
+  if (!previousCredsSettled) {
+    throw new Error("previous credential persistence queue did not settle before socket restart");
+  }
+  if (activeCredsSaveFailure) {
+    const detail = String(activeCredsSaveFailure?.message || activeCredsSaveFailure);
+    throw new Error(`previous credential persistence failed before socket restart: ${detail}`);
+  }
+  activeSaveCreds = null;
+  activeCredsSaveQueue = Promise.resolve();
+  activeCredsSaveFailure = null;
+  if (shuttingDown) return { ok: false, status: "stopping" };
   const generation = ++socketGeneration;
   if (reconnectTimer) clearTimeout(reconnectTimer);
   reconnectTimer = null;
@@ -1897,6 +2212,9 @@ async function startSocket(opts = {}) {
   connectionStatus = "starting";
   await mkdir(currentAuthDir, { recursive: true });
   const { state, saveCreds } = await useMultiFileAuthState(currentAuthDir);
+  // Shutdown can begin while auth state is being read from disk. Do not create
+  // a fresh WebSocket after the graceful-stop sequence has already started.
+  if (shuttingDown) return { ok: false, status: "stopping" };
   const socketForGeneration = makeWASocket({
     auth: state,
     printQRInTerminal: false,
@@ -1909,11 +2227,17 @@ async function startSocket(opts = {}) {
   socket = socketForGeneration;
 
   let credsSaveQueue = Promise.resolve();
+  activeCredsSaveQueue = credsSaveQueue;
+  activeSaveCreds = saveCreds;
   socketForGeneration.ev.on("creds.update", () => {
     if (generation !== socketGeneration) return;
-    credsSaveQueue = credsSaveQueue
-      .then(() => saveCreds())
+    activeCredsSaveQueue = credsSaveQueue = credsSaveQueue
+      .then(async () => {
+        await saveCreds();
+        activeCredsSaveFailure = null;
+      })
       .catch((error) => {
+        activeCredsSaveFailure = error;
         if (generation !== socketGeneration || socketForGeneration !== socket) return;
         lastError = `保存登录凭证失败: ${String(error?.message || error)}`;
         log.error({ error, generation, sessionId: currentSessionId }, "failed to persist auth credentials");
@@ -1931,6 +2255,43 @@ async function startSocket(opts = {}) {
           chatEphemeral.set(chat.id, chat.ephemeralExpiration);
         }
       }
+    }
+  });
+  socketForGeneration.ev.on("groups.update", (groups) => {
+    if (generation !== socketGeneration) return;
+    for (const update of groups || []) cacheGroupMetadata(update, false);
+  });
+  socketForGeneration.ev.on("group-participants.update", (update) => {
+    if (generation !== socketGeneration) return;
+    const jid = String(update?.id || "");
+    if (jid) {
+      groupMetadataCache.delete(jid);
+      mentionDirectoriesByChat.delete(jid);
+    }
+  });
+  socketForGeneration.ev.on("group.member-tag.update", (update) => {
+    if (generation !== socketGeneration) return;
+    rememberGroupMemberTag(
+      update?.groupId,
+      update?.label ?? "",
+      update?.messageTimestamp || 0,
+      update?.participant,
+      update?.participantAlt,
+    );
+  });
+  socketForGeneration.ev.on("group-participants.update", (update) => {
+    if (generation !== socketGeneration || update?.action !== "remove") return;
+    for (const participant of update?.participants || []) {
+      const identity = groupParticipantIdentity(participant);
+      forgetGroupMemberTag(
+        update?.id,
+        participant?.id,
+        participant?.jid,
+        participant?.phoneNumber,
+        identity?.jid,
+        identity?.pnJid,
+        identity?.lidJid,
+      );
     }
   });
   socketForGeneration.ev.on("contacts.upsert", (contacts) => {
@@ -1960,10 +2321,10 @@ async function startSocket(opts = {}) {
     }
     for (const chat of chats || []) {
       if (chat?.id) {
-        if (chat.ephemeralExpiration !== undefined) {
-          chatEphemeral.set(chat.id, chat.ephemeralExpiration);
-        } else if (chat.ephemeralExpiration === 0 || chat.ephemeralExpiration === null) {
+        if (chat.ephemeralExpiration === 0 || chat.ephemeralExpiration === null) {
           chatEphemeral.delete(chat.id);
+        } else if (chat.ephemeralExpiration !== undefined) {
+          chatEphemeral.set(chat.id, chat.ephemeralExpiration);
         }
       }
     }
@@ -2256,8 +2617,26 @@ function isSingleUrlText(text) {
 const server = createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
+    if (!isAuthorizedGatewayRequest(req, gatewayAuthToken)) {
+      res.setHeader("www-authenticate", 'Bearer realm="astrbot-whatsapp-gateway"');
+      sendJson(res, 401, { ok: false, error: "unauthorized" });
+      return;
+    }
     if (req.method === "GET" && url.pathname === "/health") {
-      sendJson(res, 200, { ok: true, ready, selfJid, configured });
+      const gatewayHealthy = !["error", "stopping"].includes(connectionStatus);
+      sendJson(res, gatewayHealthy ? 200 : 503, {
+        ok: gatewayHealthy,
+        ready,
+        selfJid,
+        configured,
+        status: connectionStatus,
+        lastError,
+      });
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/shutdown") {
+      sendJson(res, 202, { ok: true, status: "stopping" });
+      setImmediate(() => void gracefulShutdown("api_shutdown", 0));
       return;
     }
     if (req.method === "GET" && url.pathname === "/status") {
@@ -2269,6 +2648,10 @@ const server = createServer(async (req, res) => {
       return;
     }
     if (req.method === "GET" && url.pathname === "/events") {
+      if (sseClients.size >= maxSseClients) {
+        sendJson(res, 503, { ok: false, error: "too many event stream clients" });
+        return;
+      }
       res.writeHead(200, {
         "content-type": "text/event-stream; charset=utf-8",
         "cache-control": "no-cache, no-transform",
@@ -2276,9 +2659,7 @@ const server = createServer(async (req, res) => {
       });
       sseClients.add(res);
       const heartbeat = setInterval(() => {
-        try {
-          res.write(": keepalive\n\n");
-        } catch {
+        if (!writeBoundedSse(res, ": keepalive\n\n", maxSseBufferedBytes)) {
           clearInterval(heartbeat);
           sseClients.delete(res);
         }
@@ -2506,6 +2887,7 @@ const server = createServer(async (req, res) => {
           lidJid: identity?.lidJid || "",
           userId: normalizeJid(pnJid || jid),
           name: mentionDisplayName(pnJid) || mentionDisplayName(identity?.lidJid || jid) || normalizeJid(pnJid || jid),
+          memberTag: groupMemberTagFor(groupJid, jid, pnJid, identity?.lidJid),
           role,
         };
       });
@@ -2627,28 +3009,38 @@ const server = createServer(async (req, res) => {
         sendJson(res, 400, { ok: false, error: "pathOrUrl is required" });
         return;
       }
-      if (!/^https?:\/\//i.test(body.pathOrUrl)) await stat(normalizeLocalMediaPath(body.pathOrUrl));
-      const options = quotedKey(body) || {};
-      const ephemeral = getEphemeralExpiration(body.to);
-      if (ephemeral) options.ephemeralExpiration = ephemeral;
-      const { mentions, mentionAll } = resolveExplicitMentions(body.mentions, body.to);
-      const renderedCaption = await renderOutboundMentionNames(
-        body.caption,
-        mentions,
-        body.to,
-      );
-      const payload = resolveMediaPayload(
-        body.type,
-        body.pathOrUrl,
-        renderedCaption,
-        body.fileName,
-      );
-      if (mentions.length) payload.mentions = mentions;
-      if (mentionAll) payload.mentionAll = true;
-      const result = await socket.sendMessage(body.to, payload, options);
-      cacheChatMessage(messageCache, result, maxMessageCacheSize);
-      sendJson(res, 200, { ok: true, id: result?.key?.id });
-      return;
+      let preparedMedia;
+      try {
+        preparedMedia = await prepareSafeMediaSource(body.pathOrUrl, { tempDir });
+      } catch (error) {
+        sendJson(res, 403, { ok: false, error: String(error?.message || error) });
+        return;
+      }
+      try {
+        const options = quotedKey(body) || {};
+        const ephemeral = getEphemeralExpiration(body.to);
+        if (ephemeral) options.ephemeralExpiration = ephemeral;
+        const { mentions, mentionAll } = resolveExplicitMentions(body.mentions, body.to);
+        const renderedCaption = await renderOutboundMentionNames(
+          body.caption,
+          mentions,
+          body.to,
+        );
+        const payload = resolveMediaPayload(
+          body.type,
+          preparedMedia.pathOrUrl,
+          renderedCaption,
+          body.fileName,
+        );
+        if (mentions.length) payload.mentions = mentions;
+        if (mentionAll) payload.mentionAll = true;
+        const result = await socket.sendMessage(body.to, payload, options);
+        cacheChatMessage(messageCache, result, maxMessageCacheSize);
+        sendJson(res, 200, { ok: true, id: result?.key?.id });
+        return;
+      } finally {
+        await preparedMedia.cleanup();
+      }
     }
     if (req.method === "POST" && url.pathname === "/send/location") {
       const body = await readJson(req);
@@ -2787,6 +3179,68 @@ const server = createServer(async (req, res) => {
   }
 });
 
+async function gracefulShutdown(reason = "shutdown", exitCode = 0) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  connectionStatus = "stopping";
+  ready = false;
+  if (reconnectTimer) clearTimeout(reconnectTimer);
+  reconnectTimer = null;
+  stopPresenceTimer();
+  clearAlbumBuffers();
+  broadcast({ type: "status", status: connectionStatus, ready: false, reason });
+
+  await settleWithin([socketTransition], 1500);
+  if (activeSaveCreds) {
+    activeCredsSaveQueue = activeCredsSaveQueue
+      .catch(() => {})
+      .then(async () => {
+        await activeSaveCreds();
+        activeCredsSaveFailure = null;
+      })
+      .catch((error) => {
+        activeCredsSaveFailure = error;
+        log.warn({ error }, "final credential flush failed");
+      });
+  }
+  const persisted = await settleWithin([
+    activeCredsSaveQueue,
+    runtimeIdentityPersistQueue,
+  ], 3000);
+  if (!persisted) log.warn({ reason }, "Gateway persistence flush timed out during shutdown");
+  if (activeCredsSaveFailure) {
+    log.warn(
+      { reason, error: activeCredsSaveFailure },
+      "Gateway credential persistence failed during shutdown",
+    );
+  }
+
+  ++socketGeneration;
+  const retiringSocket = socket;
+  if (retiringSocket?.ev?.removeAllListeners) {
+    try { retiringSocket.ev.removeAllListeners(); } catch {}
+  }
+  if (retiringSocket?.end) {
+    try { retiringSocket.end(undefined); } catch {}
+  }
+  socket = null;
+  for (const client of sseClients) {
+    try { client.end(); } catch {}
+  }
+  sseClients.clear();
+
+  await settleWithin([
+    new Promise((resolve) => {
+      try { server.close(() => resolve()); } catch { resolve(); }
+    }),
+  ], 2000);
+  process.exitCode = exitCode;
+}
+
+for (const signalName of ["SIGTERM", "SIGINT"]) {
+  process.once(signalName, () => void gracefulShutdown(signalName, 0));
+}
+
 server.on("error", (error) => {
   if (error?.code === "EADDRINUSE") {
     log.warn({ host, port }, "WhatsApp Gateway port already in use; exiting duplicate process");
@@ -2804,5 +3258,5 @@ initializeAuthSession().then(() => requestSocketStart()).catch((error) => {
   connectionStatus = "error";
   lastError = `Gateway 启动失败: ${String(error?.message || error)}`;
   log.error({ error }, "WhatsApp Gateway startup failed");
-  process.exitCode = 1;
+  void gracefulShutdown("startup_failure", 1);
 });

@@ -20,8 +20,6 @@ except ImportError:  # Standalone tests.
         dependency_fingerprint, record_dependency_install,
     )
 
-_PROCESS_PATCH_MARKER = "_astrbot_gateway_stability_process_installed"
-_CLIENT_PATCH_MARKER = "_astrbot_gateway_stability_client_installed"
 _NODE_DEPENDENCY_INSTALL_LOCK = asyncio.Lock()
 MINIMUM_NODE_VERSION = (20, 9, 0)
 RECOMMENDED_NODE_MAJORS = (22, 24)
@@ -244,57 +242,3 @@ async def _request_graceful_shutdown(client_cls: type[Any], process: Any) -> boo
                 await close()
     except Exception:
         return False
-
-
-def install_gateway_runtime_stability(
-    client_cls: type[Any],
-    process_cls: type[Any],
-    error_cls: type[BaseException],
-) -> None:
-    """Install bounded I/O and graceful-stop behavior on Gateway classes."""
-
-    if not getattr(process_cls, _PROCESS_PATCH_MARKER, False):
-        original_stop = process_cls.stop
-
-        async def stable_process_stop(self: Any) -> None:
-            child = getattr(self, "process", None)
-            requested = await _request_graceful_shutdown(client_cls, self)
-            if requested and child is not None and getattr(child, "returncode", None) is None:
-                wait = getattr(child, "wait", None)
-                if callable(wait):
-                    try:
-                        await asyncio.wait_for(
-                            wait(),
-                            timeout=_graceful_shutdown_timeout_seconds(),
-                        )
-                    except asyncio.TimeoutError:
-                        pass
-            await original_stop(self)
-
-        process_cls.stop = stable_process_stop
-        setattr(process_cls, _PROCESS_PATCH_MARKER, True)
-
-    if not getattr(client_cls, _CLIENT_PATCH_MARKER, False):
-        if hasattr(client_cls, "send_presence"):
-            original_send_presence = client_cls.send_presence
-
-            async def stable_send_presence(self: Any, *args: Any, **kwargs: Any):
-                return await asyncio.wait_for(
-                    original_send_presence(self, *args, **kwargs),
-                    timeout=_aux_request_timeout_seconds(),
-                )
-
-            client_cls.send_presence = stable_send_presence
-
-        if hasattr(client_cls, "react"):
-            original_react = client_cls.react
-
-            async def stable_react(self: Any, *args: Any, **kwargs: Any):
-                return await asyncio.wait_for(
-                    original_react(self, *args, **kwargs),
-                    timeout=_aux_request_timeout_seconds(),
-                )
-
-            client_cls.react = stable_react
-
-        setattr(client_cls, _CLIENT_PATCH_MARKER, True)

@@ -210,9 +210,9 @@ def _adapter_module():
         f"{package_name}.whatsapp_event": event_module,
         f"{package_name}.whatsapp_helpers": helpers,
     }
-    module_path = ROOT / "_whatsapp_adapter_impl.py"
+    module_path = ROOT / "whatsapp_adapter.py"
     spec = importlib.util.spec_from_file_location(
-        f"{package_name}._whatsapp_adapter_impl",
+        f"{package_name}.whatsapp_adapter",
         module_path,
     )
     assert spec and spec.loader
@@ -475,7 +475,7 @@ class WhatsAppAdapterCompatibilityTests(unittest.TestCase):
         self.assertIn("extra guests allowed", message.message_str)
 
     def test_platform_group_role_does_not_expand_astrbot_admin_permissions(self) -> None:
-        source = (ROOT / "_whatsapp_adapter_impl.py").read_text("utf-8")
+        source = (ROOT / "whatsapp_adapter.py").read_text("utf-8")
         self.assertNotRegex(source, r"(?m)^\s*event\.role\s*=")
 
     def test_mention_all_matches_qq_chain_and_message_str_semantics(self) -> None:
