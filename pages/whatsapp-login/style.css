@@ -790,3 +790,13 @@ h1 {
     align-items: flex-start;
   }
 }
+
+.scope-note { color: var(--text-secondary, #b1b9c4); margin: 0 0 1rem; line-height: 1.6; overflow-wrap: anywhere; }
+.advanced-details { margin-top: 1rem; }
+.advanced-details summary, .diagnostics-card summary { cursor: pointer; font-weight: 600; padding: .4rem 0; }
+.diagnostics-card { margin-top: 1.25rem; }
+.diagnostics-card .hint { margin: .75rem 0; }
+.settings-scroll { overflow-x: auto; margin-top: 1rem; }
+.settings-scroll table { width: 100%; border-collapse: collapse; margin: .6rem 0 1.2rem; }
+.settings-scroll th, .settings-scroll td { text-align: left; padding: .55rem; border-bottom: 1px solid rgba(255,255,255,.1); overflow-wrap: anywhere; }
+.diagnostics-text { width: 100%; box-sizing: border-box; color: inherit; background: rgba(0,0,0,.15); border: 1px solid rgba(255,255,255,.15); border-radius: .6rem; padding: .75rem; resize: vertical; }

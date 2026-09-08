@@ -4,6 +4,7 @@
 
 | 邊界 / Boundary | 目的、覆蓋與移除條件 / Purpose, coverage and removal |
 | --- | --- |
+| AstrBot Web API / Quart | 優先使用 `astrbot.api.web`；4.24.2 的 Quart 邊界僅轉接 JSON request/response。真實框架整合腳本驗證兩端；最低支援版本具備 `astrbot.api.web` 後移除。 Use the public API when available; retain only JSON request/response adaptation for older Quart cores. |
 | Baileys `7.0.0-rc14` postinstall `scripts/patch-baileys-ephemeral.mjs` | 保留消失訊息設定 timestamp，避免同秒或歷史 metadata 覆蓋新設定。`scripts/patch-baileys-ephemeral.test.mjs` 對真實鎖定套件及訊息產生器驗證。上游正式提供等價 timestamp 傳遞與過期控制且測試不用 patch 仍通過時移除；不在 Gateway 啟動時執行。 Preserve disappearing-message timestamps; remove when an upstream version passes the same tests without patching. |
 | AstrBot `PlatformManager.reload` | 只在外部平台管理器進入原生完整重載前清理舊 WhatsApp 設定；不替換原生終止／啟動流程。當支援的最小 AstrBot 已提供配置正規化 hook 時改用 hook。 Keep native reload and normalize plugin config at the boundary; replace when the minimum supported core exposes a normalization hook. |
 | AstrBot streaming after-send hook | `whatsapp_event._needs_streaming_after_hook_compat` 檢查真實控制流程，補上提前 return 漏掉的 after-send hook。`tests/test_whatsapp_markdown.py`覆蓋；當所有支援版本的 core 都完成該 hook 時移除。 Detect actual upstream control flow; remove when all supported cores call the hook for streams. |

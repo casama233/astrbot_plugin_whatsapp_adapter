@@ -57,3 +57,7 @@ Check AstrBot logs for technical details. The localized Plugin Page intentionall
 ## Multiple accounts connect to the wrong session
 
 Do not share auth directories or external Gateway endpoints. See [Multi-instance](multi-instance.md).
+
+## Sharing diagnostics
+
+Open **Effective settings and diagnostics** and choose **Refresh and copy diagnostics**. The export hides full phone numbers, JIDs, QR codes, pairing codes and authentication tokens. The text remains available for inspection. The Page identifies the base account it controls; advanced connection details list actual instance ports, and effective sources explain retained overrides.
