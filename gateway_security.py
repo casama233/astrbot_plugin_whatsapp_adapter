@@ -133,13 +133,14 @@ def install_gateway_transport_security(
                     "WA_AUTH_DIR": str(self.auth_dir),
                     "WA_DATA_DIR": str(self.data_dir),
                     "WA_TEMP_DIR": temp_dir,
-                    # AstrBot plugins normally create outbound media under
-                    # data/ (for example temp/, temp_images/ or plugin_data/).
-                    "WA_MEDIA_ALLOWED_ROOTS": str(astrbot_data_dir),
                     "WA_LOG_LEVEL": self.log_level,
                     "WA_GATEWAY_TOKEN": token,
                 }
             )
+            # Keep AstrBot plugin output paths compatible by default. An
+            # explicit value (including empty = temp-only) belongs to the
+            # operator and must not be overwritten by the managed launcher.
+            env.setdefault("WA_MEDIA_ALLOWED_ROOTS", str(astrbot_data_dir))
             extra_kwargs: dict[str, Any] = {}
             if os.name == "nt":
                 creation_flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
