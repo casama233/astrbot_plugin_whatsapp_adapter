@@ -114,3 +114,79 @@ jobs:
           path: ${{ runner.temp }}/tested-source.zip
           retention-days: 7
           if-no-files-found: error
+
+  astrbot:
+    name: AstrBot ${{ matrix.astrbot }} integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        astrbot: ["4.24.2", "4.28.0"]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        if: inputs.candidate_artifact != ''
+        with:
+          name: ${{ inputs.candidate_artifact }}
+          path: ${{ runner.temp }}/release-candidate
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - name: Check out exact release candidate
+        if: inputs.candidate_artifact != ''
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+        shell: python
+        run: |
+          import os, pathlib, re, subprocess
+          candidate = os.environ['CANDIDATE_SHA']
+          if not re.fullmatch(r'[0-9a-f]{40}', candidate):
+              raise RuntimeError('invalid candidate commit')
+          bundle = pathlib.Path(os.environ['RUNNER_TEMP']) / 'release-candidate/candidate.bundle'
+          subprocess.check_call(['git', 'fetch', str(bundle), 'HEAD'])
+          actual = subprocess.check_output(['git', 'rev-parse', 'FETCH_HEAD']).decode().strip()
+          if actual != candidate:
+              raise RuntimeError('downloaded candidate does not match prepared commit')
+          subprocess.check_call(['git', 'checkout', '--detach', candidate])
+          subprocess.check_call(['git', 'diff', '--exit-code', 'HEAD', '--'])
+      - name: Check out real AstrBot source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          repository: AstrBotDevs/AstrBot
+          ref: v${{ matrix.astrbot }}
+          path: framework-source
+          persist-credentials: false
+      - name: Install the framework's declared runtime dependencies
+        shell: python
+        run: |
+          import os, pathlib, subprocess, sys, tomllib
+          project = tomllib.loads(pathlib.Path('framework-source/pyproject.toml').read_text())
+          requirements = pathlib.Path(os.environ['RUNNER_TEMP']) / 'astrbot-requirements.txt'
+          requirements.write_text('\n'.join(project['project']['dependencies']) + '\n')
+          # Import from the checkout: do not build the framework's Dashboard.
+          subprocess.check_call([sys.executable, '-m', 'pip', 'install',
+                                 '--disable-pip-version-check', '-r', str(requirements)])
+      - name: Verify real framework lifecycle and recovery
+        env:
+          EXPECTED_ASTRBOT: ${{ matrix.astrbot }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rev-parse HEAD > "$RUNNER_TEMP/plugin-commit.txt"
+          git -C framework-source rev-parse HEAD > "$RUNNER_TEMP/astrbot-commit.txt"
+          python -m pip freeze > "$RUNNER_TEMP/astrbot-environment.txt"
+          python tests/integration/verify_astrbot.py --framework framework-source \
+            --expected-version "$EXPECTED_ASTRBOT" 2>&1 | tee "$RUNNER_TEMP/astrbot-integration.log"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: astrbot-integration-${{ matrix.astrbot }}-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/astrbot-*.txt
+            ${{ runner.temp }}/astrbot-integration.log
+            ${{ runner.temp }}/plugin-commit.txt
+          retention-days: 7
+          if-no-files-found: warn

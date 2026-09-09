@@ -2,7 +2,8 @@
 
 python tests/integration/verify_astrbot.py --framework /path/to/AstrBot
 The real framework, configuration stores, adapter and event types are used.
-Only the surrounding application Context is replaced with an inert harness.
+The application Context is an inert harness; Gateway connect/events/health
+are replaced with network-free doubles. Native framework tasks still execute.
 """
 from __future__ import annotations
 
@@ -15,10 +16,12 @@ from pathlib import Path
 import sys
 import tempfile
 from types import ModuleType, SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--framework', type=Path, required=True)
+parser.add_argument('--expected-version')
 args = parser.parse_args()
 source = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(args.framework.resolve()))
@@ -33,6 +36,9 @@ from astrbot.core.config.default import VERSION
 from astrbot.core.platform.manager import PlatformManager
 from astrbot.api.event import AstrMessageEvent
 from astrbot.api.platform import AstrBotMessage
+
+if args.expected_version and VERSION != args.expected_version:
+    raise RuntimeError(f"wrong framework version: {VERSION} != {args.expected_version}")
 
 package = ModuleType('whatsapp_integration')
 package.__path__ = [str(source)]
@@ -83,8 +89,11 @@ async def verify():
     await plugin.initialize()
     assert plugin_store['gateway_port'] == 18888
     assert root_store['platform'][0]['_whatsapp_migration']['version'] == 1
-    adapter = adapter_module.WhatsAppPlatformAdapter(manager.platforms_config[0], manager.settings, manager.event_queue)
-    manager.platform_insts.append(adapter)
+    # Use the real task/map owner, not a manually appended inert instance.
+    await manager.load_platform(manager.platforms_config[0])
+    await asyncio.sleep(0)
+    adapter = context.get_platform_inst('integration')
+    assert adapter is not None
     try:
         assert adapter.config['typing_indicator'] is False
         assert adapter.client.base_url == 'http://127.0.0.1:18888'
@@ -114,16 +123,46 @@ async def verify():
         assert json.loads(Path(root_store.config_path).read_text(encoding='utf-8-sig'))['platform'][0]['_whatsapp_migration']['version'] == 1
         assert any(path.endswith('/diagnostics') for path in routes)
         assert plugin._management_scope()['targetInstanceId'] == 'integration'
+        before_task = manager._platform_tasks[adapter.client_self_id].run
+        assert not before_task.done()
+        await plugin._quiesce_update_runtime([adapter])
+        assert before_task.done()
+        assert adapter not in adapter_module.get_active_whatsapp_adapters()
+        await plugin._resume_quiesced_runtime(['integration'])
+        restored_adapter = context.get_platform_inst('integration')
+        assert restored_adapter is not adapter
+        assert restored_adapter in adapter_module.get_active_whatsapp_adapters()
+        assert not manager._platform_tasks[restored_adapter.client_self_id].run.done()
+        assert restored_adapter._auth_dir() == previous_auth
+        await plugin._verify_adapter_health('integration', attempts=1)
         print(json.dumps({'astrbot': VERSION, 'framework': str(args.framework),
             'checks': ['real imports', 'Web JSON request/response', 'plugin initialize', 'versioned migration persistence',
-                       'adapter reload', 'stable auth directory', 'group UMO', 'diagnostic scope'],
+                       'adapter reload', 'stable auth directory', 'group UMO', 'diagnostic scope',
+                       'native managed task stop', 'updater recovery creates new native task', 'recovery HTTP health gate'],
             'whatsappNetworkUsed': False}))
     finally:
-        await adapter.terminate()
+        await manager.terminate()
         await plugin.terminate()
 
 
+async def connected_without_network(self):
+    self._reconnect_event.clear()
+    await asyncio.sleep(0)
+
+
+async def idle_events(self):
+    # Keep the actual run loop/task alive without opening any network connection.
+    await asyncio.Event().wait()
+    if False:
+        yield {}
+
+
 try:
-    asyncio.run(verify())
+    with (
+        patch.object(adapter_module.WhatsAppPlatformAdapter, '_connect_gateway', connected_without_network),
+        patch.object(main.WhatsAppGatewayClient, 'events', idle_events),
+        patch.object(main.WhatsAppGatewayClient, 'health', AsyncMock(return_value={'ok': True})),
+    ):
+        asyncio.run(verify())
 finally:
     temporary.cleanup()
