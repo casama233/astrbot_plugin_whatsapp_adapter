@@ -90,3 +90,7 @@ A successful GitHub Release contains:
 - `astrbot_plugin_whatsapp_adapter-vX.Y.Z.zip.sha256`
 
 The ZIP is intentionally built with `git archive` and `.gitattributes` export exclusions so that `tests/`, `.github/`, `.release/`, caches, `node_modules/`, and release-only validation scripts are not shipped to AstrBot users.
+
+## Runtime recovery gate
+
+The shared validation now also runs real AstrBot 4.24.2 and 4.28.0 integration on Python 3.12, including native platform-task recovery after quiescence. These two jobs test the same candidate commit and gate publication alongside the six existing OS/Node jobs. [Update recovery and cancellation](docs/update-recovery.md) documents transaction locking, deferred cancellation, account recovery, failure reporting and the remaining operational limits.
