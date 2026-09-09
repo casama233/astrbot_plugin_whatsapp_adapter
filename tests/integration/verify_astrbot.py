@@ -131,6 +131,11 @@ async def verify():
         await plugin._resume_quiesced_runtime(['integration'])
         restored_adapter = context.get_platform_inst('integration')
         assert restored_adapter is not adapter
+        for _ in range(100):
+            if getattr(restored_adapter, '_integration_connected', False):
+                break
+            await asyncio.sleep(0)
+        assert getattr(restored_adapter, '_integration_connected', False), 'restarted run loop did not enter connect'
         assert restored_adapter in adapter_module.get_active_whatsapp_adapters()
         assert not manager._platform_tasks[restored_adapter.client_self_id].run.done()
         assert restored_adapter._auth_dir() == previous_auth
@@ -146,6 +151,7 @@ async def verify():
 
 
 async def connected_without_network(self):
+    self._integration_connected = True
     self._reconnect_event.clear()
     await asyncio.sleep(0)
 
