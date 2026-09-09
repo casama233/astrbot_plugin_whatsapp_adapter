@@ -45,3 +45,43 @@ class DiagnosticTests(unittest.TestCase):
             self.assertEqual(result['source'], 'modified_release')
             self.assertEqual(result['modifiedFiles'], ['main.py'])
             self.assertEqual(build_identity(root, '9.9.9')['source'], 'unknown')
+
+
+class RuntimeDiagnosticTests(unittest.IsolatedAsyncioTestCase):
+    async def test_real_preflight_node_and_npm_errors_survive_sanitized_export(self):
+        from unittest.mock import AsyncMock, patch
+        import gateway_runtime
+        from tests.test_gateway_runtime import node_output
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            scope = {'endpoint': 'http://127.0.0.1:18789', 'accounts': []}
+            def report(runtime):
+                return diagnostic_snapshot(root, '0.2.46', '4.28.0', runtime, {}, scope, [], {},
+                                           ['synthetic-secret'])['runtime']
+            with (
+                patch('gateway_runtime.shutil.which', return_value='node'),
+                patch('gateway_stability._run_node_command', AsyncMock(side_effect=RuntimeError(
+                    'Cannot start node: permission denied; token=synthetic-secret'))),
+            ):
+                runtime = await gateway_runtime.inspect_gateway_requirements(root, 'node')
+            result = report(runtime)
+            self.assertEqual(result['status'], 'node_unavailable')
+            self.assertIn('permission denied', result['error'])
+            self.assertEqual(result['nodeError'], result['error'])
+            self.assertEqual(result['npmError'], '')
+            self.assertNotIn('synthetic-secret', json.dumps(result))
+            with (
+                patch('gateway_runtime.shutil.which', return_value='node'),
+                patch('gateway_stability._run_node_command', AsyncMock(return_value=node_output())),
+                patch('gateway_runtime._npm_command', side_effect=RuntimeError('npm-cli.js absent')),
+            ):
+                runtime = await gateway_runtime.inspect_gateway_requirements(root, 'node')
+            result = report(runtime)
+            self.assertEqual(result['status'], 'npm_unavailable')
+            self.assertIn('npm-cli.js absent', result['npmError'])
+            self.assertEqual(result['error'], result['npmError'])
+            self.assertEqual(result['nodeError'], '')
+            self.assertEqual(report({'ready': True})['error'], '')
+            result = report({'error': 'outer error', 'node': {'error': 'node detail'}})
+            self.assertEqual(result['error'], 'outer error')
+            self.assertEqual(result['nodeError'], 'node detail')

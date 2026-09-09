@@ -23,6 +23,7 @@ REQUIRED_RUNTIME_FILES = frozenset(
         "package.json",
         "package-lock.json",
         "plugin_updater.py",
+        "update_lifecycle.py",
         "gateway_security.py",
         "gateway_stability.py",
         "gateway_dependencies.py",
