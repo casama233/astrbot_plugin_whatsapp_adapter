@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.47] - 2026-09-09
+
+- Upgrade note for v0.2.46 users: install this release through the AstrBot plugin manager and perform one full AstrBot restart so the fixed updater is loaded before future in-plugin updates.
+- Recover stopped WhatsApp accounts through AstrBot's full PlatformManager restart path, verify the new runtime task and Gateway HTTP health, and avoid resurrecting accounts disabled or removed during recovery.
+- Keep updater cancellation deferred across quiesce, directory cutover, reload, health checks and rollback so filesystem work settles before the transaction lock is released; preserve the real completed or failed outcome.
+- Stop failed new-version runtimes before restoring the backup and require the restored version to pass runtime health checks instead of treating plugin registration alone as a successful rollback.
+- Preserve sanitized Node.js and npm failure details in diagnostic exports while keeping the existing privacy redaction boundary.
+- Gate normal pull requests and release candidates on real AstrBot 4.24.2 and 4.28.0 integration tests in addition to the existing Windows/Linux and Node 20/22/24 matrix; integration uses network-free Gateway doubles and does not log in to WhatsApp.
+
 ## [0.2.46] - 2026-09-09
 
 - Unify bounded Node dependency preparation across startup, diagnostics and staged updates; verify the complete dependency fingerprint and installation receipt with a Node 20.9 compatibility floor.
