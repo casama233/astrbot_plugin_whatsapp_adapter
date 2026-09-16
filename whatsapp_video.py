@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -17,6 +18,25 @@ INLINE_VIDEO_SIZE_LIMIT = 100 * 1024**2
 INLINE_VIDEO_BITRATE_BUDGET = 94 * 1024**2
 
 
+def _local_path(source: str, parsed) -> Path | None:
+    """Resolve a local/file-URI source to a filesystem path.
+
+    ``file:///C:/...`` URIs carry a leading slash before the drive letter,
+    which Windows reads as a root path on the current drive; strip it so the
+    drive form stays valid. Remote URLs yield ``None``.
+    """
+    if parsed.scheme in {"http", "https"}:
+        return None
+    if parsed.scheme == "file":
+        raw = unquote(parsed.path)
+        if parsed.netloc and parsed.netloc.lower() != "localhost":
+            raw = f"//{parsed.netloc}{raw}"
+        elif re.fullmatch(r"/[A-Za-z]:/.+", raw):
+            raw = raw[1:]
+        return Path(raw)
+    return Path(source)
+
+
 @asynccontextmanager
 async def inline_video(source: str):
     """Yield an H.264/AAC copy for oversized local videos, then remove it.
@@ -28,9 +48,10 @@ async def inline_video(source: str):
         A compatible local copy, or the original source if preparation fails.
     """
     parsed = urlparse(source)
-    path = Path(unquote(parsed.path) if parsed.scheme == "file" else source)
+    path = _local_path(source, parsed)
     if (
         parsed.scheme in {"http", "https"}
+        or path is None
         or not path.is_file()
         or path.stat().st_size <= INLINE_VIDEO_SIZE_LIMIT
     ):
