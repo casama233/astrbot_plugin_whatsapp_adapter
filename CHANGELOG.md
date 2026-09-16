@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.48] - 2026-09-17
+
+- Transcode local videos above the 100 MiB inline limit to H.264/AAC with a bounded bitrate before sending, keeping the temporary copy alive only until the Gateway consumes it.
+- Fall back to the original source whenever ffprobe or ffmpeg is missing, the probe or encode fails, or the prepared copy still exceeds the limit; remote URLs and in-limit files pass through untouched.
+- Stop clearing jpegThumbnail for image and video payloads so Baileys renders native media previews again.
+- Document the optional ffmpeg dependency in every README language and cover the transcode lifecycle with process-double tests on the shared Windows/Linux and Node 20/22/24 matrix.
+
 ## [0.2.47] - 2026-09-09
 
 - Upgrade note for v0.2.46 users: install this release through the AstrBot plugin manager and perform one full AstrBot restart so the fixed updater is loaded before future in-plugin updates.
