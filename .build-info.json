@@ -1,6 +1,6 @@
 {
-  "version": "0.2.47",
-  "sourceCommit": "13fbe66b300b912357504d1de675f3f6fa25362c",
+  "version": "0.2.48",
+  "sourceCommit": "44cc36433e26e379944c0aaa1c5228fc4602eadf",
   "files": {
     ".astrbot-plugin/i18n/en-US.json": "5e240a17b74e6e9fffba0700f7a87db344e52236c211150362d816f4bbc97a2b",
     ".astrbot-plugin/i18n/zh-CN.json": "8a929e72f01a61e7afe85d35d909ab01393670d8e6df04c806eebfe3bf3bec8f",
@@ -9,7 +9,7 @@
     "_conf_schema.json": "30720c811e7199294ad87bd3d7942b40d8bffc6b1cfa5b84af12d67536694c4a",
     "_whatsapp_adapter_impl.py": "aaa6c3190179c95ae8bd1154a862547d896f309bfbb227d760dd3ab5f7ad69c1",
     "_whatsapp_event_impl.py": "dd3b3204006ea5cd9668f97970964c0c9d823900281737357e625c91b49261e0",
-    "_whatsapp_helpers_impl.py": "a08d358482597180788e55618fe38044ef8d9d6eb79fa91d640b7320130f0cd2",
+    "_whatsapp_helpers_impl.py": "8520c7e48c68aa09feefe3befae829ab40f11af7d7a0c0844c5cb1b9a0e8212e",
     "album_caption_compat.py": "79402c26c9c8de12e878f206ce3a59c9729e52c56de7c7b9b839f43ec62c4757",
     "gateway/allowlist-identity.mjs": "1426a6a33a634a52e4c31f9c68f2233e56165a6b5b74e3bbde7641213e1f2c5d",
     "gateway/identity-compat.mjs": "17cba748fe21d2fbd3599eb93ab59149b19d5a975127698dc4b2f821c71255b7",
@@ -24,7 +24,7 @@
     "gateway/security-runtime.mjs": "3244f3384a0f5289d38e8277aab4809b23852c1d49000326ec454437cedc4028",
     "gateway/session-lifecycle.mjs": "3a5a4ded7308205b6af820a8c33fb01c618926adda026377a35a94c2b21b2b3c",
     "gateway/stability-runtime.mjs": "788c3f6b38ace9586a20d6fd313a60c24edfdd9f451db681656efda6749cba02",
-    "gateway/whatsapp-gateway-impl.mjs": "d87bc239d4a5fee51a736531baffcdd9601159f4d3553a4da5e80651500c96c3",
+    "gateway/whatsapp-gateway-impl.mjs": "57b5ec1d91005b2a1510bb4aa15776b8c45478916ad96d49d5b7931243f9d3b0",
     "gateway/whatsapp-gateway.mjs": "bb5745f1296f090652c040ad0582af50f5dbe76fd385686ba3891ef63f29e150",
     "gateway_dependencies.py": "fb2ba704c488b8a7bcb858a28bc91763ded848a7edaca52dab01c2f2d630b9d5",
     "gateway_runtime.py": "73d2d338cccd243ffda9bfb62bee9d40d932d05cfdab3117b9b089eab090558b",
@@ -32,11 +32,11 @@
     "gateway_stability.py": "97369a928b903422e3a76249b6d11e0aded0244f2352978c0a498ecccea602fc",
     "group_name_compat.py": "2ef80ea6aaf8eaa9ea4f42b69648d157ea974d683a069b2050223fb88a47927d",
     "logo.svg": "e80d0c449c7f935a2e32c6d7e1c075cabae92eea4cdde0d1adf1c767af6c9e7e",
-    "main.py": "8f4daec055d530e0c4ee24abf2f3ccdc27b4aa922ea1dfe5b04a6da377b23224",
+    "main.py": "9849cfe4cf7db081c0cb4e927b96f1ed38c9161f8cecf945b8ad880ce5024e33",
     "member_tag_compat.py": "eefe984bb1b46a43a8244b1134ad36575af1b2e790a6ddc847bdbaa5421809eb",
-    "metadata.yaml": "340b2d100ff8e1ca454d66fe93d3c171d7540c755f2593f03483c8ef08ff3411",
-    "package-lock.json": "6fbda2d719d897e7b59bef785379a4ddc2fdd6943cc0ef79d4c350f87d27a788",
-    "package.json": "177d77aec9988fd7ef3cb8bb4c26c60cd6806a07bc0851914cf04a532fb3bdbd",
+    "metadata.yaml": "80e6af9f3586b49a9f6a8bd2921efebfab73a58aa72dc04b4e4b434c1ba25c46",
+    "package-lock.json": "bd4d1d3da0e16a57255b4ad842d302a010850fd84e5a884e0dc5b066adc64298",
+    "package.json": "118c40cfa6f7dbd34251c24b3ab00f2319bbfcebac1231fc217b0a4591cc91ae",
     "pages/whatsapp-login/app.js": "714e04dcd94066cb349cbacf1c205aa011edaf7c06bc45c0162beae0db83ed5f",
     "pages/whatsapp-login/index.html": "3e09dcfd47f52a409d7322790a37da774b19fc095ab308f203185fee3783ccd6",
     "pages/whatsapp-login/sandbox-confirm.js": "ee92b10ca68d46099369c2deb841d7a0723ac9206a897752150c8c1c907d69e3",
@@ -62,6 +62,7 @@
     "whatsapp_multi_instance.py": "061507fb518f3ecda427d3b5d578222bf5efea87a8373a68f5538dcbcf192e65",
     "whatsapp_reaction_journal.py": "a7354823515493ff2cf80469492785e6ffd2aac1d637e491d44e1ed80b45a635",
     "whatsapp_streaming_concurrency.py": "3c4a0317faff0921aa22b2acbed5c038cdd21560b76cd0528c1e15156e3c9f85",
+    "whatsapp_video.py": "8599de40d6abcfbfa146b89e63bb6388750556a9516e5495fd9529672929731d",
     "whatsapp_web.py": "38d96871fc5a5c2298a2178ee78297da40dea9971ee3371ac2adfbe32edc9a8e"
   }
 }
