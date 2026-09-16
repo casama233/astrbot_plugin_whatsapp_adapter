@@ -8,6 +8,8 @@ Connect AstrBot to WhatsApp Web through a local Baileys Gateway, with DMs, group
 
 AstrBot **4.24.2+**. Use **Node.js 22/24 LTS** and npm; the minimum is **20.9.0**. Node 20 is EOL and retained for compatibility testing. CI covers Ubuntu / Windows, Python 3.11/3.12 and Node 20/22/24.
 
+Optional `ffmpeg` and `ffprobe`: local videos above 100 MiB are transcoded to H.264/AAC for inline sending. Missing tools or a failed transcode fall back to the original behavior; every other feature is unaffected.
+
 ## Quick start
 
 1. Install from the AstrBot plugin market and keep the default plugin connection settings.

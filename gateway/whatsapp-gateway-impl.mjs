@@ -2530,7 +2530,7 @@ function resolveMediaPayload(type, pathOrUrl, caption, requestedFileName = "") {
     payload.fileName = path.basename(String(requestedFileName || mediaInfo.fileName || "file"));
   }
   if (mediaInfo.mimetype) payload.mimetype = mediaInfo.mimetype;
-  if (mediaInfo.type === "image" || mediaInfo.type === "video") payload.jpegThumbnail = null;
+  // Leave jpegThumbnail unset so Baileys generates the native media preview.
   if (caption && mediaInfo.type !== "audio" && mediaInfo.type !== "sticker") payload.caption = caption;
   return payload;
 }

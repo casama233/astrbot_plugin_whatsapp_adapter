@@ -14,6 +14,7 @@ from astrbot.api.message_components import File, Image, Location, Plain, Record,
 from astrbot.api.platform import At
 
 from .whatsapp_client import WhatsAppGatewayClient
+from .whatsapp_video import send_inline_video
 from .whatsapp_components import WhatsAppButtons, WhatsAppEdit, WhatsAppList, WhatsAppPoll
 from .whatsapp_identity import (
     base_lid_jid,
@@ -1553,14 +1554,8 @@ async def process_message_chain(
                     await prepare_caption() if use_caption else (None, [])
                 )
                 quote_kwargs = state.kwargs()
-                await client.send_media(
-                    target,
-                    "video",
-                    media_path,
-                    caption,
-                    mentions=caption_mentions,
-                    **quote_kwargs,
-                )
+                await send_inline_video(client, target, media_path, caption,
+                                        mentions=caption_mentions, **quote_kwargs)
                 state.consume()
                 pending_raw = None
                 pending_mentions = []
