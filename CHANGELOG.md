@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.49] - 2026-10-09
+
+- Update https-proxy-agent to 9.1.0 while preserving the Baileys 7.0.0-rc14 pin and Pino 9 compatibility.
+- Patch sharp to 0.35.5 and music-metadata to 11.16.1 to remove known media-parser vulnerabilities.
+- Refresh pinned setup-node and setup-python CI actions.
+
 ## [0.2.48] - 2026-09-17
 
 - Transcode local videos above the 100 MiB inline limit to H.264/AAC with a bounded bitrate before sending, keeping the temporary copy alive only until the Gateway consumes it.
