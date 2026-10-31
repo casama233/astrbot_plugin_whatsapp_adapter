@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
@@ -17,7 +17,7 @@ async function startGateway(t, mode) {
   const port = listener.address().port;
   await new Promise((resolve) => listener.close(resolve));
   const child = spawn(process.execPath, [
-    "--import", path.join(root, "tests/gateway-fixtures/register.mjs"),
+    "--import", pathToFileURL(path.join(root, "tests/gateway-fixtures/register.mjs")).href,
     path.join(root, "gateway/whatsapp-gateway.mjs"),
   ], {
     cwd: root,
