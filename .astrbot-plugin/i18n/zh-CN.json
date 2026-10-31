@@ -114,14 +114,16 @@
         "connection_failed": "连接失败",
         "connection_failed_hint": "无法连接到 WhatsApp 服务器，请检查网络后重试。",
         "retry": "重试",
-        "retry_hint": "点击重试按钮重新建立登录会话。",
+        "retry_hint": "重试连接并获取当前有效的二维码。",
         "pairing_title": "手机已扫码，正在完成登录…",
         "pairing_hint": "请保持手机联网，不要刷新或重复扫码。",
         "connecting_title": "正在连接 WhatsApp Web…",
         "connecting_hint": "首次启动需要数秒生成二维码。",
         "logging_in": "正在登录",
         "connecting": "连接中",
-        "login_success_hint": "登录成功后页面会自动切换为已连接。"
+        "login_success_hint": "登录成功后页面会自动切换为已连接。",
+        "expired_title": "二维码已过期",
+        "expired_hint": "请重新获取二维码，再用手机扫描最新的二维码。"
       },
       "pairing": {
         "divider": "或使用手机号码配对",

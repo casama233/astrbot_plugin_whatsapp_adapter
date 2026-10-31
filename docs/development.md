@@ -96,6 +96,16 @@ node --test gateway/*.test.mjs scripts/*.test.mjs
 
 当前 CI 还会在受支持的 Windows 路径验证 Updater v2 相关行为；修改更新器、Page 或路径处理时不要只看单一平台结果。
 
+### 登录 Page 浏览器验收
+
+已安装 Playwright 和 Chromium 的环境可执行：
+
+```bash
+python tests/integration/check_login_page_browser.py
+```
+
+脚本使用真实 Page、合成 bridge 数据及本机静态服务器，检查 QR 过期提示、连按时的请求数量、操作中的控件状态和手机宽度；不会接触正式认证资料或 WhatsApp 网络。Gateway 的 HTTP/session 回归仍由默认 Node 测试执行。
+
 ## Release contract
 
 正常 feature/fix PR 不要手工 bump version。版本发布通过 `.release/X.Y.Z.json` marker 触发；Release workflow 负责同步版本源、更新 CHANGELOG、运行测试、构建/验证 ZIP、生成 SHA-256 并发布。

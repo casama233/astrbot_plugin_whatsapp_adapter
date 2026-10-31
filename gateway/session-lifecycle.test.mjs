@@ -4,6 +4,7 @@ import test from "node:test";
 
 import {
   disconnectKind,
+  hasLinkedCredentials,
   reconnectDelayMs,
   sessionDirectory,
 } from "./session-lifecycle.mjs";
@@ -30,4 +31,10 @@ test("new auth epochs use isolated directories and reject traversal", () => {
     path.join("/data/whatsapp-auth", ".sessions", "session-2"),
   );
   assert.throws(() => sessionDirectory("/data/whatsapp-auth", "../escape"));
+});
+
+test("Web QR identity remains linked even when the mobile registered flag is false", () => {
+  assert.equal(hasLinkedCredentials({ registered: false, me: { id: "15550000:1@s.whatsapp.net" } }), true);
+  assert.equal(hasLinkedCredentials({ registered: true }), true);
+  assert.equal(hasLinkedCredentials({ registered: false }), false);
 });

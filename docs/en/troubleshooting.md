@@ -61,3 +61,9 @@ Do not share auth directories or external Gateway endpoints. See [Multi-instance
 ## Sharing diagnostics
 
 Open **Effective settings and diagnostics** and choose **Refresh and copy diagnostics**. The export hides full phone numbers, JIDs, QR codes, pairing codes and authentication tokens. The text remains available for inspection. The Page identifies the base account it controls; advanced connection details list actual instance ports, and effective sources explain retained overrides.
+
+## Expired QR versus lost authentication
+
+Refreshing an expired QR restarts its connection using the same authentication directory. Concurrent refreshes reuse a connection already preparing a QR or completing pairing. Only explicitly invalid/logged-out sessions are rebuilt. A stale page cannot reset a connected or pairing account; use the deliberate logout action to switch accounts.
+
+Web QR credentials may retain `registered=false` after successful pairing. Check `me.id`, the live connection, and an actual reconnect rather than treating that mobile-registration flag as proof of logout.

@@ -76,6 +76,7 @@ let countdownTimer = null;
 let loggedOutSince = 0;
 let currentConnectionStatus = "unknown";
 let refreshPromise = null;
+let loginActionPromise = null;
 let updateInfo = null;
 let updatePollTimer = null;
 let updateStartedHere = false;
@@ -644,7 +645,8 @@ function renderQr(data) {
   } else {
     loggedOutSince = 0;
   }
-  const timedOut = isLoggedOut && loggedOutSince > 0 && now - loggedOutSince > LOGGED_OUT_TIMEOUT_MS;
+  const qrExpired = data._status === "qr_expired";
+  const timedOut = isLoggedOut && (qrExpired || (loggedOutSince > 0 && now - loggedOutSince > LOGGED_OUT_TIMEOUT_MS));
   clearChildren(els.qrWrap);
   const placeholder = document.createElement("div");
   placeholder.className = "qr-placeholder";
@@ -656,26 +658,24 @@ function renderQr(data) {
     const title = document.createElement("p");
     title.style.fontWeight = "600";
     title.style.color = "#c0392b";
-    title.textContent = t("qr.connection_failed", "Connection failed");
+    title.textContent = qrExpired ? t("qr.expired_title", "QR code expired") : t("qr.connection_failed", "Connection failed");
     const hint = document.createElement("p");
     hint.style.fontSize = "0.82rem";
-    hint.textContent = t("qr.connection_failed_hint", "Could not connect to WhatsApp. Check the network and try again.");
+    hint.textContent = qrExpired ? t("qr.expired_hint", "Get a new QR code, then scan the latest code on your phone.") : t("qr.connection_failed_hint", "Could not connect to WhatsApp. Check the network and try again.");
     if (data.lastError) console.debug("WhatsApp last error:", data.lastError);
     const retryButton = document.createElement("button");
     retryButton.className = "btn btn-sm btn-outline-danger mt-2";
     retryButton.textContent = t("qr.retry", "Retry");
     retryButton.addEventListener("click", () => {
       loggedOutSince = 0;
-      clearPairCode({ hide: true });
-      bridge.apiPost("session/reset", {}).then(() => {
-        log("info", t("log.session_reset_created", "Fresh login session created. Waiting for a QR code…"));
-        setTimeout(() => refresh().catch(() => {}), 1500);
-      }).catch((error) => log("error", tf("log.session_reset_failed", "Could not create a fresh login session: {error}", { error })));
+      retryButton.disabled = true;
+      restartLoginConnection().catch((error) => log("error", tf("log.restart_failed", "Restart failed: {error}", { error })))
+        .finally(() => { retryButton.disabled = false; });
     });
     placeholder.append(icon, title, hint, retryButton);
-    els.qrPhase.textContent = t("qr.connection_failed", "Connection failed");
+    els.qrPhase.textContent = qrExpired ? t("qr.expired_title", "QR code expired") : t("qr.connection_failed", "Connection failed");
     els.qrPhase.className = "phase-badge error";
-    els.qrHint.textContent = t("qr.retry_hint", "Use Retry to create a fresh login session.");
+    els.qrHint.textContent = t("qr.retry_hint", "Retry the connection to get a current QR code.");
   } else {
     const spinner = document.createElement("div");
     spinner.className = "spinner";
@@ -720,7 +720,7 @@ async function refreshOnce() {
   try {
     qr = await bridge.apiGet("qr");
     qr.lastError = status.lastError;
-    qr._status = status.status;
+    qr._status = qr.status || status.status;
     renderQr(qr);
   } catch (error) {
     log("error", tf("log.qr_failed", "QR code request failed: {error}", { error }));
@@ -755,17 +755,33 @@ function handleRefresh() {
   refresh().catch((error) => log("error", tf("log.refresh_failed", "Refresh failed: {error}", { error })));
 }
 
+function restartLoginConnection() {
+  if (loginActionPromise) return loginActionPromise;
+  const controls = [els.refreshQrBtn, els.restartBtn, els.logoutBtn].filter(Boolean);
+  const disabled = controls.map((button) => button.disabled);
+  controls.forEach((button) => { button.disabled = true; button.setAttribute("aria-busy", "true"); });
+  clearPairCode({ hide: true });
+  log("warn", t("log.restart_start", "Restarting connection…"));
+  loginActionPromise = bridge.apiPost("restart", {}).then(async (result) => {
+    log("info", tf("log.restart_result", "Restart result: {status}", { status: result.status || "ok" }));
+    await refresh();
+    return result;
+  }).finally(() => {
+    loginActionPromise = null;
+    controls.forEach((button, index) => { button.disabled = disabled[index]; button.removeAttribute("aria-busy"); });
+  });
+  return loginActionPromise;
+}
+
 els.refreshBtn.addEventListener("click", handleRefresh);
 els.refreshQrBtn?.addEventListener("click", async () => {
+  if (loginActionPromise) return;
   if (["logged_out", "session_invalid", "qr_expired", "error"].includes(currentConnectionStatus)) {
-    log("warn", t("log.session_expired", "Login session expired. Creating a fresh session…"));
-    clearPairCode({ hide: true });
     try {
-      await bridge.apiPost("session/reset", {});
+      await restartLoginConnection();
     } catch (error) {
-      log("error", tf("log.session_reset_failed", "Could not create a fresh login session: {error}", { error }));
+      log("error", tf("log.restart_failed", "Restart failed: {error}", { error }));
     }
-    setTimeout(() => refresh().catch(() => {}), 1000);
     return;
   }
   handleRefresh();
@@ -830,18 +846,15 @@ els.copyPairCodeBtn?.addEventListener("click", async () => {
 });
 
 els.restartBtn.addEventListener("click", async () => {
-  clearPairCode({ hide: true });
-  log("warn", t("log.restart_start", "Restarting connection…"));
   try {
-    const result = await bridge.apiPost("restart", {});
-    log("info", tf("log.restart_result", "Restart result: {status}", { status: result.status || "ok" }));
+    await restartLoginConnection();
   } catch (error) {
     log("error", tf("log.restart_failed", "Restart failed: {error}", { error }));
   }
-  setTimeout(() => refresh().catch(() => {}), 1500);
 });
 
 els.logoutBtn.addEventListener("click", async () => {
+  if (loginActionPromise) return;
   if (logoutConfirmGate.activate() === "armed") {
     armLogoutConfirmation();
     return;

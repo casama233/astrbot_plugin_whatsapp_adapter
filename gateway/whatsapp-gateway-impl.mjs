@@ -19,6 +19,7 @@ import QRCode from "qrcode";
 import qrcode from "qrcode-terminal";
 import {
   disconnectKind,
+  hasLinkedCredentials,
   reconnectDelayMs,
   sessionDirectory,
 } from "./session-lifecycle.mjs";
@@ -2400,7 +2401,7 @@ async function startSocket(opts = {}) {
       const errorMsg = lastDisconnect?.error?.message || lastDisconnect?.error?.output?.payload?.message || `statusCode=${statusCode}`;
       lastError = `连接关闭: ${errorMsg}`;
       const kind = disconnectKind(statusCode);
-      const qrExpired = !state.creds.registered && /QR refs attempts ended/i.test(errorMsg);
+      const qrExpired = !hasLinkedCredentials(state.creds) && /QR refs attempts ended/i.test(errorMsg);
       if (qrExpired) {
         connectionStatus = "qr_expired";
         latestQr = null;
@@ -2749,13 +2750,26 @@ const server = createServer(async (req, res) => {
       return;
     }
     if (req.method === "POST" && url.pathname === "/restart") {
-      const result = ["session_invalid", "logged_out", "qr_expired"].includes(connectionStatus)
-        ? await requestSessionReset("manual_restart_invalid_session")
-        : (await requestSocketStart(), { ok: true, status: connectionStatus, sessionId: currentSessionId });
+      const result = await enqueueSocketTransition("restart", async () => {
+        // A second refresh must not retire the QR/socket the first is preparing.
+        if (socket && ["starting", "qr_pending", "pairing", "pairing_restart"].includes(connectionStatus)) {
+          return { ok: true, status: connectionStatus, sessionId: currentSessionId };
+        }
+        if (["session_invalid", "logged_out"].includes(connectionStatus)) {
+          return resetSocketSession("manual_restart_invalid_session");
+        }
+        // QR expiry ends its transport, not the underlying authentication session.
+        await startSocket();
+        return { ok: true, status: connectionStatus, sessionId: currentSessionId };
+      });
       sendJson(res, 200, result);
       return;
     }
     if (req.method === "POST" && (url.pathname === "/logout" || url.pathname === "/session/reset")) {
+      if (url.pathname === "/session/reset" && (ready || ["pairing", "pairing_restart"].includes(connectionStatus))) {
+        sendJson(res, 409, { ok: false, error: "WhatsApp is signed in or completing pairing; use logout to switch accounts." });
+        return;
+      }
       const reason = url.pathname === "/logout" ? "manual_logout" : "manual_session_reset";
       const result = url.pathname === "/logout"
         ? await requestLogoutAndReset(reason)
@@ -2779,7 +2793,7 @@ const server = createServer(async (req, res) => {
       const initialAvailability = pairingCodeAvailability({
         socket,
         ready,
-        registered: Boolean(socket?.authState?.creds?.registered),
+        registered: hasLinkedCredentials(socket?.authState?.creds),
         connectionStatus,
       });
       if (!initialAvailability.ok) {
@@ -2813,7 +2827,7 @@ const server = createServer(async (req, res) => {
           const availability = pairingCodeAvailability({
             socket: pairingSocket,
             ready,
-            registered: Boolean(pairingSocket?.authState?.creds?.registered),
+            registered: hasLinkedCredentials(pairingSocket?.authState?.creds),
             connectionStatus,
           });
           if (!availability.ok) return availability;

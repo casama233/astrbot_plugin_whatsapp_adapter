@@ -2,6 +2,11 @@ import path from "node:path";
 
 export const INVALID_AUTH_STATUS_CODES = new Set([401, 411, 500]);
 
+// Web QR pairing supplies `me` without setting the mobile-registration flag.
+export function hasLinkedCredentials(creds) {
+  return Boolean(creds?.me?.id || creds?.registered);
+}
+
 export function disconnectKind(statusCode) {
   if (INVALID_AUTH_STATUS_CODES.has(Number(statusCode))) return "auth_invalid";
   if (Number(statusCode) === 515) return "restart";

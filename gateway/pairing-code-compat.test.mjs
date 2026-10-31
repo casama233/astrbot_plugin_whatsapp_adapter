@@ -120,7 +120,6 @@ test("Gateway route keeps pairing credentials out of logs", async () => {
   );
   assert.match(source, /normalizePairingPhone\(body\.phone\)/);
   assert.match(source, /pairingCodePolicy\.begin\(\)/);
-  assert.match(source, /registered: Boolean\(pairingSocket\?\.authState\?\.creds\?\.registered\)/);
   assert.doesNotMatch(source, /log\.(?:info|warn|error)\(\s*\{\s*phone\s*,\s*code/);
   assert.doesNotMatch(source, /log\.(?:info|warn|error)\(\s*\{[^}]*phone/);
 });
