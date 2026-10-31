@@ -1,0 +1,11 @@
+{
+  "version": "0.2.50",
+  "previous_version": "0.2.49",
+  "date": "2026-10-31",
+  "commit_subject": "preserve login state during QR recovery",
+  "notes": [
+    "Refresh expired QR codes without replacing authentication sessions and coalesce repeated refresh requests.",
+    "Show QR expiry immediately, keep current pairing state, and prevent stale login pages resetting connected accounts.",
+    "Recognize linked Web credentials independently of the mobile registered flag."
+  ]
+}
