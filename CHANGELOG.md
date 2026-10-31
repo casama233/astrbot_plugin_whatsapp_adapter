@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.50] - 2026-10-31
+
+- Refresh expired QR codes without replacing authentication sessions and coalesce repeated refresh requests.
+- Show QR expiry immediately, keep current pairing state, and prevent stale login pages resetting connected accounts.
+- Recognize linked Web credentials independently of the mobile registered flag.
+
 ## [0.2.49] - 2026-10-09
 
 - Update https-proxy-agent to 9.1.0 while preserving the Baileys 7.0.0-rc14 pin and Pino 9 compatibility.
