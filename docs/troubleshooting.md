@@ -43,11 +43,13 @@ npm ci
 
 1. 等待几秒，让 Baileys 建立 socket。
 2. 在 Page 中刷新状态 / QR。
-3. 如果状态显示 session invalid / logged out / QR expired，可使用“重建登录 session”流程。
+3. QR 过期时点“刷新二维码”或“重试”，会重新连接并保留原认证目录。只有明确失效或已登出的 session 才会重建；登录完成或配对中的账号不会被旧页面的重建请求清掉。
 4. 查看 `log_level=debug` 下的 Gateway 日志。
 5. 检查网络和代理是否能访问 WhatsApp Web。
 
 不要把“没有二维码”直接等同于“必须删除整个 plugin_data”。
+
+Web 扫码成功后的凭证可能仍有 `registered=false`；应结合 `me.id`、当前连接状态与实际重连判断，不能只用这个标记判定未登录。
 
 ## 3. 扫码后一直正在登录 / 又掉回二维码
 

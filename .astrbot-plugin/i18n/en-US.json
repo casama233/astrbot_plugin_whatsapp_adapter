@@ -114,14 +114,16 @@
         "connection_failed": "Connection failed",
         "connection_failed_hint": "Could not connect to WhatsApp. Check the network and try again.",
         "retry": "Retry",
-        "retry_hint": "Use Retry to create a fresh login session.",
+        "retry_hint": "Retry the connection to get a current QR code.",
         "pairing_title": "Phone scanned. Finishing sign-in…",
         "pairing_hint": "Keep the phone online and do not refresh or scan repeatedly.",
         "connecting_title": "Connecting to WhatsApp Web…",
         "connecting_hint": "The first startup can take a few seconds before a QR code appears.",
         "logging_in": "Signing in",
         "connecting": "Connecting",
-        "login_success_hint": "The page will switch to Connected automatically after sign-in."
+        "login_success_hint": "The page will switch to Connected automatically after sign-in.",
+        "expired_title": "QR code expired",
+        "expired_hint": "Get a new QR code, then scan the latest code on your phone."
       },
       "pairing": {
         "divider": "Or pair with a phone number",

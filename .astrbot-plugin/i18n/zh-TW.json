@@ -114,14 +114,16 @@
         "connection_failed": "連線失敗",
         "connection_failed_hint": "無法連線到 WhatsApp 伺服器，請檢查網路後重試。",
         "retry": "重試",
-        "retry_hint": "點擊重試按鈕重新建立登入工作階段。",
+        "retry_hint": "重試連線並取得目前有效的二維碼。",
         "pairing_title": "手機已掃碼，正在完成登入…",
         "pairing_hint": "請保持手機連線，不要重新整理或重複掃碼。",
         "connecting_title": "正在連線 WhatsApp Web…",
         "connecting_hint": "首次啟動可能需要數秒才會產生 QR Code。",
         "logging_in": "正在登入",
         "connecting": "連線中",
-        "login_success_hint": "登入成功後頁面會自動切換為已連線。"
+        "login_success_hint": "登入成功後頁面會自動切換為已連線。",
+        "expired_title": "二維碼已過期",
+        "expired_hint": "請重新取得二維碼，再用手機掃描最新的二維碼。"
       },
       "pairing": {
         "divider": "或使用手機號碼配對",
