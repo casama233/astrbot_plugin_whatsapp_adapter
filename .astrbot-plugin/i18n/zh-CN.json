@@ -123,7 +123,9 @@
         "connecting": "连接中",
         "login_success_hint": "登录成功后页面会自动切换为已连接。",
         "expired_title": "二维码已过期",
-        "expired_hint": "请重新获取二维码，再用手机扫描最新的二维码。"
+        "expired_hint": "请重新获取二维码，再用手机扫描最新的二维码。",
+        "storage_error_title": "无法保存登录资料",
+        "storage_error_hint": "请先修复服务器存储空间或写入权限，再重试。保留现有登录资料。"
       },
       "pairing": {
         "divider": "或使用手机号码配对",

@@ -89,6 +89,15 @@ async def verify():
     await plugin.initialize()
     assert plugin_store['gateway_port'] == 18888
     assert root_store['platform'][0]['_whatsapp_migration']['version'] == 1
+    # Exercise the real Page -> Python client boundary, replacing only remote I/O.
+    with (
+        patch.object(main, 'request', SimpleNamespace(json=AsyncMock(return_value={'expectedGeneration': 7}))),
+        patch.object(plugin, '_ensure_page_gateway', AsyncMock()),
+        patch.object(plugin.page_client, '_request', AsyncMock(return_value={'ok': True})) as gateway_request,
+    ):
+        response = await plugin.page_restart()
+        assert response.status_code == 200
+        gateway_request.assert_awaited_once_with('POST', '/restart', json_data={'expectedGeneration': 7})
     # Use the real task/map owner, not a manually appended inert instance.
     await manager.load_platform(manager.platforms_config[0])
     await asyncio.sleep(0)

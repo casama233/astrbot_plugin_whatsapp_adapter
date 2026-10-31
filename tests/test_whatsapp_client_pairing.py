@@ -30,6 +30,17 @@ WhatsAppGatewayError = CLIENT_MODULE.WhatsAppGatewayError
 
 
 class WhatsAppClientPairingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_restart_passes_the_observed_generation(self) -> None:
+        client = WhatsAppGatewayClient("http://127.0.0.1:18789")
+        calls = []
+        async def request(method, path, json_data=None):
+            calls.append((method, path, json_data))
+            return {"ok": True}
+        client._request = request
+        await client.restart(expected_generation=7)
+        await client.restart()
+        self.assertEqual(calls, [("POST", "/restart", {"expectedGeneration": 7}), ("POST", "/restart", {})])
+
     async def test_pair_code_posts_only_the_supplied_phone(self) -> None:
         client = WhatsAppGatewayClient("http://127.0.0.1:18789")
         calls: list[tuple[str, str, dict | None]] = []

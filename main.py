@@ -450,9 +450,15 @@ class WhatsAppAdapterPlugin(Star):
 
     async def page_restart(self):
         try:
+            payload = await request.json(default={})
+            if not isinstance(payload, dict):
+                return json_response({"ok": False, "error": "请求数据必须是 JSON 对象。"}, status_code=400)
             await self._ensure_page_gateway()
             logger.info("WhatsApp Gateway 重启（来自管理页）")
-            return json_response(await self.page_client.restart())
+            return json_response(await self.page_client.restart(expected_generation=payload.get("expectedGeneration")))
+        except WhatsAppGatewayError as exc:
+            status = int(exc.status_code or 0)
+            return json_response({"ok": False, "error": str(exc)}, status_code=status if 400 <= status < 500 else 502)
         except Exception as exc:
             logger.warning("WhatsApp Gateway 重启失败（管理页）: %s", exc)
             return json_response(

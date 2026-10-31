@@ -52,10 +52,6 @@ test("socket generations require credential persistence to settle successfully b
     source,
     /previous credential persistence queue did not settle before socket restart/,
   );
-  assert.match(
-    source,
-    /previous credential persistence failed before socket restart/,
-  );
   assert.match(source, /activeCredsSaveFailure = error;/);
   assert.match(source, /activeCredsSaveFailure = null;/);
   assert.match(

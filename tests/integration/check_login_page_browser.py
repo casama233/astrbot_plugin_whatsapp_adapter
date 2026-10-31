@@ -18,10 +18,11 @@ class StaticPage(SimpleHTTPRequestHandler):
         pass
 
 BRIDGE = r'''
-window.posts = [];
+window.posts = []; window.postBodies = [];
 window.testMode = new URLSearchParams(location.search).get('mode') || 'expired';
-let status = {ok:true, gatewayHealthy:true, ready:false, status:'qr_expired'};
-let qr = {ok:true, ready:false, status:window.testMode==='pairing'?'pairing':'qr_expired'};
+let status = {ok:true, gatewayHealthy:true, ready:false, status:'qr_expired',connectionGeneration:11};
+let qr = {ok:true, ready:false, status:window.testMode==='pairing'?'pairing':'qr_expired',connectionGeneration:11};
+if(window.testMode==='storage'){status.lastErrorCode='auth_storage_unavailable';qr.lastErrorCode=status.lastErrorCode;}
 window.AstrBotPluginPage = {
  ready:async()=>{}, t:(key,fallback)=>fallback, getLocale:()=> 'en-US', onContext:()=>{},
  apiGet:async(route)=>{
@@ -30,9 +31,9 @@ window.AstrBotPluginPage = {
   if(route==='qr') return {...qr};
   return {ok:true,state:'idle',phase:'idle',pluginVersion:'0.2.49',currentVersion:'0.2.49'};
  },
- apiPost:(route)=>{
+ apiPost:(route,body)=>{
   if(route!=='restart') return Promise.resolve({ok:true,state:'idle',phase:'idle',updateAvailable:false});
-  window.posts.push(route);
+  window.posts.push(route); window.postBodies.push(body);
   return new Promise(resolve=>{window.finishRestart=()=>{
    status={...status,status:'qr_pending'};
    qr={ok:true,ready:false,status:'qr_pending',qrDataUrl:'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="16" height="16"/%3E'};
@@ -59,6 +60,7 @@ def main():
             page.evaluate("document.querySelector('#refreshQr').click(); document.querySelector('#refreshQr').click(); document.querySelector('#qrWrap button').click()")
             page.wait_for_function('window.posts.length === 1')
             assert page.evaluate('window.posts') == ['restart']
+            assert page.evaluate('window.postBodies') == [{'expectedGeneration':11}]
             assert page.locator('#refreshQr').is_disabled()
             assert page.locator('#restart').get_attribute('aria-busy') == 'true'
             checks.append('rapid refresh/retry clicks issue one soft restart and lock the controls')
@@ -69,6 +71,10 @@ def main():
             page.goto(f'http://127.0.0.1:{server.server_port}/index.html?mode=pairing')
             page.locator('#qrPhase').filter(has_text='Signing in').wait_for()
             checks.append('newer pairing state is not overwritten by an earlier expired status response')
+            page.goto(f'http://127.0.0.1:{server.server_port}/index.html?mode=storage')
+            page.locator('#qrPhase').filter(has_text='Login data could not be saved').wait_for()
+            assert 'write permissions' in page.locator('#qrWrap').inner_text()
+            checks.append('storage failure has an immediate actionable message rather than requesting another scan')
             page.set_viewport_size({'width':390,'height':844})
             assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
             checks.append('mobile viewport has no horizontal overflow')
