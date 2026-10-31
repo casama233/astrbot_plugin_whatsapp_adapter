@@ -67,3 +67,5 @@ Open **Effective settings and diagnostics** and choose **Refresh and copy diagno
 Refreshing an expired QR restarts its connection using the same authentication directory. Concurrent refreshes reuse a connection already preparing a QR or completing pairing. Only explicitly invalid/logged-out sessions are rebuilt. A stale page cannot reset a connected or pairing account; use the deliberate logout action to switch accounts.
 
 Web QR credentials may retain `registered=false` after successful pairing. Check `me.id`, the live connection, and an actual reconnect rather than treating that mobile-registration flag as proof of logout.
+
+Refresh requests include the connection generation they observed so repeats cannot close a newer socket. An explicit retry can still replace a stalled socket. If credential persistence failed, fix storage space/permissions first and retry: the Gateway must flush the pending in-memory credentials successfully before loading auth from disk. The Page displays a storage-specific error instead of asking for another scan.

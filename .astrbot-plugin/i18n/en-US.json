@@ -123,7 +123,9 @@
         "connecting": "Connecting",
         "login_success_hint": "The page will switch to Connected automatically after sign-in.",
         "expired_title": "QR code expired",
-        "expired_hint": "Get a new QR code, then scan the latest code on your phone."
+        "expired_hint": "Get a new QR code, then scan the latest code on your phone.",
+        "storage_error_title": "Login data could not be saved",
+        "storage_error_hint": "Fix server storage space or write permissions, then retry. Keep the current login data."
       },
       "pairing": {
         "divider": "Or pair with a phone number",

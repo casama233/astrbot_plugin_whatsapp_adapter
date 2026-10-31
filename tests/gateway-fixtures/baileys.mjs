@@ -1,7 +1,8 @@
 // The real protocol library/auth serializer runs; only the remote socket is fake.
 export * from '../../node_modules/@whiskeysockets/baileys/lib/index.js';
 import { EventEmitter } from 'node:events';
-import { appendFile } from 'node:fs/promises';
+import { appendFile, mkdir } from 'node:fs/promises';
+import path from 'node:path';
 import { appendFileSync } from 'node:fs';
 let socketCount = 0;
 export default function makeSocket({ auth }) {
@@ -19,8 +20,12 @@ export default function makeSocket({ auth }) {
       return { key: { id: 'fixture-send', remoteJid: to }, message: payload };
     },
   };
-  setImmediate(() => {
-    if (process.env.WA_TEST_LOGIN_FLOW === 'qr-expiry') {
+  setImmediate(async () => {
+    if (process.env.WA_TEST_LOGIN_FLOW?.startsWith('qr-expiry')) {
+      if (process.env.WA_TEST_LOGIN_FLOW === 'qr-expiry-save-error' && instance === 1) {
+        await mkdir(path.join(process.env.WA_AUTH_DIR, 'creds.json'));
+        ev.emit('creds.update', {});
+      }
       ev.emit('connection.update', { qr: `fixture-qr-${instance}` });
       if (instance === 1) setTimeout(() => ev.emit('connection.update', {
         connection: 'close', lastDisconnect: { error: { message: 'QR refs attempts ended', output: { statusCode: 408 } } },

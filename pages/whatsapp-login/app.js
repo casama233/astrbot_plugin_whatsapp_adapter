@@ -591,7 +591,8 @@ async function initializeUpdate() {
 function renderQr(data) {
   if (!data) return;
   lastQrData = data;
-  if (data.ready) {
+  const storageError = data.lastErrorCode === "auth_storage_unavailable";
+  if (data.ready && !storageError) {
     loggedOutSince = 0;
     clearChildren(els.qrWrap);
     const placeholder = document.createElement("div");
@@ -625,7 +626,7 @@ function renderQr(data) {
     return;
   }
 
-  if (data.qrDataUrl) {
+  if (!storageError && data.qrDataUrl) {
     loggedOutSince = 0;
     clearChildren(els.qrWrap);
     const image = document.createElement("img");
@@ -646,7 +647,7 @@ function renderQr(data) {
     loggedOutSince = 0;
   }
   const qrExpired = data._status === "qr_expired";
-  const timedOut = isLoggedOut && (qrExpired || (loggedOutSince > 0 && now - loggedOutSince > LOGGED_OUT_TIMEOUT_MS));
+  const timedOut = storageError || (isLoggedOut && (qrExpired || (loggedOutSince > 0 && now - loggedOutSince > LOGGED_OUT_TIMEOUT_MS)));
   clearChildren(els.qrWrap);
   const placeholder = document.createElement("div");
   placeholder.className = "qr-placeholder";
@@ -658,10 +659,13 @@ function renderQr(data) {
     const title = document.createElement("p");
     title.style.fontWeight = "600";
     title.style.color = "#c0392b";
-    title.textContent = qrExpired ? t("qr.expired_title", "QR code expired") : t("qr.connection_failed", "Connection failed");
+    const failureTitle = storageError ? t("qr.storage_error_title", "Login data could not be saved")
+      : qrExpired ? t("qr.expired_title", "QR code expired") : t("qr.connection_failed", "Connection failed");
+    title.textContent = failureTitle;
     const hint = document.createElement("p");
     hint.style.fontSize = "0.82rem";
-    hint.textContent = qrExpired ? t("qr.expired_hint", "Get a new QR code, then scan the latest code on your phone.") : t("qr.connection_failed_hint", "Could not connect to WhatsApp. Check the network and try again.");
+    hint.textContent = storageError ? t("qr.storage_error_hint", "Fix server storage space or write permissions, then retry. Keep the current login data.")
+      : qrExpired ? t("qr.expired_hint", "Get a new QR code, then scan the latest code on your phone.") : t("qr.connection_failed_hint", "Could not connect to WhatsApp. Check the network and try again.");
     if (data.lastError) console.debug("WhatsApp last error:", data.lastError);
     const retryButton = document.createElement("button");
     retryButton.className = "btn btn-sm btn-outline-danger mt-2";
@@ -673,7 +677,7 @@ function renderQr(data) {
         .finally(() => { retryButton.disabled = false; });
     });
     placeholder.append(icon, title, hint, retryButton);
-    els.qrPhase.textContent = qrExpired ? t("qr.expired_title", "QR code expired") : t("qr.connection_failed", "Connection failed");
+    els.qrPhase.textContent = failureTitle;
     els.qrPhase.className = "phase-badge error";
     els.qrHint.textContent = t("qr.retry_hint", "Retry the connection to get a current QR code.");
   } else {
@@ -720,6 +724,7 @@ async function refreshOnce() {
   try {
     qr = await bridge.apiGet("qr");
     qr.lastError = status.lastError;
+    if (!Object.hasOwn(qr, "lastErrorCode")) qr.lastErrorCode = status.lastErrorCode;
     qr._status = qr.status || status.status;
     renderQr(qr);
   } catch (error) {
@@ -762,7 +767,9 @@ function restartLoginConnection() {
   controls.forEach((button) => { button.disabled = true; button.setAttribute("aria-busy", "true"); });
   clearPairCode({ hide: true });
   log("warn", t("log.restart_start", "Restarting connection…"));
-  loginActionPromise = bridge.apiPost("restart", {}).then(async (result) => {
+  const expectedGeneration = lastQrData?.connectionGeneration ?? lastStatusData?.connectionGeneration;
+  const payload = Number.isInteger(expectedGeneration) ? { expectedGeneration } : {};
+  loginActionPromise = bridge.apiPost("restart", payload).then(async (result) => {
     log("info", tf("log.restart_result", "Restart result: {status}", { status: result.status || "ok" }));
     await refresh();
     return result;
@@ -776,7 +783,7 @@ function restartLoginConnection() {
 els.refreshBtn.addEventListener("click", handleRefresh);
 els.refreshQrBtn?.addEventListener("click", async () => {
   if (loginActionPromise) return;
-  if (["logged_out", "session_invalid", "qr_expired", "error"].includes(currentConnectionStatus)) {
+  if (!["connected", "pairing", "pairing_restart"].includes(currentConnectionStatus)) {
     try {
       await restartLoginConnection();
     } catch (error) {

@@ -123,7 +123,9 @@
         "connecting": "連線中",
         "login_success_hint": "登入成功後頁面會自動切換為已連線。",
         "expired_title": "二維碼已過期",
-        "expired_hint": "請重新取得二維碼，再用手機掃描最新的二維碼。"
+        "expired_hint": "請重新取得二維碼，再用手機掃描最新的二維碼。",
+        "storage_error_title": "無法儲存登入資料",
+        "storage_error_hint": "請先修復伺服器儲存空間或寫入權限，再重試。保留現有登入資料。"
       },
       "pairing": {
         "divider": "或使用手機號碼配對",
