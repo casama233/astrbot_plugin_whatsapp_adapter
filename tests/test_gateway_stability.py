@@ -11,6 +11,13 @@ import gateway_stability as stability
 
 
 class NpmDiscoveryTests(unittest.TestCase):
+    def assert_npm_command(self, node: str, cli: Path) -> None:
+        command = stability._npm_command(node)
+        self.assertEqual(len(command), 2)
+        self.assertEqual(command[0], node)
+        # Windows may expose Temp through an 8.3 alias; npm's identity matters.
+        self.assertTrue(Path(command[1]).samefile(cli), command)
+
     def test_node_on_path_finds_its_adjacent_npm(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -22,7 +29,7 @@ class NpmDiscoveryTests(unittest.TestCase):
             cli.parent.mkdir(parents=True)
             cli.touch()
             with patch.dict(os.environ, {"PATH": str(root)}):
-                self.assertEqual(stability._npm_command(name), [name, str(cli)])
+                self.assert_npm_command(name, cli)
 
     def test_configured_node_finds_its_npm_without_path(self):
         for node_name, relative in (("node.exe", "node_modules/npm/bin/npm-cli.js"),
@@ -36,7 +43,7 @@ class NpmDiscoveryTests(unittest.TestCase):
                 cli.parent.mkdir(parents=True)
                 cli.write_text("// npm entrypoint\n", encoding="utf-8")
                 with patch.dict(os.environ, {"PATH": ""}):
-                    self.assertEqual(stability._npm_command(str(node)), [str(node), str(cli)])
+                    self.assert_npm_command(str(node), cli)
 
     def test_configured_node_takes_precedence_over_an_unusable_path_wrapper(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -54,7 +61,7 @@ class NpmDiscoveryTests(unittest.TestCase):
                 wrapper.write_text("unrelated wrapper\n", encoding="utf-8")
                 wrapper.chmod(0o755)
             with patch.dict(os.environ, {"PATH": str(shims)}):
-                self.assertEqual(stability._npm_command(str(node)), [str(node), str(cli)])
+                self.assert_npm_command(str(node), cli)
 
     def test_node_symlink_prefers_npm_bundled_with_its_target(self):
         for node_name, relative in (("node.exe", "node_modules/npm/bin/npm-cli.js"),
@@ -76,11 +83,11 @@ class NpmDiscoveryTests(unittest.TestCase):
                     candidate.parent.mkdir(parents=True)
                     candidate.touch()
                 with patch.dict(os.environ, {"PATH": ""}):
-                    self.assertEqual(stability._npm_command(str(node)), [str(node), str(cli)])
+                    self.assert_npm_command(str(node), cli)
                 # Keep the symlink-directory fallback when the target has no npm.
                 cli.unlink()
                 with patch.dict(os.environ, {"PATH": ""}):
-                    self.assertEqual(stability._npm_command(str(node)), [str(node), str(other_cli)])
+                    self.assert_npm_command(str(node), other_cli)
 
     def test_node_without_adjacent_npm_falls_back_to_path(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -93,7 +100,7 @@ class NpmDiscoveryTests(unittest.TestCase):
             cli.parent.mkdir(parents=True)
             cli.touch()
             with patch("gateway_stability.shutil.which", side_effect=lambda name: str(npm) if name == "npm" else None):
-                self.assertEqual(stability._npm_command(str(node)), [str(node), str(cli)])
+                self.assert_npm_command(str(node), cli)
 
     def test_missing_npm_still_reports_the_error(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"PATH": ""}):
