@@ -163,6 +163,13 @@ async def probe_node_runtime(node: str) -> dict[str, Any]:
 
 
 def _npm_command(node: str) -> list[str]:
+    node_path = Path(shutil.which(node) or node)
+    # An explicit Node path may belong to an installation outside the service PATH.
+    for directory in (node_path.parent, node_path.resolve().parent):
+        for candidate in (directory / "node_modules/npm/bin/npm-cli.js",
+                          directory.parent / "lib/node_modules/npm/bin/npm-cli.js"):
+            if candidate.is_file():
+                return [node, str(candidate)]
     npm = shutil.which("npm")
     if not npm:
         raise RuntimeError("npm not found; install Node.js/npm before starting the Gateway")
@@ -173,7 +180,7 @@ def _npm_command(node: str) -> list[str]:
     for candidate in candidates:
         if candidate.is_file() and candidate.name == "npm-cli.js":
             return [node, str(candidate)]
-    raise RuntimeError("Cannot locate npm-cli.js beside npm; use a standard Node.js/npm installation")
+    raise RuntimeError("Cannot locate npm-cli.js beside the configured Node.js or npm; use a standard Node.js/npm installation")
 
 
 async def prepare_node_dependencies(

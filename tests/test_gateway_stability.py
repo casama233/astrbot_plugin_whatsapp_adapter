@@ -1,11 +1,65 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 import gateway_stability as stability
+
+
+class NpmDiscoveryTests(unittest.TestCase):
+    def test_node_on_path_finds_its_adjacent_npm(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            name = "node.exe" if os.name == "nt" else "node"
+            node = root / name
+            node.touch()
+            node.chmod(0o755)
+            cli = root / "node_modules/npm/bin/npm-cli.js"
+            cli.parent.mkdir(parents=True)
+            cli.touch()
+            with patch.dict(os.environ, {"PATH": str(root)}):
+                self.assertEqual(stability._npm_command(name), [name, str(cli)])
+
+    def test_configured_node_finds_its_npm_without_path(self):
+        for node_name, relative in (("node.exe", "node_modules/npm/bin/npm-cli.js"),
+                                    ("bin/node", "lib/node_modules/npm/bin/npm-cli.js")):
+            with self.subTest(layout=node_name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                node = root / node_name
+                node.parent.mkdir(parents=True, exist_ok=True)
+                node.touch()
+                cli = root / relative
+                cli.parent.mkdir(parents=True)
+                cli.write_text("// npm entrypoint\n", encoding="utf-8")
+                with patch.dict(os.environ, {"PATH": ""}):
+                    self.assertEqual(stability._npm_command(str(node)), [str(node), str(cli)])
+
+    def test_configured_node_takes_precedence_over_an_unusable_path_wrapper(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            node = root / "selected/node.exe"
+            node.parent.mkdir()
+            node.touch()
+            cli = node.parent / "node_modules/npm/bin/npm-cli.js"
+            cli.parent.mkdir(parents=True)
+            cli.touch()
+            shims = root / "shims"
+            shims.mkdir()
+            for name in ("npm", "npm.cmd"):
+                wrapper = shims / name
+                wrapper.write_text("unrelated wrapper\n", encoding="utf-8")
+                wrapper.chmod(0o755)
+            with patch.dict(os.environ, {"PATH": str(shims)}):
+                self.assertEqual(stability._npm_command(str(node)), [str(node), str(cli)])
+
+    def test_missing_npm_still_reports_the_error(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"PATH": ""}):
+            with self.assertRaisesRegex(RuntimeError, "npm not found"):
+                stability._npm_command(str(Path(tmp) / "node"))
 
 
 class GatewayStabilityTests(unittest.IsolatedAsyncioTestCase):
