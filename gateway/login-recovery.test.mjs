@@ -90,7 +90,8 @@ test("a stale page cannot reset a linked Web account whose registered flag is fa
 
 test("a linked Web account cannot request a second pairing code while reconnecting", async (t) => {
   const gateway = await startGateway(t, "linked-connecting");
-  await gateway.until((s) => s.status === "starting");
+  // The HTTP listener also reports starting before credentials and the first socket load.
+  await gateway.until((s) => s.status === "starting" && s.connectionGeneration > 0);
   const result = await gateway.request("/pair-code", "POST", { phone: "+15555550100" });
   assert.equal(result.status, 409);
   assert.match(result.body.error, /registered or connected/);
@@ -110,7 +111,7 @@ test("duplicate auth resets create one fresh session and do not invalidate its Q
 
 test("a linked account is protected from reset while its transport reconnects", async (t) => {
   const gateway = await startGateway(t, "linked-connecting");
-  const before = await gateway.until((s) => s.status === "starting");
+  const before = await gateway.until((s) => s.status === "starting" && s.connectionGeneration > 0);
   const result = await gateway.request("/session/reset", "POST");
   assert.equal(result.status, 409);
   assert.equal((await gateway.request("/status")).body.sessionId, before.sessionId);
