@@ -1,0 +1,10 @@
+{
+  "version": "0.2.51",
+  "previous_version": "0.2.50",
+  "date": "2026-11-10",
+  "commit_subject": "find npm in the configured Node installation",
+  "notes": [
+    "Find npm beside the configured Node executable before searching PATH, including standard Windows and Unix Node distributions.",
+    "Keep the configured Node executable for npm commands and preserve existing dependency preparation and account sessions."
+  ]
+}
