@@ -8,6 +8,6 @@ The Login Page rechecks the configured Node and complete dependency tree on ever
 
 Installation refuses to rebuild a directory used by another managed Gateway. Stop all affected WhatsApp instances before retrying. Staging uses its own directory and can prepare while the live tree remains in use. Ownership survives plugin hot reload within one AstrBot process; independent processes and manually started Gateways must use separate mutable dependency directories.
 
-Cancellation and timeout terminate the child process tree before returning. Windows runs npm-cli.js through the configured Node executable.
+Cancellation and timeout terminate the child process tree before returning. npm is searched for beside the configured Node installation before falling back to the system PATH. If Node is a symlink, the resolved target installation takes precedence over the symlink directory. An absolute Node path therefore does not need to be on AstrBot's PATH. Windows runs npm-cli.js through the configured Node executable.
 
 Use Node.js 22/24 LTS. The minimum is 20.9.0; Node 20 is EOL and retained only for legacy CI coverage. See the [Node release schedule](https://nodejs.org/en/about/previous-releases). Ubuntu/Windows CI covers Node 20/22/24 and Python 3.11/3.12. `python scripts/verify-dependencies.py` checks real installation, patching, imports and receipt reuse without logging into WhatsApp.
