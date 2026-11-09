@@ -12,7 +12,7 @@
 
 **不支援兩個獨立 AstrBot 程序或手工啟動的 external Gateway 同時共用一個可變 node_modules 目錄。**它們應使用不同部署目錄；手工重裝前自行停止相關程序。這不是跨程序鎖，也不會擅自停止其他帳號。
 
-取消或逾時會先終止安裝子程序；失敗不會寫入新的成功標記。先從設定的 Node 安裝目錄尋找隨附的 npm，找不到才查系統 PATH；因此設定 Node 絕對路徑時，不要求該目錄也出現在 AstrBot 的 PATH。Windows 使用設定的 Node 執行 npm-cli.js，不依賴 shell 對 npm.cmd 的解析。
+取消或逾時會先終止安裝子程序；失敗不會寫入新的成功標記。先從設定的 Node 安裝目錄尋找隨附的 npm；若 Node 是符號連結，優先檢查解析後的目標安裝目錄，再檢查連結所在目錄，最後才查系統 PATH。因此設定 Node 絕對路徑時，不要求該目錄也出現在 AstrBot 的 PATH。Windows 使用設定的 Node 執行 npm-cli.js，不依賴 shell 對 npm.cmd 的解析。
 
 ## 支援環境
 
