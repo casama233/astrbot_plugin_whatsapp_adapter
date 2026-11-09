@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.51] - 2026-11-10
+
+- Find npm beside the configured Node executable before searching PATH, including standard Windows and Unix Node distributions.
+- Keep the configured Node executable for npm commands and preserve existing dependency preparation and account sessions.
+
 ## [0.2.50] - 2026-10-31
 
 - Refresh expired QR codes without replacing authentication sessions and coalesce repeated refresh requests.
