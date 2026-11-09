@@ -19,6 +19,7 @@ import QRCode from "qrcode";
 import qrcode from "qrcode-terminal";
 import {
   disconnectKind,
+  hasLinkedCredentials,
   reconnectDelayMs,
   sessionDirectory,
 } from "./session-lifecycle.mjs";
@@ -130,6 +131,7 @@ let configured = false;
 let selfJid = null;
 let selfLid = null;
 let lastError = null;
+let lastErrorCode = null;
 const messageCache = new Map();
 const maxMessageCacheSize = 500;
 const mentionDirectory = new Map();
@@ -2154,7 +2156,23 @@ function requestSocketStart(opts = {}) {
 }
 
 function requestSessionReset(reason) {
-  return enqueueSocketTransition("reset", () => resetSocketSession(reason));
+  const requestedSessionId = currentSessionId;
+  return enqueueSocketTransition("reset", () => {
+    if (requestedSessionId !== currentSessionId) {
+      return { ok: true, status: connectionStatus, sessionId: currentSessionId };
+    }
+    if (String(reason).startsWith("manual_")) {
+      const linked = hasLinkedCredentials(socket?.authState?.creds);
+      if (ready || ["pairing", "pairing_restart"].includes(connectionStatus)
+          || (linked && !["session_invalid", "logged_out"].includes(connectionStatus))) {
+        return { ok: false, statusCode: 409, error: "WhatsApp is signed in or completing pairing; use logout to switch accounts." };
+      }
+      if (socket && ["starting", "qr_pending"].includes(connectionStatus)) {
+        return { ok: true, status: connectionStatus, sessionId: currentSessionId };
+      }
+    }
+    return resetSocketSession(reason);
+  });
 }
 
 function requestLogoutAndReset(reason) {
@@ -2181,8 +2199,20 @@ async function startSocket(opts = {}) {
     throw new Error("previous credential persistence queue did not settle before socket restart");
   }
   if (activeCredsSaveFailure) {
-    const detail = String(activeCredsSaveFailure?.message || activeCredsSaveFailure);
-    throw new Error(`previous credential persistence failed before socket restart: ${detail}`);
+    // Retry the pending in-memory credentials after storage recovers, before
+    // reading auth from disk. Never fall back to an older credential snapshot.
+    if (activeSaveCreds) {
+      activeCredsSaveQueue = activeCredsSaveQueue.then(activeSaveCreds)
+        .then(() => { activeCredsSaveFailure = null; })
+        .catch((error) => { activeCredsSaveFailure = error; });
+      await settleWithin([activeCredsSaveQueue], 5000);
+    }
+    if (activeCredsSaveFailure) {
+      connectionStatus = "error";
+      lastErrorCode = "auth_storage_unavailable";
+      lastError = "Login data could not be saved. Check free disk space and auth directory permissions, then retry.";
+      throw new Error(lastError, { cause: activeCredsSaveFailure });
+    }
   }
   activeSaveCreds = null;
   activeCredsSaveQueue = Promise.resolve();
@@ -2208,6 +2238,9 @@ async function startSocket(opts = {}) {
   }
   socket = null;
   ready = false;
+  latestQr = null;
+  latestQrDataUrl = null;
+  lastErrorCode = null;
   stopPresenceTimer();
   connectionStatus = "starting";
   await mkdir(currentAuthDir, { recursive: true });
@@ -2240,6 +2273,7 @@ async function startSocket(opts = {}) {
         activeCredsSaveFailure = error;
         if (generation !== socketGeneration || socketForGeneration !== socket) return;
         lastError = `保存登录凭证失败: ${String(error?.message || error)}`;
+        lastErrorCode = "auth_storage_unavailable";
         log.error({ error, generation, sessionId: currentSessionId }, "failed to persist auth credentials");
       });
   });
@@ -2371,6 +2405,7 @@ async function startSocket(opts = {}) {
       latestQr = null;
       latestQrDataUrl = null;
       lastError = null;
+      lastErrorCode = null;
       connectionStatus = "connected";
       selfJid = socketForGeneration.user?.id
         ? normalizeIdentityJid(socketForGeneration.user.id)
@@ -2400,7 +2435,7 @@ async function startSocket(opts = {}) {
       const errorMsg = lastDisconnect?.error?.message || lastDisconnect?.error?.output?.payload?.message || `statusCode=${statusCode}`;
       lastError = `连接关闭: ${errorMsg}`;
       const kind = disconnectKind(statusCode);
-      const qrExpired = !state.creds.registered && /QR refs attempts ended/i.test(errorMsg);
+      const qrExpired = !hasLinkedCredentials(state.creds) && /QR refs attempts ended/i.test(errorMsg);
       if (qrExpired) {
         connectionStatus = "qr_expired";
         latestQr = null;
@@ -2504,10 +2539,12 @@ function statusPayload() {
     authDir,
     sessionAuthDir: currentAuthDir,
     sessionId: currentSessionId,
+    connectionGeneration: socketGeneration,
     resetSequence,
     hasQr: Boolean(latestQr),
     lastPresenceAt,
     lastError,
+    lastErrorCode,
     config: runtimeConfig,
   };
 }
@@ -2650,7 +2687,8 @@ const server = createServer(async (req, res) => {
       return;
     }
     if (req.method === "GET" && url.pathname === "/qr") {
-      sendJson(res, 200, { ok: true, ready, status: connectionStatus, qr: latestQr, qrDataUrl: latestQrDataUrl });
+      sendJson(res, 200, { ok: true, ready, status: connectionStatus, connectionGeneration: socketGeneration,
+        lastErrorCode, qr: latestQr, qrDataUrl: latestQrDataUrl });
       return;
     }
     if (req.method === "GET" && url.pathname === "/events") {
@@ -2749,9 +2787,24 @@ const server = createServer(async (req, res) => {
       return;
     }
     if (req.method === "POST" && url.pathname === "/restart") {
-      const result = ["session_invalid", "logged_out", "qr_expired"].includes(connectionStatus)
-        ? await requestSessionReset("manual_restart_invalid_session")
-        : (await requestSocketStart(), { ok: true, status: connectionStatus, sessionId: currentSessionId });
+      const body = await readJson(req);
+      if (body.expectedGeneration !== undefined && (!Number.isInteger(body.expectedGeneration) || body.expectedGeneration < 0)) {
+        sendJson(res, 400, { ok: false, error: "expectedGeneration must be a non-negative integer" });
+        return;
+      }
+      const requestedGeneration = body.expectedGeneration ?? socketGeneration;
+      const result = await enqueueSocketTransition("restart", async () => {
+        // Repeated clicks observing the old socket must not retire its replacement.
+        if (socketGeneration !== requestedGeneration) {
+          return { ok: true, status: connectionStatus, sessionId: currentSessionId };
+        }
+        if (["session_invalid", "logged_out"].includes(connectionStatus)) {
+          return resetSocketSession("manual_restart_invalid_session");
+        }
+        // QR expiry ends its transport, not the underlying authentication session.
+        await startSocket();
+        return { ok: true, status: connectionStatus, sessionId: currentSessionId };
+      });
       sendJson(res, 200, result);
       return;
     }
@@ -2760,7 +2813,7 @@ const server = createServer(async (req, res) => {
       const result = url.pathname === "/logout"
         ? await requestLogoutAndReset(reason)
         : await requestSessionReset(reason);
-      sendJson(res, 200, result);
+      sendJson(res, result.statusCode || 200, result);
       return;
     }
     if (req.method === "POST" && url.pathname === "/pair-code") {
@@ -2779,7 +2832,7 @@ const server = createServer(async (req, res) => {
       const initialAvailability = pairingCodeAvailability({
         socket,
         ready,
-        registered: Boolean(socket?.authState?.creds?.registered),
+        registered: hasLinkedCredentials(socket?.authState?.creds),
         connectionStatus,
       });
       if (!initialAvailability.ok) {
@@ -2813,7 +2866,7 @@ const server = createServer(async (req, res) => {
           const availability = pairingCodeAvailability({
             socket: pairingSocket,
             ready,
-            registered: Boolean(pairingSocket?.authState?.creds?.registered),
+            registered: hasLinkedCredentials(pairingSocket?.authState?.creds),
             connectionStatus,
           });
           if (!availability.ok) return availability;
@@ -3257,7 +3310,7 @@ server.on("error", (error) => {
 });
 
 server.listen(port, host, () => {
-  log.info({ host, port, authDir }, "WhatsApp Gateway listening");
+  log.info({ host, port: server.address().port, authDir }, "WhatsApp Gateway listening");
 });
 
 initializeAuthSession().then(() => requestSocketStart()).catch((error) => {
