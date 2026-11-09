@@ -305,8 +305,9 @@ class WhatsAppGatewayClient:
             payload["endTimestampMs"] = end_timestamp_ms
         return await self._request("POST", "/send/event", json_data=payload)
 
-    async def restart(self) -> dict[str, Any]:
-        return await self._request("POST", "/restart", json_data={})
+    async def restart(self, expected_generation: int | None = None) -> dict[str, Any]:
+        payload = {} if expected_generation is None else {"expectedGeneration": expected_generation}
+        return await self._request("POST", "/restart", json_data=payload)
 
     async def logout(self) -> dict[str, Any]:
         return await self._request("POST", "/logout", json_data={})
