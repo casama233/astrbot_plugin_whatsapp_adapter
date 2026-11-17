@@ -28,11 +28,12 @@ The Gateway tries to resolve PN/LID before a first unknown-LID message enters As
 
 ## Replies and group wake semantics
 
-Quoted-message metadata and wake signals are deliberately separate.
+Replies preserve quoted-message metadata. Group wake decisions use the quoted sender's transport identity.
 
 - Quoted content, nickname, message ID, and QQ-compatible fields are preserved for downstream plugins.
-- Quoting a bot message **does not impersonate an @mention**.
-- Group replies are triggered only by a real @bot, mention-all, command, or another normal AstrBot Core wake condition.
+- A reply to this bot sets native wake flags without adding an @mention. Quoting another sender or matching a display name alone does not wake the bot.
+- Real @bot mentions, mention-all, commands, and other normal AstrBot Core wake conditions remain supported. `ignore_at_all` still controls mention-all.
+- A wake event lets the selected AstrBot handler decide whether to reply. It does not force a model response.
 - Pre-ack reactions are independent from wake state and cannot turn an otherwise ordinary group message into a wake event.
 - Outbound WhatsApp quoting happens only when the outgoing `MessageChain` contains `Reply`, and split messages consume the quote only once.
 

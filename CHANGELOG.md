@@ -1,5 +1,9 @@
 # Changelog
 
+## [Unreleased]
+
+- Let replies to this bot enter native wake handling and optional mention-mode pre-ack, while preserving quoted-message identity and the handler's choice to stay silent.
+
 ## [0.2.51] - 2026-11-10
 
 - Find npm beside the configured Node executable before searching PATH, including standard Windows and Unix Node distributions.
