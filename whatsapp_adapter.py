@@ -1660,9 +1660,7 @@ class WhatsAppPlatformAdapter(Platform):
                 should_ack = pre_ack_private
             else:
                 group_mode = self._group_pre_ack_mode()
-                should_ack = group_mode == "always" or (
-                    group_mode == "mentions" and is_addressed
-                )
+                should_ack = group_mode == "always" or (group_mode == "mentions" and is_addressed)
             if should_ack:
                 await self._pre_ack(event)
         if is_legacy_command:
