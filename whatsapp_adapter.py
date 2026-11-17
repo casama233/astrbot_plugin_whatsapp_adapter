@@ -1606,6 +1606,7 @@ class WhatsAppPlatformAdapter(Platform):
         is_reply_to_self = self._reply_targets_self(raw)
         original_text = message.message_str or ""
         is_command = self._message_matches_known_command(original_text)
+        is_addressed = is_self_mentioned or is_reply_to_self or is_command
         is_legacy_command = bool(
             self._legacy_command_prefix
             and message_matches_command(
@@ -1651,7 +1652,7 @@ class WhatsAppPlatformAdapter(Platform):
         # Keep protocol wake semantics independent from the optional reaction
         # acknowledgement. AstrBot's core uses these flags in the same way as
         # the QQ adapter, including when pre-ack is disabled.
-        if is_self_mentioned or is_command:
+        if is_addressed:
             event.is_at_or_wake_command = True
             event.is_wake = True
         if pre_ack_enabled:
@@ -1659,9 +1660,7 @@ class WhatsAppPlatformAdapter(Platform):
                 should_ack = pre_ack_private
             else:
                 group_mode = self._group_pre_ack_mode()
-                should_ack = group_mode == "always" or (
-                    group_mode == "mentions" and (is_self_mentioned or is_command)
-                )
+                should_ack = group_mode == "always" or (group_mode == "mentions" and is_addressed)
             if should_ack:
                 await self._pre_ack(event)
         if is_legacy_command:

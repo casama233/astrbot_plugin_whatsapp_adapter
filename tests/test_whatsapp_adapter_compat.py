@@ -573,7 +573,7 @@ class WhatsAppAdapterCompatibilityTests(unittest.TestCase):
                 self.assertTrue(callable(event.mention_resolver))
                 self.assertTrue(any(isinstance(item, _AtAll) for item in message.message))
 
-    def test_quoting_bot_without_explicit_mention_does_not_wake_or_ack(self) -> None:
+    def test_quoting_bot_wakes_without_synthetic_mention_and_respects_ack_policy(self) -> None:
         class FakeEvent:
             def __init__(self, **kwargs) -> None:
                 self.__dict__.update(kwargs)
@@ -610,41 +610,54 @@ class WhatsAppAdapterCompatibilityTests(unittest.TestCase):
         adapter._message_matches_known_command = lambda _text: False
         committed = []
         adapter.commit_event = committed.append
-        message = asyncio.run(
-            adapter.convert_message(
-                {
-                    "chatJid": "120363000000000001@g.us",
-                    "senderJid": "111@s.whatsapp.net",
-                    "senderPn": "111@s.whatsapp.net",
-                    "senderName": "Alice",
-                    "selfJid": "999@s.whatsapp.net",
-                    "messageId": "quote-only",
-                    "text": "follow-up without at",
-                    "mentionedJids": [],
-                    "quoted": {
-                        "stanzaId": "bot-answer",
-                        "participant": "999@s.whatsapp.net",
-                        "participantName": "Bot",
-                        "text": "previous answer",
-                    },
-                },
-            ),
-        )
+        for participant, self_lid, ack_enabled, ack_mode, expected_wake, expected_reactions in (
+            ("999@s.whatsapp.net", "", True, "mentions", True, ["👀"]),
+            ("888@lid", "888@lid", True, "mentions", True, ["👀"]),
+            ("777@s.whatsapp.net", "", True, "mentions", False, []),
+            ("999@s.whatsapp.net", "", False, "mentions", True, []),
+            ("999@s.whatsapp.net", "", True, "never", True, []),
+            ("777@s.whatsapp.net", "", True, "always", False, ["👀"]),
+        ):
+            with self.subTest(participant=participant, ack_enabled=ack_enabled, ack_mode=ack_mode):
+                adapter.config["pre_ack_emoji"] = ack_enabled
+                adapter.config["pre_ack_public"] = ack_mode
+                committed.clear()
+                message = asyncio.run(
+                    adapter.convert_message(
+                        {
+                            "chatJid": "120363000000000001@g.us",
+                            "senderJid": "111@s.whatsapp.net",
+                            "senderPn": "111@s.whatsapp.net",
+                            "senderName": "Alice",
+                            "selfJid": "999@s.whatsapp.net",
+                            "selfLid": self_lid,
+                            "messageId": "quote-only",
+                            "text": "follow-up without at",
+                            "mentionedJids": [],
+                            "quoted": {
+                                "stanzaId": "bot-answer",
+                                "participant": participant,
+                                "participantName": "Bot",
+                                "text": "previous answer",
+                            },
+                        },
+                    ),
+                )
 
-        quoted = message.message[0]
-        self.assertIsInstance(quoted, _Reply)
-        self.assertEqual(quoted.sender_id, "")
-        self.assertEqual(quoted.qq, "999")
-        self.assertFalse(any(isinstance(item, _At) for item in message.message))
+                quoted = message.message[0]
+                self.assertIsInstance(quoted, _Reply)
+                self.assertEqual(quoted.sender_id, "" if expected_wake else "777")
+                self.assertEqual(quoted.qq, "999" if expected_wake else "777")
+                self.assertFalse(any(isinstance(item, _At) for item in message.message))
 
-        with patch.object(self.module, "WhatsAppMessageEvent", FakeEvent):
-            asyncio.run(adapter.handle_msg(message))
+                with patch.object(self.module, "WhatsAppMessageEvent", FakeEvent):
+                    asyncio.run(adapter.handle_msg(message))
 
-        self.assertEqual(len(committed), 1)
-        event = committed[0]
-        self.assertFalse(event.is_wake)
-        self.assertFalse(event.is_at_or_wake_command)
-        self.assertEqual(event.reactions, [])
+                self.assertEqual(len(committed), 1)
+                event = committed[0]
+                self.assertEqual(event.is_wake, expected_wake)
+                self.assertEqual(event.is_at_or_wake_command, expected_wake)
+                self.assertEqual(event.reactions, expected_reactions)
 
     def test_send_by_group_sessions_recovers_target_and_reports_success(self) -> None:
         adapter = object.__new__(self.module.WhatsAppPlatformAdapter)

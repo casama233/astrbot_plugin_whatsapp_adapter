@@ -77,11 +77,12 @@ PN、LID、Hosted、设备 JID 与 `@g.us` 仍保留在 `raw_message` / `target_
 
 ## 群聊唤醒与 Reply
 
-从 v0.2.39 起，Reply 引用与唤醒信号严格分离：
+Reply 保留引用语义，群聊回复按原消息作者的传输层身份判断是否唤醒：
 
 - 引用内容、昵称、message ID 与 QQ 兼容字段会完整保留，方便其它插件读取。
-- **仅引用机器人消息不会被当成 @机器人。**
-- 群聊只有真实 @机器人、@全体、命令或 AstrBot Core 的其它正常唤醒条件才会触发回复。
+- 回复本机器人消息会设置原生唤醒标志，不添加 @组件。引用其他人或仅有相同显示名不会因此唤醒。
+- 真实 @机器人、@全体、命令和 AstrBot Core 的其它正常唤醒条件继续生效；`ignore_at_all` 仍控制 @全体。
+- 唤醒让消息进入所选 AstrBot 处理器的回复判断，不强制模型每次回复。
 - pre-ack reaction 与唤醒状态独立；发出 reaction 不会反向把普通群消息标记为已唤醒。
 
 ## 消息与媒体
@@ -158,7 +159,7 @@ NO_PROXY=localhost,127.0.0.1
 
 - 没有 QR：检查 Node.js 22/24 LTS（最低 20.9.0；Node 20 已 EOL）、npm、Gateway 端口、网络和 Page runtime 状态。
 - 扫码后没消息：检查平台实例启用状态和访问控制。
-- 群聊不触发：确认 `group_policy` 与 AstrBot wake/command 条件；Reply 本身不再算唤醒。
+- 群聊不触发：确认 `group_policy` 与 AstrBot wake/command 条件；回复本机器人消息会进入唤醒判断，引用其他人不会。
 - 流式变成新消息：WhatsApp edit 受协议 / 时效限制，降级属于保护路径。
 - 热重载异常：v0.2.38+ 已补强旧 adapter takeover 与健康检查；仍失败时查看 AstrBot 后端日志。
 

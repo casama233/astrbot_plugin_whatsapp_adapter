@@ -30,11 +30,12 @@ Gateway 会尽量在首条未知 LID 消息进入 AstrBot 管道前解析 PN/LID
 
 ## Reply 与群聊唤醒
 
-Reply 是引用语义，不再等同于唤醒信号。
+Reply 保留引用语义。群聊回复是否唤醒，按原消息作者的传输层身份判定。
 
 - 引用内容、昵称、message ID 与 QQ 兼容字段会完整保留。
-- 仅引用机器人消息不会被伪装成 @机器人。
-- 群聊只有真实 @机器人、@全体、命令或 AstrBot Core 其它正常 wake 条件才会触发回复。
+- 回复本机器人消息会设置原生唤醒标志，不会添加 @组件。引用其他人或仅有相同显示名不会因此唤醒。
+- 真实 @机器人、@全体、命令和 AstrBot Core 其它正常 wake 条件继续生效；`ignore_at_all` 仍控制 @全体。
+- 唤醒让消息进入所选 AstrBot 处理器的回复判断，不强制模型每次回复。
 - pre-ack reaction 与 wake state 完全独立；即使发送 reaction，也不会把普通群消息标记为已唤醒。
 - 出站只有 MessageChain 中存在 `Reply` 才发送 WhatsApp quoted message；分段发送只引用一次。
 
